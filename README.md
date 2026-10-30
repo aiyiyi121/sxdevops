@@ -1,6 +1,10 @@
+<p align="center"><img src="frontend/src/assets/brand-mark.svg" alt="SxDevOps 网站图标" width="96" height="96" /></p>
+
 <h1 align="center">SxDevOps · v2</h1>
 
 <p align="center"><strong>面向运维现场的开源智能运维 Agent 平台</strong></p>
+
+<p align="center"><strong>思而后行，行必有证。</strong></p>
 
 <p align="center">
   <a href="https://github.com/aiyiyi121/sxdevops/releases/tag/v2.0.0"><img src="https://img.shields.io/badge/Version-v2.0.0-3370FF?style=flat-square" alt="版本 v2.0.0" /></a>
@@ -9,9 +13,19 @@
 </p>
 
 <p align="center">
-  <a href="https://www.sxdevops.top"><img src="https://img.shields.io/badge/%E4%BA%A7%E5%93%81%E4%BD%93%E9%AA%8C-%E7%AB%8B%E5%8D%B3%E8%BF%9B%E5%85%A5-3370FF?style=for-the-badge&logo=googlechrome&logoColor=white" alt="产品体验 · 立即进入" /></a>
-  &nbsp;
-  <a href="https://www.sxdevops.top/product"><img src="https://img.shields.io/badge/%E4%BA%A7%E5%93%81%E4%BB%8B%E7%BB%8D-%E4%BA%86%E8%A7%A3%E5%B9%B3%E5%8F%B0-0F9D8A?style=for-the-badge&logo=readthedocs&logoColor=white" alt="产品介绍 · 了解平台" /></a>
+  <img src="https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python" />
+  <img src="https://img.shields.io/badge/Django-092E20?style=flat-square&logo=django&logoColor=white" alt="Django" />
+  <img src="https://img.shields.io/badge/Vue_3-4FC08D?style=flat-square&logo=vuedotjs&logoColor=white" alt="Vue 3" />
+  <img src="https://img.shields.io/badge/Element_Plus-409EFF?style=flat-square&logo=element&logoColor=white" alt="Element Plus" />
+  <img src="https://img.shields.io/badge/Vite-646CFF?style=flat-square&logo=vite&logoColor=white" alt="Vite" />
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/PostgreSQL-4169E1?style=flat-square&logo=postgresql&logoColor=white" alt="PostgreSQL" />
+  <img src="https://img.shields.io/badge/MySQL-4479A1?style=flat-square&logo=mysql&logoColor=white" alt="MySQL" />
+  <img src="https://img.shields.io/badge/Redis-FF4438?style=flat-square&logo=redis&logoColor=white" alt="Redis" />
+  <img src="https://img.shields.io/badge/Docker-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker" />
+  <img src="https://img.shields.io/badge/Kubernetes-326CE5?style=flat-square&logo=kubernetes&logoColor=white" alt="Kubernetes" />
 </p>
 
 <p align="center">
@@ -21,20 +35,25 @@
   <a href="docs/releases/v2.0.0-release-guide.md">升级指南</a>
 </p>
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://skillicons.dev/icons?i=python,django,vue,vite,postgres,mysql,redis,docker,kubernetes&theme=dark" />
-    <img src="https://skillicons.dev/icons?i=python,django,vue,vite,postgres,mysql,redis,docker,kubernetes&theme=light" alt="Python · Django · Vue · Vite · PostgreSQL · MySQL · Redis · Docker · Kubernetes" height="46" />
-  </picture>
-</p>
+**产品体验：进入平台，体验智能运维工作台 → [https://www.sxdevops.top](https://www.sxdevops.top)**
 
-<p align="center"><sub>Python · Django REST framework · Channels · Vue 3 · Element Plus · Vite · PostgreSQL · MySQL · Redis · Docker · Kubernetes</sub></p>
+**产品介绍：了解平台能力、产品界面与工作流程 → [https://www.sxdevops.top/product](https://www.sxdevops.top/product)**
 
 SxDevOps 是一个面向真实运维现场的开源智能运维 Agent 平台。它把 **CMDB、可观测性、事件中心、任务中心、工单审批、容器管理、RBAC** 等平台能力组织成 Agent 可调用、可审计、可确认的运维工作流。
 
 项目不是简单做一个聊天框，而是希望让运维从“到处查系统”升级为：
 
 > 看态势、找证据、问系统、确认动作。
+
+## 目录
+
+| 了解产品 | 能力与演示 | 安装与维护 |
+| --- | --- | --- |
+| [v2 重点更新](#v2-重点更新) | [核心能力](#核心能力) | [快速启动](#快速启动) |
+| [为什么需要它](#为什么需要它) | [典型场景](#典型场景) | [账号与升级](#账号与升级) |
+| [产品定位](#产品定位) | [Agent 工作机制](#agent-工作机制) | [项目结构](#项目结构) |
+| [技术栈](#技术栈) | [产品截图](#产品截图) | [文档导航](#文档导航) |
+| [架构概览](#架构概览) | [后续方向](#后续方向) | [贡献与安全](#贡献与安全) · [开源协议](#开源协议) |
 
 <p align="center"><img src="docs/screenshots/sxdevops-operation-flow.png" alt="SxDevOps 运转逻辑" width="820" /></p>
 
