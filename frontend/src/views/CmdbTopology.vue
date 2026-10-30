@@ -1,284 +1,300 @@
 <template>
   <div class="fade-in cmdb-model-topology-page workbench-page-shell">
-    <CmdbPlatformHeader />
-
-    <div class="neo-tabs theme-blue cmdb-model-surface-tabs">
-      <button
-        v-for="item in assetClassificationSurfaceTabs"
-        :key="item.key"
-        type="button"
-        class="neo-tab-btn"
-        :class="{ active: item.key === 'topology' }"
-        @click="router.push(item.path)"
-      >
-        <el-icon><component :is="item.icon" /></el-icon>
-        <span>{{ item.label }}</span>
-      </button>
-    </div>
-
-    <div class="workbench-card cmdb-model-topology-card">
-      <div class="section-toolbar">
-        <div class="toolbar-head">
-          <span class="toolbar-title">资产分类拓扑</span>
-          <span class="toolbar-desc">按八类资产分类展示模型之间的依赖、承载、包含和访问关系，重点看分类层级和关系方向。</span>
-        </div>
-        <div class="workbench-card-actions">
-          <el-tag size="small" type="info">{{ visibleRules.length }} 条规则</el-tag>
-          <el-button :loading="loading" @click="loadModelTopology">
-            <el-icon><RefreshRight /></el-icon>
-            刷新
-          </el-button>
-        </div>
+    <section class="hero panel">
+      <div class="hero-title-row">
+        <span class="hero-icon"><el-icon><Share /></el-icon></span>
+        <h2>资产拓扑</h2>
+        <p class="page-inline-desc">按业务环境或云账号筛选资产分类，查看分类之间的关系规则。</p>
       </div>
+    </section>
 
-      <div class="workbench-toolbar workbench-toolbar--history cmdb-model-topology-toolbar">
-        <div class="topology-filter-main">
-          <span class="topology-filter-label">
-            <span class="topology-filter-dot"></span>
-            筛选条件
-          </span>
-          <el-select v-model="filters.group" clearable filterable placeholder="资产分类分组" style="width: 168px" @change="renderGraph">
-            <el-option v-for="item in groupOptions" :key="item.value" :label="item.label" :value="item.value" />
-          </el-select>
-          <el-select v-model="filters.relation_type" clearable filterable placeholder="关系类型" style="width: 140px" @change="renderGraph">
-            <el-option v-for="item in relationTypeOptions" :key="item.value" :label="item.label" :value="item.value" />
-          </el-select>
-          <el-select v-model="filters.status" placeholder="规则状态" style="width: 128px" @change="renderGraph">
-            <el-option label="启用规则" value="active" />
-            <el-option label="全部规则" value="all" />
-            <el-option label="停用规则" value="inactive" />
-          </el-select>
-          <el-input
-            v-model="filters.keyword"
-            clearable
-            placeholder="搜索分类 / 编码 / 关系"
-            style="width: 240px"
-            @input="renderGraph"
-          />
+    <div class="asset-topology-workspace">
+      <aside class="workbench-card asset-scope-panel" aria-label="资产树">
+        <div class="asset-scope-heading">资产树</div>
+        <div class="asset-scope-modes" role="group" aria-label="资产树维度">
+          <button v-for="mode in scopeModes" :key="mode.key" type="button" :class="{ active: scopeMode === mode.key }" :aria-pressed="scopeMode === mode.key" @click="changeScopeMode(mode.key)">
+            <el-icon><component :is="mode.icon" /></el-icon>{{ mode.label }}
+          </button>
         </div>
-        <div class="topology-filter-actions">
-          <el-button @click="resetFilters">重置</el-button>
-        </div>
-      </div>
-
-      <div class="cmdb-model-topology-layout">
-        <section class="model-graph-panel">
-          <div class="model-graph-board-shell">
-            <div class="graph-source-note">
-              <el-icon><Share /></el-icon>
-              <span>当前视图：{{ filters.group ? groupLabel(filters.group) : '全部资产分类' }}</span>
-            </div>
-            <div class="graph-legend-card">
-              <div class="legend-title">资产分组</div>
-              <div v-for="item in groupStats" :key="item.key" class="legend-row">
-                <span class="legend-dot" :style="{ background: groupColor(item.key) }"></span>
-                <span>{{ item.label }}</span>
-                <em>{{ item.count }}</em>
-              </div>
-              <div class="legend-divider"></div>
-              <div class="legend-title">关系类型</div>
-              <div v-for="item in relationTypeStats" :key="item.key" class="legend-row">
-                <span class="legend-line" :style="relationLegendStyle(item.key)"></span>
-                <span>{{ item.label }}</span>
-                <em>{{ item.count }}</em>
-              </div>
-              <span v-if="!relationTypeStats.length" class="model-muted">暂无关系规则</span>
-            </div>
-
-            <div
-              ref="graphPanelRef"
-              v-loading="loading"
-              class="model-graph-canvas"
-              :class="{ dragging: graphDrag.active }"
-              @wheel.prevent="handleGraphWheel"
-              @mousedown="startGraphDrag"
-              @mousemove="handleGraphDrag"
-              @mouseup="stopGraphDrag"
-              @mouseleave="stopGraphDrag"
-              @click="handleGraphPanelClick"
-            >
-              <el-empty
-                v-if="!loading && !visibleModels.length"
-                class="model-graph-empty"
-                description="暂无资产分类关系"
-                :image-size="88"
-              />
-              <div
-                v-else
-                class="topology-board-viewport"
-                :style="{ width: `${scaledTopologyBoardSize.width}px`, height: `${scaledTopologyBoardSize.height}px` }"
-              >
-              <div
-                class="topology-board"
-                :style="{ width: `${topologyBoardSize.width}px`, height: `${topologyBoardSize.height}px`, transform: `scale(${graphZoom})` }"
-              >
-                <svg class="model-board-edges" :width="topologyBoardSize.width" :height="topologyBoardSize.height">
-                  <defs>
-                    <marker id="asset-topology-arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
-                      <path d="M0,0 L0,6 L8,3 z" fill="context-stroke" />
-                    </marker>
-                  </defs>
-                  <path
-                    v-for="edge in topologyBoardEdges"
-                    :key="edge.id"
-                    :d="edge.path"
-                    class="model-board-edge"
-                    :class="{ focused: edge.focused, dimmed: edge.dimmed, required: edge.required, inactive: edge.inactive }"
-                    :style="{ stroke: edge.color, strokeDasharray: edge.dash }"
-                    marker-end="url(#asset-topology-arrow)"
-                  />
-                </svg>
-
-                <section
-                  v-for="lane in topologyBoardLanes"
-                  :key="lane.key"
-                  class="model-board-lane"
-                  :style="topologyLaneStyle(lane)"
-                >
-                  <button
-                    type="button"
-                    class="board-lane-title"
-                    :class="{ active: filters.group === lane.key }"
-                    :style="{ '--lane-color': lane.color }"
-                    @click="applyGroupFilter(lane.key)"
-                  >
-                    <span>{{ lane.label }}</span>
-                  </button>
-                  <div class="board-lane-body" :style="{ '--lane-color': lane.color }">
-                    <div class="board-lane-count">{{ lane.models.length }} 个分类</div>
-                  </div>
-                  <button
-                    v-for="node in lane.nodes"
-                    :key="node.id"
-                    type="button"
-                    class="board-node"
-                    :class="{ active: selectedModelId === node.id, related: isRelatedModel(node.id), dimmed: isDimmedModel(node.id) }"
-                    :style="topologyNodeStyle(node)"
-                    @click.stop="selectModel(node.id)"
-                  >
-                    <span class="board-node-dot" :style="{ background: node.color }"></span>
-                    <span class="board-node-type">{{ nodeResourceCountText(node) }}</span>
-                    <span class="board-node-label">{{ node.name }}</span>
-                  </button>
-                </section>
-              </div>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <aside class="model-side-panel side-panel">
-          <template v-if="selectedModel">
-            <div class="model-side-header">
-              <div>
-                <div class="model-side-title">{{ selectedModel.name }}</div>
-                <div class="model-side-subtitle">{{ selectedModel.code || '-' }} / {{ selectedModel.group_name || '未分组' }}</div>
-              </div>
-              <el-tag size="small" :type="selectedModel.is_active === false ? 'warning' : 'success'">
-                {{ selectedModel.is_active === false ? '停用' : '启用' }}
-              </el-tag>
-            </div>
-
-            <div class="model-detail-grid">
-              <div v-for="item in selectedModelStats" :key="item.label" class="model-detail-item">
-                <span>{{ item.label }}</span>
-                <strong>{{ item.value }}</strong>
-              </div>
-            </div>
-
-            <div class="model-section">
-              <div class="model-section-head">
-                <strong>关联规则</strong>
-                <el-tag size="small" type="info">{{ selectedRules.length }}</el-tag>
-              </div>
-              <div class="model-rule-list">
-                <button
-                  v-for="rule in selectedRules"
-                  :key="rule.id"
-                  type="button"
-                  class="model-rule-row"
-                  @click="selectModel(rule.otherModelId)"
-                >
-                  <span class="model-rule-main">
-                    <strong>{{ rule.otherModelName }}</strong>
-                    <small>{{ relationTypeLabel(rule.relation_type) }} / {{ rule.directionLabel }}</small>
-                  </span>
-                  <el-tag size="small" :type="rule.required ? 'danger' : 'info'">{{ rule.required ? '必填' : '可选' }}</el-tag>
-                </button>
-                <el-empty v-if="!selectedRules.length" description="暂无关联规则" :image-size="56" />
-              </div>
-            </div>
-
-            <div class="model-section">
-              <div class="model-section-head">
-                <strong>说明</strong>
-              </div>
-              <p class="model-description">{{ selectedModel.description || '暂无说明' }}</p>
-            </div>
-          </template>
-
-          <template v-else>
-            <div class="sidebar-placeholder model-side-empty">
-              <div class="model-side-title">关系概览</div>
-              <div class="model-side-subtitle">默认展示全部分类拓扑，点击节点后再聚焦查看对应的上下游规则关系。</div>
-            </div>
-            <div class="section-title">高关联分类</div>
-            <button
-              v-for="model in topConnectedModels"
-              :key="model.id"
-              type="button"
-              class="service-row"
-              @click="selectModel(model.id)"
-            >
-              <span>{{ model.name || model.code || '未命名分类' }}</span>
-              <em>{{ modelDegree(model.id) }}</em>
+        <template v-if="canViewCi">
+          <el-input v-model="scopeKeyword" clearable :prefix-icon="Search" :placeholder="scopeMode === 'business' ? '搜索业务线 / 资产名' : '搜索云账号 / 资产名'" aria-label="搜索资产树" />
+          <div v-if="scopeLoadError" class="asset-scope-message" role="alert">资产树加载失败，请点击刷新重试。</div>
+          <div v-else v-loading="loading" class="asset-scope-body">
+            <button type="button" class="asset-scope-all" :class="{ active: !selectedScopeKey }" @click="clearScope">
+              <span><el-icon><FolderOpened /></el-icon>全部资产</span><em>{{ scopeRows.length }}</em>
             </button>
-            <el-empty v-if="!topConnectedModels.length" description="暂无高关联分类" :image-size="56" />
-          </template>
-
-          <div class="model-section">
-            <div class="model-section-head">
-              <strong>关系类型</strong>
-            </div>
-            <div class="model-tag-row">
-              <el-tag v-for="item in relationTypeStats" :key="item.key" size="small" :type="item.tone">
-                {{ item.label }} {{ item.count }}
-              </el-tag>
-              <span v-if="!relationTypeStats.length" class="model-muted">暂无关系规则</span>
-            </div>
+            <el-tree ref="scopeTreeRef" :data="scopeTreeNodes" node-key="key" :default-expanded-keys="scopeTreeNodes.map(node => node.key)" :expand-on-click-node="false" :filter-node-method="filterScopeNode" highlight-current @node-click="selectScope">
+              <template #default="{ data }">
+                <span class="asset-scope-node" :title="data.path"><span>{{ data.label }}</span><em>{{ data.count }}</em></span>
+              </template>
+            </el-tree>
+            <el-empty v-if="!loading && !scopeTreeNodes.length" description="暂无资产树节点" :image-size="52" />
           </div>
+        </template>
+        <el-empty v-else description="当前账号无资产查看权限" :image-size="52" />
+      </aside>
 
-          <div class="model-section">
-            <div class="model-section-head">
-              <strong>资产分组</strong>
-            </div>
-            <div class="model-tag-row">
-              <el-tag v-for="item in groupStats" :key="item.key" size="small" type="info">
-                {{ item.label }} {{ item.count }}
-              </el-tag>
-            </div>
+      <div class="workbench-card cmdb-model-topology-card">
+        <div class="section-toolbar">
+          <div class="toolbar-head">
+            <span class="toolbar-title">分类关系</span>
+            <span class="toolbar-desc" :title="selectedScope?.path">{{ selectedScope?.path || '全部资产' }} · {{ visibleModels.length }} 个分类</span>
           </div>
-        </aside>
+          <div class="workbench-card-actions">
+            <el-tag size="small" type="info">{{ visibleRules.length }} 条规则</el-tag>
+            <el-button :loading="loading" @click="loadModelTopology">
+              <el-icon><RefreshRight /></el-icon>
+              刷新
+            </el-button>
+          </div>
+        </div>
+
+        <div class="workbench-toolbar workbench-toolbar--history cmdb-model-topology-toolbar">
+          <div class="topology-filter-main">
+            <span class="topology-filter-label">
+              <span class="topology-filter-dot"></span>
+              筛选条件
+            </span>
+            <el-select v-model="filters.group" clearable filterable placeholder="资产分类分组" style="width: 168px" @change="renderGraph">
+              <el-option v-for="item in groupOptions" :key="item.value" :label="item.label" :value="item.value" />
+            </el-select>
+            <el-select v-model="filters.relation_type" clearable filterable placeholder="关系类型" style="width: 140px" @change="renderGraph">
+              <el-option v-for="item in relationTypeOptions" :key="item.value" :label="item.label" :value="item.value" />
+            </el-select>
+            <el-select v-model="filters.status" placeholder="规则状态" style="width: 128px" @change="renderGraph">
+              <el-option label="启用规则" value="active" />
+              <el-option label="全部规则" value="all" />
+              <el-option label="停用规则" value="inactive" />
+            </el-select>
+            <el-input
+              v-model="filters.keyword"
+              clearable
+              placeholder="搜索分类 / 编码 / 关系"
+              style="width: 240px"
+              @input="renderGraph"
+            />
+          </div>
+          <div class="topology-filter-actions">
+            <el-button @click="resetFilters">重置</el-button>
+          </div>
+        </div>
+
+        <div class="cmdb-model-topology-layout">
+          <section class="model-graph-panel">
+            <div class="model-graph-board-shell">
+              <div class="graph-legend-card">
+                <div class="legend-title">关系图例</div>
+                <div v-for="item in relationTypeStats" :key="item.key" class="legend-row">
+                  <span class="legend-line" :style="relationLegendStyle(item.key)"></span>
+                  <span>{{ item.label }}</span>
+                  <em>{{ item.count }}</em>
+                </div>
+                <span v-if="!relationTypeStats.length" class="model-muted">暂无关系规则</span>
+              </div>
+
+              <div
+                ref="graphPanelRef"
+                v-loading="loading"
+                class="model-graph-canvas"
+                :class="{ dragging: graphDrag.active }"
+                @wheel.prevent="handleGraphWheel"
+                @mousedown="startGraphDrag"
+                @mousemove="handleGraphDrag"
+                @mouseup="stopGraphDrag"
+                @mouseleave="stopGraphDrag"
+                @click="handleGraphPanelClick"
+              >
+                <el-empty
+                  v-if="!loading && !visibleModels.length"
+                  class="model-graph-empty"
+                  :description="scopeLoadError ? '资产树加载失败，请刷新重试' : selectedScope ? '当前范围暂无匹配的资产分类' : '暂无匹配的资产分类'"
+                  :image-size="88"
+                />
+                <div
+                  v-else
+                  class="topology-board-viewport"
+                  :style="{ width: `${scaledTopologyBoardSize.width}px`, height: `${scaledTopologyBoardSize.height}px` }"
+                >
+                <div
+                  class="topology-board"
+                  :style="{ width: `${topologyBoardSize.width}px`, height: `${topologyBoardSize.height}px`, transform: `scale(${graphZoom})` }"
+                >
+                  <svg class="model-board-edges" :width="topologyBoardSize.width" :height="topologyBoardSize.height">
+                    <defs>
+                      <marker id="asset-topology-arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+                        <path d="M0,0 L0,6 L8,3 z" fill="context-stroke" />
+                      </marker>
+                    </defs>
+                    <path
+                      v-for="edge in topologyBoardEdges"
+                      :key="edge.id"
+                      :d="edge.path"
+                      class="model-board-edge"
+                      :class="{ focused: edge.focused, dimmed: edge.dimmed, required: edge.required, inactive: edge.inactive }"
+                      :style="{ stroke: edge.color, strokeDasharray: edge.dash }"
+                      marker-end="url(#asset-topology-arrow)"
+                    />
+                  </svg>
+
+                  <section
+                    v-for="lane in topologyBoardLanes"
+                    :key="lane.key"
+                    class="model-board-lane"
+                    :style="topologyLaneStyle(lane)"
+                  >
+                    <button
+                      type="button"
+                      class="board-lane-title"
+                      :class="{ active: filters.group === lane.key }"
+                      :style="{ '--lane-color': lane.color }"
+                      @click="applyGroupFilter(lane.key)"
+                    >
+                      <span>{{ lane.label }}</span>
+                    </button>
+                    <div class="board-lane-body" :style="{ '--lane-color': lane.color }">
+                      <div class="board-lane-count">{{ lane.models.length }} 个分类</div>
+                    </div>
+                    <button
+                      v-for="node in lane.nodes"
+                      :key="node.id"
+                      type="button"
+                      class="board-node"
+                      :class="{ active: selectedModelId === node.id, related: isRelatedModel(node.id), dimmed: isDimmedModel(node.id) }"
+                      :style="topologyNodeStyle(node)"
+                      @click.stop="selectModel(node.id)"
+                    >
+                      <span class="board-node-dot" :style="{ background: node.color }"></span>
+                      <span class="board-node-type">{{ nodeResourceCountText(node) }}</span>
+                      <span class="board-node-label">{{ node.name }}</span>
+                    </button>
+                  </section>
+                </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <aside class="model-side-panel side-panel">
+            <template v-if="selectedModel">
+              <div class="model-side-header">
+                <div>
+                  <div class="model-side-title">{{ selectedModel.name }}</div>
+                  <div class="model-side-subtitle">{{ selectedModel.code || '-' }} / {{ selectedModel.group_name || '未分组' }}</div>
+                </div>
+                <el-tag size="small" :type="selectedModel.is_active === false ? 'warning' : 'success'">
+                  {{ selectedModel.is_active === false ? '停用' : '启用' }}
+                </el-tag>
+              </div>
+
+              <div class="model-detail-grid">
+                <div v-for="item in selectedModelStats" :key="item.label" class="model-detail-item">
+                  <span>{{ item.label }}</span>
+                  <strong>{{ item.value }}</strong>
+                </div>
+              </div>
+
+              <div class="model-section">
+                <div class="model-section-head">
+                  <strong>关联规则</strong>
+                  <el-tag size="small" type="info">{{ selectedRules.length }}</el-tag>
+                </div>
+                <div class="model-rule-list">
+                  <button
+                    v-for="rule in selectedRules"
+                    :key="rule.id"
+                    type="button"
+                    class="model-rule-row"
+                    @click="selectModel(rule.otherModelId)"
+                  >
+                    <span class="model-rule-main">
+                      <strong>{{ rule.otherModelName }}</strong>
+                      <small>{{ relationTypeLabel(rule.relation_type) }} / {{ rule.directionLabel }}</small>
+                    </span>
+                    <el-tag size="small" :type="rule.required ? 'danger' : 'info'">{{ rule.required ? '必填' : '可选' }}</el-tag>
+                  </button>
+                  <el-empty v-if="!selectedRules.length" description="暂无关联规则" :image-size="56" />
+                </div>
+              </div>
+
+              <div class="model-section">
+                <div class="model-section-head">
+                  <strong>说明</strong>
+                </div>
+                <p class="model-description">{{ selectedModel.description || '暂无说明' }}</p>
+              </div>
+            </template>
+
+            <template v-else>
+              <div class="sidebar-placeholder model-side-empty">
+                <div class="model-side-title">关系概览</div>
+                <div class="model-side-subtitle">点击分类节点查看上下游规则。连线表示分类关系规则，资源数量随左侧资产范围更新。</div>
+              </div>
+              <div class="section-title">高关联分类</div>
+              <button
+                v-for="model in topConnectedModels"
+                :key="model.id"
+                type="button"
+                class="service-row"
+                @click="selectModel(model.id)"
+              >
+                <span>{{ model.name || model.code || '未命名分类' }}</span>
+                <em>{{ modelDegree(model.id) }}</em>
+              </button>
+              <el-empty v-if="!topConnectedModels.length" description="暂无高关联分类" :image-size="56" />
+            </template>
+
+            <div class="model-section">
+              <div class="model-section-head">
+                <strong>关系类型</strong>
+              </div>
+              <div class="model-tag-row">
+                <el-tag v-for="item in relationTypeStats" :key="item.key" size="small" :type="item.tone">
+                  {{ item.label }} {{ item.count }}
+                </el-tag>
+                <span v-if="!relationTypeStats.length" class="model-muted">暂无关系规则</span>
+              </div>
+            </div>
+
+            <div class="model-section">
+              <div class="model-section-head">
+                <strong>资产分组</strong>
+              </div>
+              <div class="model-tag-row">
+                <el-tag v-for="item in groupStats" :key="item.key" size="small" type="info">
+                  {{ item.label }} {{ item.count }}
+                </el-tag>
+              </div>
+            </div>
+          </aside>
+        </div>
       </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { computed, nextTick, onMounted, reactive, ref } from 'vue'
-import CmdbPlatformHeader from '@/components/cmdb/CmdbPlatformHeader.vue'
-import { useRouter } from 'vue-router'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { DataBoard, RefreshRight, Share } from '@element-plus/icons-vue'
+import { FolderOpened, MostlyCloudy, RefreshRight, Search, Share } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
-import { getCIModelGroups, getCIRelationRules, getCITypes } from '@/api/modules/cmdb'
+import { getCIModelGroups, getCIRelationRules, getCITypes, getConfigItemLedgerTree, getResourceNodeTree } from '@/api/modules/cmdb'
+import { buildCmdbAssetScopeTrees, indexAssetsByModel } from '@/utils/cmdb-asset-scope'
+import { resolveThemeColor } from '@/theme'
 
-const router = useRouter()
 const authStore = useAuthStore()
 const loading = ref(false)
 const ciTypes = ref([])
 const modelGroups = ref([])
 const relationRules = ref([])
+const assetRows = ref([])
+const resourceTrees = ref({ business: [], cloud: [] })
+const scopeMode = ref('business')
+const scopeModes = [{ key: 'business', label: '业务环境', icon: FolderOpened }, { key: 'cloud', label: '云账号', icon: MostlyCloudy }]
+const scopeKeyword = ref('')
+const selectedScopeKey = ref('')
+const scopeTreeRef = ref(null)
+const scopeReady = ref(false)
+const scopeLoadError = ref(false)
 const selectedModelId = ref('')
 const graphPanelRef = ref(null)
 const graphZoom = ref(0.68)
@@ -315,12 +331,7 @@ const standardTopologyGroups = [
 const standardTopologyGroupCodes = new Set(standardTopologyGroups.map(group => group.code))
 const hiddenModelCodes = new Set(['MIDDLEWARE', 'CLOUD_DATABASE', 'VSPHERE_CAPACITY', 'SPARK', 'HIVE', 'HBASE', 'DORIS'])
 
-const canViewModel = computed(() => authStore.hasPermission('cmdb.model.view'))
-const canManageModel = computed(() => authStore.hasPermission('cmdb.model.manage'))
-const assetClassificationSurfaceTabs = computed(() => [
-  canManageModel.value && { key: 'config', label: '资产分类配置', icon: DataBoard, path: '/cmdb/model/config' },
-  canViewModel.value && { key: 'topology', label: '资产分类拓扑', icon: Share, path: '/cmdb/model/topology' },
-].filter(Boolean))
+const canViewCi = computed(() => authStore.hasPermission('cmdb.ci.view'))
 
 const listOf = (payload) => {
   if (Array.isArray(payload)) return payload
@@ -335,7 +346,34 @@ const visibleBaseModels = computed(() => ciTypes.value.filter((model) => {
   const name = String(model.name || '').trim()
   return !['机房服务器', '物理机', '云数据库', 'Docker环境', 'vSphere资源统计', '数据仓库', 'Spark', 'Hive', 'HBase', 'Doris'].includes(name)
 }))
-const modelMap = computed(() => new Map(visibleBaseModels.value.map(model => [String(model.id), model])))
+const assetModelIndex = computed(() => indexAssetsByModel(assetRows.value, visibleBaseModels.value))
+const scopeRows = computed(() => assetRows.value.filter(row => assetModelIndex.value.has(String(row.id))))
+const scopeTrees = computed(() => buildCmdbAssetScopeTrees(scopeRows.value, resourceTrees.value))
+const scopeTreeNodes = computed(() => scopeTrees.value[scopeMode.value])
+const scopeNodeIndex = computed(() => {
+  const result = new Map()
+  const visit = nodes => nodes.forEach(node => { result.set(node.key, node); visit(node.children) })
+  visit(scopeTreeNodes.value)
+  return result
+})
+const selectedScope = computed(() => scopeNodeIndex.value.get(selectedScopeKey.value))
+const scopedModelCounts = computed(() => {
+  const result = new Map()
+  for (const row of scopeRows.value) {
+    if (selectedScopeKey.value && !selectedScope.value?.rowIds.has(String(row.id))) continue
+    const modelId = assetModelIndex.value.get(String(row.id))
+    result.set(modelId, (result.get(modelId) || 0) + 1)
+  }
+  return result
+})
+const scopeModels = computed(() => {
+  if (!canViewCi.value) return visibleBaseModels.value
+  if (!scopeReady.value) return []
+  return visibleBaseModels.value
+    .map(model => ({ ...model, ci_count: scopedModelCounts.value.get(String(model.id)) || 0 }))
+    .filter(model => !selectedScopeKey.value || model.ci_count > 0)
+})
+const modelMap = computed(() => new Map(scopeModels.value.map(model => [String(model.id), model])))
 const visibleRules = computed(() => {
   const keyword = normalizedKeyword.value
   return relationRules.value.filter((rule) => {
@@ -370,11 +408,15 @@ const visibleModelIds = computed(() => {
     ids.add(String(rule.source_type))
     ids.add(String(rule.target_type))
   })
-  if (filters.group || filters.relation_type || normalizedKeyword.value) return ids
-  visibleBaseModels.value.forEach(model => ids.add(String(model.id)))
+  if (filters.relation_type) return ids
+  scopeModels.value.forEach(model => {
+    if (filters.group && modelGroupKey(model) !== filters.group) return
+    if (normalizedKeyword.value && ![model.name, model.code, model.group_name].some(value => String(value || '').toLowerCase().includes(normalizedKeyword.value))) return
+    ids.add(String(model.id))
+  })
   return ids
 })
-const visibleModels = computed(() => visibleBaseModels.value.filter(model => visibleModelIds.value.has(String(model.id))))
+const visibleModels = computed(() => scopeModels.value.filter(model => visibleModelIds.value.has(String(model.id))))
 const visibleModelMap = computed(() => new Map(visibleModels.value.map(model => [String(model.id), model])))
 const normalizedKeyword = computed(() => filters.keyword.trim().toLowerCase())
 const selectedModel = computed(() => visibleModelMap.value.get(String(selectedModelId.value)) || null)
@@ -424,7 +466,7 @@ const topologyGroupRows = computed(() => {
       code: group.code,
       label: apiGroup?.name || group.label,
       name: apiGroup?.name || group.label,
-      color: group.color,
+      color: resolveThemeColor(group.color, 'text'),
       sort: apiGroup?.sort_order ?? group.sort,
       is_standard: true,
     }
@@ -436,7 +478,7 @@ const topologyGroupRows = computed(() => {
       key: String(group.code || group.id || group.name),
       code: String(group.code || '').toLowerCase(),
       label: group.name || group.code || '未分组',
-      color: '#64748b',
+      color: resolveThemeColor('#64748b', 'text'),
       sort: Number(group.sort_order || 999),
       is_standard: false,
     }))
@@ -498,7 +540,7 @@ const topologyHierarchyGroups = computed(() => {
         key,
         label: model.group_name || '未分组',
         sort: 9999,
-        color: '#64748b',
+        color: resolveThemeColor('#64748b', 'text'),
         is_standard: false,
         models: [],
       })
@@ -506,7 +548,7 @@ const topologyHierarchyGroups = computed(() => {
     groups.get(key).models.push(model)
   })
   return [...groups.values()]
-    .filter(group => group.models.length || group.is_standard)
+    .filter(group => group.models.length || (group.is_standard && !selectedScopeKey.value && !filters.group && !filters.relation_type && !normalizedKeyword.value))
     .map(group => ({
       ...group,
       models: group.models.slice().sort((left, right) => modelDegree(right.id) - modelDegree(left.id) || String(left.name).localeCompare(String(right.name), 'zh-Hans-CN')),
@@ -642,7 +684,7 @@ function normalizedRelationType(type) {
 
 function modelColor(model) {
   const group = topologyGroupByCode.value.get(modelGroupKey(model))
-  return model.color || group?.color || ['#245bdb', '#0ea5e9', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444'][Math.abs(hashCode(model.group_name || model.name || 'model')) % 6]
+  return resolveThemeColor(model.color || group?.color || ['#245bdb', '#0ea5e9', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444'][Math.abs(hashCode(model.group_name || model.name || 'model')) % 6], 'text')
 }
 
 function hashCode(text) {
@@ -661,7 +703,7 @@ function relationColor(rule) {
     runs_on: '#78a5a8',
     related: '#a5afbd',
   }
-  return colors[normalizedRelationType(rule?.relation_type)] || colors.related
+  return resolveThemeColor(colors[normalizedRelationType(rule?.relation_type)] || colors.related, 'text')
 }
 
 function relationDash(rule) {
@@ -721,15 +763,6 @@ function isDimmedModel(id) {
   return nodeId !== selectedId && !selectedNeighborIds.value.has(nodeId)
 }
 
-function groupColor(groupKey) {
-  return topologyGroupByCode.value.get(String(groupKey).toLowerCase())?.color || '#64748b'
-}
-
-function groupLabel(groupKey) {
-  const group = topologyGroupByCode.value.get(String(groupKey).toLowerCase())
-  return group?.label || group?.name || groupKey || '全部资产分类'
-}
-
 function relationLegendStyle(type) {
   const key = normalizedRelationType(type)
   const rule = { relation_type: key }
@@ -755,6 +788,7 @@ function applyGroupFilter(groupKey) {
 }
 
 function resetFilters() {
+  clearScope()
   filters.group = ''
   filters.relation_type = ''
   filters.status = 'active'
@@ -762,6 +796,31 @@ function resetFilters() {
   selectedModelId.value = ''
   renderGraph()
 }
+
+function filterScopeNode(value, data) {
+  return !value || data.searchText.includes(value.trim().toLowerCase())
+}
+
+function selectScope(node) {
+  selectedScopeKey.value = node.key
+  selectedModelId.value = ''
+  nextTick(() => { if (graphPanelRef.value) graphPanelRef.value.scrollLeft = 0 })
+}
+
+function clearScope() {
+  selectedScopeKey.value = ''
+  scopeTreeRef.value?.setCurrentKey(null)
+}
+
+function changeScopeMode(mode) {
+  if (scopeMode.value === mode) return
+  scopeMode.value = mode
+  clearScope()
+  nextTick(() => scopeTreeRef.value?.filter(scopeKeyword.value))
+}
+
+watch(scopeKeyword, value => scopeTreeRef.value?.filter(value))
+watch(visibleModelMap, renderGraph)
 
 function setGraphZoom(nextZoom, event) {
   const panel = graphPanelRef.value
@@ -828,17 +887,34 @@ function handleGraphPanelClick(event) {
 
 async function loadModelTopology() {
   loading.value = true
+  scopeLoadError.value = false
+  scopeReady.value = false
   try {
-    const [typesRes, groupsRes, rulesRes] = await Promise.all([
+    const [typesRes, groupsRes, rulesRes, scopeRes] = await Promise.all([
       getCITypes({ page_size: 500 }),
       getCIModelGroups({ page_size: 200 }),
       getCIRelationRules({ page_size: 500 }),
+      canViewCi.value ? Promise.all([getConfigItemLedgerTree(), getResourceNodeTree({ scope: 'all' })])
+        .then(data => ({ data })).catch(error => ({ error })) : null,
     ])
     ciTypes.value = listOf(typesRes)
     modelGroups.value = listOf(groupsRes)
     relationRules.value = listOf(rulesRes)
+    if (scopeRes?.error) {
+      scopeLoadError.value = true
+      assetRows.value = []
+      resourceTrees.value = { business: [], cloud: [] }
+    } else if (scopeRes) {
+      assetRows.value = listOf(scopeRes.data[0])
+      const nodes = scopeRes.data[1]
+      resourceTrees.value = Array.isArray(nodes) ? { business: nodes, cloud: [] } : { business: listOf(nodes?.business), cloud: listOf(nodes?.cloud) }
+      scopeReady.value = true
+      if (selectedScopeKey.value && !scopeNodeIndex.value.has(selectedScopeKey.value)) clearScope()
+    }
     selectedModelId.value = ''
     await nextTick()
+    scopeTreeRef.value?.setCurrentKey(selectedScopeKey.value || null)
+    scopeTreeRef.value?.filter(scopeKeyword.value)
     renderGraph()
   } catch (error) {
     ElMessage.error(error?.response?.data?.detail || '分类拓扑加载失败，请稍后重试')
@@ -854,19 +930,31 @@ onMounted(() => {
 
 <style scoped>
 .cmdb-model-topology-page{display:flex;flex-direction:column;gap:6px}
+.asset-topology-workspace{display:grid;grid-template-columns:228px minmax(0,1fr);gap:10px;align-items:start}
+.asset-scope-panel{display:flex;flex-direction:column;gap:10px;min-width:0;padding:14px 12px;margin:0;min-height:480px}
+.asset-scope-heading{font-size:14px;font-weight:700;color:var(--text-primary)}
+.asset-scope-modes{display:flex;padding:3px;gap:3px;border:1px solid var(--el-border-color-light);border-radius:10px;background:var(--el-fill-color-light)}
+.asset-scope-modes button{display:flex;align-items:center;justify-content:center;gap:5px;flex:1;min-width:0;min-height:32px;padding:0 4px;border:0;border-radius:7px;background:transparent;color:var(--text-secondary);font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}
+.asset-scope-modes button.active{background:var(--el-color-primary-light-9);color:var(--el-color-primary);box-shadow:inset 0 0 0 1px var(--el-color-primary-light-7)}
+.asset-scope-body{min-height:260px;max-height:640px;overflow:auto}
+.asset-scope-all{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;min-height:34px;padding:0 8px;border:0;border-radius:8px;background:transparent;color:var(--text-primary);font:inherit;font-size:12px;cursor:pointer}
+.asset-scope-all>span{display:inline-flex;align-items:center;gap:7px}
+.asset-scope-all.active{background:var(--el-color-primary-light-9);color:var(--el-color-primary)}
+.asset-scope-node{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0;flex:1;padding-right:8px;font-size:12px;color:var(--text-primary)}
+.asset-scope-node>span{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.asset-scope-node em,.asset-scope-all em{flex:none;font-size:11px;font-style:normal;color:var(--text-secondary)}
+.asset-scope-panel :deep(.el-tree){background:transparent;--el-tree-node-content-height:34px}
+.asset-scope-panel :deep(.el-tree-node__content){border-radius:8px}
+.asset-scope-panel :deep(.is-current>.el-tree-node__content){background:var(--el-color-primary-light-9)}
+.asset-scope-message{font-size:12px;line-height:1.7;color:var(--el-color-danger)}
+.asset-scope-panel button:focus-visible{outline:2px solid var(--el-color-primary);outline-offset:2px}
 .hero.panel{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border:1px solid rgba(36,91,219,.09);border-radius:20px;background:linear-gradient(135deg,#fbfdff 0%,#f7faff 52%,#f9fbfd 100%);box-shadow:0 8px 20px rgba(15,23,42,.05)}
 .hero-copy{min-width:0;flex:1}
 .hero-title-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .hero-title-row h2{margin:0;color:#0f172a;font-size:23px;line-height:1.2}
 .hero-icon{width:42px;height:42px;border-radius:13px;display:inline-flex;align-items:center;justify-content:center;color:#245bdb;background:rgba(51,112,255,.1)}
 .page-inline-desc{margin:0;color:#64748b;font-size:13px;line-height:1.45}
-.neo-tabs{display:flex;width:100%;padding:3px;gap:8px;border-radius:12px;border:1px solid rgba(148,163,184,.16);background:#fff;box-shadow:0 12px 26px rgba(15,23,42,.04);overflow:auto}
-.neo-tab-btn{min-height:38px;padding:0 18px;border:0;border-radius:8px;background:transparent;color:#475569;font-size:13px;font-weight:700;line-height:1.2;display:inline-flex;align-items:center;gap:6px;white-space:nowrap;cursor:pointer}
-.neo-tab-btn .el-icon{font-size:15px}
-.neo-tab-btn:hover{background:rgba(51,112,255,.06);color:#245bdb}
-.neo-tab-btn.active{background:#e8f0ff;color:#245bdb;box-shadow:inset 0 0 0 1px rgba(51,112,255,.1)}
-.cmdb-model-surface-tabs{margin:0}
-.cmdb-model-topology-card{display:flex;flex-direction:column;padding:0;overflow:hidden}
+.cmdb-model-topology-card{display:flex;flex-direction:column;min-width:0;margin:0;padding:0;overflow:hidden}
 .cmdb-model-topology-card .section-toolbar{align-items:center;margin:0;padding:12px 16px 10px;border-bottom:1px solid rgba(148,163,184,.12)}
 .cmdb-model-topology-card .toolbar-head{display:inline-flex;align-items:baseline;gap:8px;min-width:0;flex:1 1 auto;flex-wrap:wrap}
 .cmdb-model-topology-card .toolbar-title{font-size:15px;font-weight:800;color:#0f172a;line-height:1.35;white-space:nowrap}
@@ -876,20 +964,21 @@ onMounted(() => {
 .cmdb-model-topology-card .workbench-card-actions :deep(.el-button){height:30px;border-radius:8px;margin-left:0}
 .cmdb-model-topology-toolbar{margin:10px 16px 12px;padding:8px;border:1px solid rgba(148,163,184,.14);border-radius:12px;background:linear-gradient(180deg,#fbfdff 0%,#f8fafc 100%);box-shadow:inset 0 1px 0 rgba(255,255,255,.9);display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:nowrap;overflow-x:auto}
 .topology-filter-main,.topology-filter-actions{display:flex;align-items:center;gap:8px;min-width:0}
-.topology-filter-main{flex:1 1 auto;flex-wrap:nowrap}
+.topology-filter-main{flex:1 1 auto;flex-wrap:nowrap;overflow-x:auto;padding-bottom:2px;scrollbar-width:thin}
+.topology-filter-label{flex:none}
 .topology-filter-actions{flex:0 0 auto;justify-content:flex-end}
 .topology-filter-label{height:28px;padding:0 10px;border:1px solid rgba(148,163,184,.16);border-radius:999px;background:#fff;color:#475569;font-size:12px;font-weight:700;display:inline-flex;align-items:center;gap:7px;white-space:nowrap;box-shadow:0 6px 14px rgba(15,23,42,.035)}
 .topology-filter-dot{width:7px;height:7px;border-radius:999px;background:#245bdb;box-shadow:0 0 0 3px rgba(51,112,255,.1)}
 .cmdb-model-topology-toolbar :deep(.el-input__wrapper),.cmdb-model-topology-toolbar :deep(.el-select__wrapper){min-height:32px;border-radius:10px;box-shadow:0 0 0 1px rgba(148,163,184,.16) inset;background:#fff}
 .cmdb-model-topology-toolbar :deep(.el-button){height:32px;border-radius:10px;margin-left:0;font-weight:700}
-.cmdb-model-topology-layout{display:grid;flex:1;grid-template-columns:minmax(0,1fr) 248px;gap:10px;padding:0 16px 16px;min-height:360px}
+.cmdb-model-topology-layout{display:grid;flex:1;grid-template-columns:minmax(0,1fr) 224px;gap:10px;padding:0 16px 16px;min-height:480px}
 .model-graph-panel{min-width:0;min-height:0;display:flex;flex-direction:column;gap:10px}
 .model-side-panel{position:relative;min-width:0;border:1px solid rgba(148,163,184,.18);border-radius:22px;background:linear-gradient(180deg,#fff 0%,#f8fafc 100%);padding:15px;color:#0f172a;overflow:hidden;box-shadow:0 18px 42px rgba(15,23,42,.1)}
 .model-side-header,.model-section-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
 .model-side-title{font-size:16px;font-weight:700;color:#0f172a}
 .model-side-subtitle{font-size:12px;color:#64748b;line-height:1.45}
 .model-side-subtitle{margin-top:4px}
-.model-graph-board-shell{position:relative;display:flex;flex-direction:column;flex:1;min-width:0;min-height:0}
+.model-graph-board-shell{position:relative;display:flex;flex-direction:column;flex:1;min-width:0;min-height:0;gap:6px}
 .model-graph-canvas{contain:size}
 .model-graph-canvas{position:relative;flex:1;min-height:360px;width:100%;border:1px solid rgba(148,163,184,.18);border-radius:22px;background:linear-gradient(rgba(148,163,184,.07) 1px,transparent 1px),linear-gradient(90deg,rgba(148,163,184,.07) 1px,transparent 1px),linear-gradient(rgba(59,130,246,.1) 1px,transparent 1px),linear-gradient(90deg,rgba(59,130,246,.1) 1px,transparent 1px),radial-gradient(circle at top left,rgba(59,130,246,.08),transparent 28%),radial-gradient(circle at bottom right,rgba(16,185,129,.08),transparent 30%),linear-gradient(180deg,#f8fbff 0%,#f1f7fd 100%);background-size:22px 22px,22px 22px,88px 88px,88px 88px,auto,auto,auto;box-shadow:0 18px 42px rgba(15,23,42,.1);overflow:auto;scrollbar-width:thin;cursor:grab}
 .model-graph-canvas.dragging{cursor:grabbing;user-select:none}
@@ -920,14 +1009,11 @@ onMounted(() => {
 .board-node:hover .board-node-dot,.board-node.active .board-node-dot{box-shadow:0 0 0 2px rgba(255,255,255,.98),0 0 0 5px color-mix(in srgb,var(--node-color) 18%,transparent)}
 .board-node.active .board-node-label{border-color:color-mix(in srgb,var(--node-color) 38%,rgba(148,163,184,.24));box-shadow:0 14px 28px rgba(15,23,42,.15)}
 .board-node.related .board-node-label{border-color:color-mix(in srgb,var(--node-color) 26%,rgba(148,163,184,.24))}
-.graph-source-note{position:absolute;bottom:14px;left:14px;z-index:9;display:inline-flex;align-items:center;gap:6px;padding:7px 10px;border:1px solid rgba(148,163,184,.2);border-radius:999px;background:rgba(255,255,255,.96);color:#0f172a;font-size:11px;box-shadow:0 14px 30px rgba(15,23,42,.1)}
-.graph-legend-card{position:absolute;top:14px;right:14px;z-index:9;min-width:118px;max-width:138px;padding:9px 10px;border:1px solid rgba(148,163,184,.2);border-radius:16px;background:rgba(255,255,255,.97);color:#334155;box-shadow:0 16px 34px rgba(15,23,42,.12);backdrop-filter:blur(8px)}
-.legend-title{margin-bottom:6px;color:#0f172a;font-size:11px;font-weight:800}
-.legend-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:6px;margin-bottom:5px;color:#475569;font-size:11px}
+.graph-legend-card{display:flex;align-items:center;flex-wrap:wrap;gap:12px;min-width:0;padding:7px 10px;border:1px solid var(--el-border-color-light);border-radius:10px;background:var(--el-fill-color-light);color:var(--text-secondary)}
+.legend-title{color:var(--text-primary);font-size:11px;font-weight:700}
+.legend-row{display:inline-flex;align-items:center;gap:6px;color:var(--text-secondary);font-size:11px}
 .legend-row span:nth-child(2){overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.legend-dot{width:10px;height:10px;border-radius:50%}
 .legend-line{display:inline-block;width:22px;border-top:1.5px dashed #a5afbd}
-.legend-divider{height:1px;margin:8px 0;background:rgba(148,163,184,.2)}
 .legend-row em{color:#64748b;font-size:10px;font-style:normal}
 .model-graph-empty{position:absolute;inset:0;z-index:8;display:flex;align-items:center;justify-content:center;background:rgba(248,250,252,.76)}
 .model-side-panel{display:flex;flex-direction:column;gap:14px}
@@ -953,14 +1039,16 @@ onMounted(() => {
 
 @media (max-width: 1120px) {
   .cmdb-model-topology-layout{grid-template-columns:1fr}
-  .model-side-panel{order:-1}
-  .model-graph-canvas{min-height:560px}
+  .model-graph-canvas{min-height:480px}
+  .model-side-panel{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;border-radius:14px;box-shadow:none}
 }
 
 @media (max-width: 760px) {
+  .asset-topology-workspace{grid-template-columns:1fr}
+  .asset-scope-panel{min-height:0}
+  .asset-scope-body{min-height:0;max-height:240px}
   .cmdb-model-topology-layout{padding:0 12px 12px}
-  .model-detail-grid{grid-template-columns:1fr}
-  .graph-legend-card,.graph-source-note{position:static;margin:10px 10px 0}
-  .model-graph-canvas{height:560px;min-height:560px}
+  .model-side-panel{display:flex}
+  .model-graph-canvas{height:480px;min-height:480px}
 }
 </style>

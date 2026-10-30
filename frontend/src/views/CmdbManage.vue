@@ -25,20 +25,6 @@
       </button>
     </div>
 
-    <div v-if="activeTab === 'model' && !isModelDisplayRoute && !isModelDetailRoute && assetClassificationSurfaceTabs.length > 1" class="neo-tabs theme-blue cmdb-model-surface-tabs">
-      <button
-        v-for="item in assetClassificationSurfaceTabs"
-        :key="item.key"
-        type="button"
-        class="neo-tab-btn"
-        :class="{ active: activeAssetClassificationSurface === item.key }"
-        @click="router.push(item.path)"
-      >
-        <el-icon><component :is="item.icon" /></el-icon>
-        <span>{{ item.label }}</span>
-      </button>
-    </div>
-
     <div class="workbench-card cmdb-content-card" :class="{ 'cmdb-content-card--opsany': isOpsanyCmdbSurface }">
       <div class="section-toolbar">
         <div class="toolbar-head" :class="{ 'opsany-page-head': isOpsanyCmdbSurface }">
@@ -5294,7 +5280,7 @@ const activeTab = computed(() => routeTabMap[route.name] || tabs.value[0]?.key |
 const isModelDetailRoute = computed(() => route.name === 'CmdbModelDetail')
 const isModelConfigRoute = computed(() => route.name === 'CmdbModelConfig')
 const isModelTopologyRoute = computed(() => route.name === 'CmdbModelTopology')
-const isPlatformConfigRoute = computed(() => activeTab.value === 'sync' || isModelConfigRoute.value || isModelTopologyRoute.value)
+const isPlatformConfigRoute = computed(() => activeTab.value === 'sync' || isModelConfigRoute.value)
 const isModelDisplayRoute = computed(() => activeTab.value === 'model' && !isModelDetailRoute.value && !isModelConfigRoute.value && !isModelTopologyRoute.value)
 const hasModelCatalogTree = computed(() => isModelDisplayRoute.value || isModelDetailRoute.value)
 const isModelCatalogRoute = computed(() => isModelDisplayRoute.value || isModelConfigRoute.value || isModelDetailRoute.value)
@@ -5326,16 +5312,6 @@ const activeSurfaceDesc = computed(() => {
   if (isModelConfigRoute.value) return '维护资产分类分组、模型字段、图标和关系规则，配置完成后在展示页查看效果。'
   if (activeTab.value === 'model') return '按资产分类梳理资源类型、字段、关系与实例详情。'
   return activeTabMeta.value?.desc || ''
-})
-
-const assetClassificationSurfaceTabs = computed(() => [
-  canManageModel.value && { key: 'config', label: '资产分类配置', icon: DataBoard, path: '/cmdb/model/config' },
-  canViewModel.value && { key: 'topology', label: '资产分类拓扑', icon: Share, path: '/cmdb/model/topology' },
-].filter(Boolean))
-const activeAssetClassificationSurface = computed(() => {
-  if (isModelConfigRoute.value) return 'config'
-  if (route.name === 'CmdbModelTopology') return 'topology'
-  return 'display'
 })
 
 const viewFilters = reactive({

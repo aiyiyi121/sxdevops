@@ -181,6 +181,12 @@ class RbacPermissionTests(TestCase):
         self.assertEqual(settings['cmdb.platform-config']['path'], '/cmdb/platform-config')
         self.assertEqual(settings['cmdb.platform-config']['parent_code'], 'cmdb')
         self.assertEqual(settings['cmdb.platform-config']['level'], 2)
+        self.assertEqual(settings['cmdb.topology']['title'], '资产拓扑')
+        self.assertEqual(settings['cmdb.topology']['path'], '/cmdb/topology')
+        self.assertEqual(settings['cmdb.topology']['parent_code'], 'cmdb')
+        codes = list(settings)
+        self.assertLess(codes.index('cmdb.model'), codes.index('cmdb.topology'))
+        self.assertLess(codes.index('cmdb.topology'), codes.index('cmdb.governance'))
         for legacy_code in ['cmdb.sync', 'cmdb.model-config', 'cmdb.ipam']:
             self.assertNotIn(legacy_code, settings)
 
@@ -196,6 +202,7 @@ class RbacPermissionTests(TestCase):
                     {'code': 'observability.metrics', 'enabled': False},
                     {'code': 'aiops.widget', 'enabled': False},
                     {'code': 'cmdb.platform-config', 'enabled': False},
+                    {'code': 'cmdb.topology', 'enabled': False},
                     {'code': 'system.modules', 'enabled': False},
                 ],
             },
@@ -206,6 +213,7 @@ class RbacPermissionTests(TestCase):
         self.assertFalse(SystemModuleSetting.objects.get(code='observability.metrics').enabled)
         self.assertFalse(SystemModuleSetting.objects.get(code='aiops.widget').enabled)
         self.assertFalse(SystemModuleSetting.objects.get(code='cmdb.platform-config').enabled)
+        self.assertFalse(SystemModuleSetting.objects.get(code='cmdb.topology').enabled)
         self.assertTrue(SystemModuleSetting.objects.get(code='system.modules').enabled)
 
     def test_module_settings_can_set_login_default_page(self):

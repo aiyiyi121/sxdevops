@@ -34,15 +34,12 @@ const router = useRouter()
 const authStore = useAuthStore()
 const activeTab = computed(() => {
   if (route.name === 'CmdbIpam') return 'ipam'
-  if (route.name === 'CmdbModelConfig' || route.name === 'CmdbModelTopology') return 'model'
+  if (route.name === 'CmdbModelConfig') return 'model'
   return 'sync'
 })
 const tabs = computed(() => [
   authStore.hasPermission('cmdb.sync.view') && { key: 'sync', label: '资产采集', icon: Connection, path: '/cmdb/sync' },
-  (authStore.hasPermission('cmdb.model.manage') || (route.name === 'CmdbModelTopology' && authStore.hasPermission('cmdb.model.view'))) && {
-    key: 'model', label: '分类配置', icon: DataBoard,
-    path: authStore.hasPermission('cmdb.model.manage') ? '/cmdb/model/config' : '/cmdb/model/topology',
-  },
+  authStore.hasPermission('cmdb.model.manage') && { key: 'model', label: '分类配置', icon: DataBoard, path: '/cmdb/model/config' },
   authStore.hasPermission('cmdb.ipam.view') && { key: 'ipam', label: 'IP 管理', icon: Connection, path: '/cmdb/ipam' },
 ].filter(Boolean))
 </script>

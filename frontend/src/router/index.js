@@ -140,8 +140,9 @@ const routes = [
       },
       {
         path: 'cmdb/topology',
-        redirect: '/cmdb/model/topology',
-        meta: { hidden: true },
+        name: 'CmdbModelTopology',
+        component: () => import('@/views/CmdbTopology.vue'),
+        meta: { title: '资产拓扑', icon: 'Share', permission: 'cmdb.model.view' },
       },
       {
         path: 'cmdb/tags',
@@ -220,9 +221,8 @@ const routes = [
       },
       {
         path: 'cmdb/model/topology',
-        name: 'CmdbModelTopology',
-        component: () => import('@/views/CmdbTopology.vue'),
-        meta: { title: '资产分类拓扑', icon: 'Share', permission: 'cmdb.model.view' },
+        redirect: to => ({ path: '/cmdb/topology', query: to.query, hash: to.hash }),
+        meta: { hidden: true },
       },
       {
         path: 'cmdb/model/:id',

@@ -242,6 +242,7 @@ const menuItems = [
       { path: '/cmdb/overview', visibilityKey: 'cmdb.overview', title: '概览', icon: 'Monitor', permission: 'cmdb.dashboard.view' },
       { path: '/cmdb/ledger', visibilityKey: 'cmdb.ledger', title: '资产台账', icon: 'Collection', permission: 'cmdb.ci.view' },
       { path: '/cmdb/model', visibilityKey: 'cmdb.model', title: '分类视图', icon: 'SetUp', permission: 'cmdb.model.view' },
+      { path: '/cmdb/topology', visibilityKey: 'cmdb.topology', title: '资产拓扑', icon: 'Share', permission: 'cmdb.model.view' },
       { path: '/cmdb/governance', visibilityKey: 'cmdb.governance', title: '资产治理', icon: 'Warning', permission: 'cmdb.ci.view' },
       { path: '/cmdb/cost', visibilityKey: 'cmdb.cost', title: '成本管理', icon: 'Coin', permission: 'cmdb.cost.view' },
       { path: '/cmdb/platform-config', visibilityKey: 'cmdb.platform-config', title: '平台配置', icon: 'SetUp', anyPermissions: ['cmdb.sync.view', 'cmdb.model.manage', 'cmdb.ipam.view'] },
@@ -362,11 +363,11 @@ const cmdbMenuPathMap = {
   '/cmdb/views': '/cmdb/views',
   '/cmdb/ledger': '/cmdb/ledger',
   '/cmdb/platform-config': '/cmdb/platform-config',
-  '/cmdb/topology': '/cmdb/platform-config',
+  '/cmdb/topology': '/cmdb/topology',
   '/cmdb/repository': '/cmdb/model',
   '/cmdb/model': '/cmdb/model',
   '/cmdb/model/config': '/cmdb/platform-config',
-  '/cmdb/model/topology': '/cmdb/platform-config',
+  '/cmdb/model/topology': '/cmdb/topology',
   '/cmdb/sync': '/cmdb/platform-config',
   '/cmdb/ipam': '/cmdb/platform-config',
   '/cmdb/source-mappings': '/cmdb/platform-config',
@@ -427,7 +428,8 @@ const normalizedMenuPath = computed(() => {
     return '/sql'
   }
   if (route.path === '/cmdb' || route.path.startsWith('/cmdb/')) {
-    if (route.path === '/cmdb/model/config' || route.path === '/cmdb/model/topology') return '/cmdb/platform-config'
+    if (route.path === '/cmdb/model/topology') return '/cmdb/topology'
+    if (route.path === '/cmdb/model/config') return '/cmdb/platform-config'
     if (route.path.startsWith('/cmdb/model/')) return '/cmdb/model'
     return cmdbMenuPathMap[route.path] || '/cmdb/overview'
   }

@@ -2,56 +2,59 @@
   <div class="fade-in ipam-page workbench-page-shell">
     <CmdbPlatformHeader />
 
-    <div class="neo-tabs theme-blue ipam-tabs">
-      <button type="button" class="neo-tab-btn" :class="{ active: activeTab === 'pool' }" @click="openPoolTab">
-        <el-icon><DataBoard /></el-icon>地址池详情
-      </button>
-      <button type="button" class="neo-tab-btn" :class="{ active: activeTab === 'subnets' }" @click="activeTab = 'subnets'">
-        <el-icon><Grid /></el-icon>子网管理
-      </button>
-    </div>
-
-    <section v-if="activeTab === 'subnets'" class="workbench-card">
-      <div class="section-toolbar">
-        <div class="toolbar-head"><span class="toolbar-title">子网管理</span><span class="toolbar-desc">添加需要管理的网段，扫描会保留 CMDB 已登记的停机虚拟机地址。</span></div>
-        <el-button v-if="canManage" type="primary" @click="openSubnetDialog()"><el-icon><Plus /></el-icon>添加 IPv4 子网</el-button>
-      </div>
-      <div class="workbench-toolbar workbench-toolbar--history">
-        <div class="workbench-toolbar-left"><el-input v-model="subnetSearch" clearable placeholder="搜索子网名称、CIDR、VLAN" style="width: 280px" /></div>
-        <div class="workbench-toolbar-right"><el-button class="filter-refresh-btn" :loading="loading" @click="fetchSubnets"><el-icon><RefreshRight /></el-icon>刷新</el-button></div>
-      </div>
-      <el-table v-loading="loading" :data="filteredSubnets" stripe style="width: 100%">
-        <el-table-column label="子网" min-width="220">
-          <template #default="{ row }"><div class="subnet-cell"><strong>{{ row.cidr }}</strong><span>{{ row.name }}</span></div></template>
-        </el-table-column>
-        <el-table-column label="网络信息" min-width="190"><template #default="{ row }"><div>{{ row.vlan_name || '未设置 VLAN / Port Group' }}</div><span class="sub-text">网关：{{ row.gateway || '-' }}</span></template></el-table-column>
-        <el-table-column label="地址池" min-width="230"><template #default="{ row }"><div class="usage-line"><el-progress :percentage="usagePercent(row)" :stroke-width="8" :show-text="false" /><span>{{ row.in_use_count + row.offline_count }}/{{ row.address_total }}</span></div><span class="sub-text">空闲 {{ row.available_count }} · 停机 {{ row.offline_count }} · 保留 {{ row.reserved_count }}</span></template></el-table-column>
-        <el-table-column label="最近扫描" width="176"><template #default="{ row }"><el-tag v-if="row.last_scanned_at" size="small" type="success">已扫描</el-tag><el-tag v-else size="small" type="info">未扫描</el-tag><div class="sub-text scan-time">{{ formatTime(row.last_scanned_at) }}</div></template></el-table-column>
-        <el-table-column label="操作" width="250" fixed="right"><template #default="{ row }"><el-button link type="primary" size="small" @click="openAddressPool(row)">查看详情</el-button><el-button v-if="canManage" link type="success" size="small" :loading="scanningId === row.id" @click="scanSubnet(row)">扫描</el-button><el-button v-if="canManage" link type="primary" size="small" @click="openSubnetDialog(row)">编辑</el-button><el-button v-if="canManage" link type="danger" size="small" @click="removeSubnet(row)">删除</el-button></template></el-table-column>
-      </el-table>
-    </section>
-
-    <section v-else class="workbench-card pool-card">
-      <div class="section-toolbar">
-        <div class="toolbar-head"><span class="toolbar-title">地址池详情</span><span class="toolbar-desc">{{ activeSubnet ? `${activeSubnet.name} · ${activeSubnet.cidr} · ${activeSubnet.vlan_name || '未设置 VLAN / Port Group'}` : '请选择需要查看的子网' }}</span></div>
-        <div class="pool-actions"><el-button v-if="canManage" type="primary" :disabled="!activeSubnet" :loading="scanningId === activeSubnet?.id" @click="scanSubnet(activeSubnet)"><el-icon><RefreshRight /></el-icon>重新扫描当前地址池</el-button></div>
-      </div>
-      <div class="workbench-toolbar workbench-toolbar--history">
-        <div class="workbench-toolbar-left"><el-select :model-value="activeSubnet?.id" placeholder="筛选子网" style="width: 250px" @update:model-value="selectPoolSubnet"><el-option v-for="subnet in subnets" :key="subnet.id" :label="`${subnet.cidr} · ${subnet.name}`" :value="subnet.id" /></el-select><el-select v-model="poolStatusFilter" clearable placeholder="全部地址" style="width: 116px"><el-option v-for="item in statusOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select><el-input v-model="poolSearch" clearable placeholder="搜索 IP 或关联资产" style="width: 230px" /></div>
-        <div class="workbench-toolbar-right"><span class="scan-note">CMDB 中状态为停机且保留了历史 IP 记录的地址，会标记为停机。</span></div>
-      </div>
-      <div class="pool-summary"><span><i class="dot dot--available" />空闲 {{ poolSummary.available || 0 }}</span><span><i class="dot dot--in-use" />使用中 {{ poolSummary.in_use || 0 }}</span><span><i class="dot dot--offline" />停机 {{ poolSummary.offline || 0 }}</span><span><i class="dot dot--reserved" />保留 {{ poolSummary.reserved || 0 }}</span></div>
-      <div v-loading="poolLoading" class="address-grid">
-        <button v-for="address in filteredAddresses" :key="address.address" type="button" class="address-cell" :class="[`address-cell--${address.status}`, { active: selectedAddress?.address === address.address }]" @click="selectedAddress = address">
-          <span>{{ address.address.split('.').pop() }}</span>
+    <section class="workbench-card ipam-content-card">
+      <div class="neo-tabs theme-blue ipam-tabs" role="tablist" aria-label="IP 管理视图">
+        <button type="button" role="tab" :aria-selected="activeTab === 'pool'" class="neo-tab-btn" :class="{ active: activeTab === 'pool' }" @click="openPoolTab">
+          <el-icon><DataBoard /></el-icon>地址池详情
+        </button>
+        <button type="button" role="tab" :aria-selected="activeTab === 'subnets'" class="neo-tab-btn" :class="{ active: activeTab === 'subnets' }" @click="activeTab = 'subnets'">
+          <el-icon><Grid /></el-icon>子网管理
         </button>
       </div>
-      <div v-if="selectedAddress" class="address-detail">
-        <div><span class="detail-label">IP 地址</span><strong>{{ selectedAddress.address }}</strong></div>
-        <div><span class="detail-label">状态</span><el-tag size="small" :type="statusTagType(selectedAddress.status)">{{ statusLabel(selectedAddress.status) }}</el-tag></div>
-        <div><span class="detail-label">扫描</span><span>{{ reachabilityLabel(selectedAddress.reachability) }}</span></div>
-        <div><span class="detail-label">关联资产</span><span>{{ selectedAddress.linked_ci_names?.join('、') || selectedAddress.ci_name || '未关联 CMDB 资产' }}</span></div>
-      </div>
+
+      <section v-if="activeTab === 'subnets'" class="ipam-tab-content">
+        <div class="section-toolbar">
+          <div class="toolbar-head"><span class="toolbar-title">子网管理</span><span class="toolbar-desc">添加需要管理的网段，扫描会保留 CMDB 已登记的停机虚拟机地址。</span></div>
+          <el-button v-if="canManage" type="primary" @click="openSubnetDialog()"><el-icon><Plus /></el-icon>添加 IPv4 子网</el-button>
+        </div>
+        <div class="workbench-toolbar workbench-toolbar--history">
+          <div class="workbench-toolbar-left"><el-input v-model="subnetSearch" clearable placeholder="搜索子网名称、CIDR、VLAN" style="width: 280px" /></div>
+          <div class="workbench-toolbar-right"><el-button class="filter-refresh-btn" :loading="loading" @click="fetchSubnets"><el-icon><RefreshRight /></el-icon>刷新</el-button></div>
+        </div>
+        <el-table v-loading="loading" :data="filteredSubnets" stripe style="width: 100%">
+          <el-table-column label="子网" min-width="220">
+            <template #default="{ row }"><div class="subnet-cell"><strong>{{ row.cidr }}</strong><span>{{ row.name }}</span></div></template>
+          </el-table-column>
+          <el-table-column label="网络信息" min-width="190"><template #default="{ row }"><div>{{ row.vlan_name || '未设置 VLAN / Port Group' }}</div><span class="sub-text">网关：{{ row.gateway || '-' }}</span></template></el-table-column>
+          <el-table-column label="地址池" min-width="230"><template #default="{ row }"><div class="usage-line"><el-progress :percentage="usagePercent(row)" :stroke-width="8" :show-text="false" /><span>{{ row.in_use_count + row.offline_count }}/{{ row.address_total }}</span></div><span class="sub-text">空闲 {{ row.available_count }} · 停机 {{ row.offline_count }} · 保留 {{ row.reserved_count }}</span></template></el-table-column>
+          <el-table-column label="最近扫描" width="176"><template #default="{ row }"><el-tag v-if="row.last_scanned_at" size="small" type="success">已扫描</el-tag><el-tag v-else size="small" type="info">未扫描</el-tag><div class="sub-text scan-time">{{ formatTime(row.last_scanned_at) }}</div></template></el-table-column>
+          <el-table-column label="操作" width="250" fixed="right"><template #default="{ row }"><el-button link type="primary" size="small" @click="openAddressPool(row)">查看详情</el-button><el-button v-if="canManage" link type="success" size="small" :loading="scanningId === row.id" @click="scanSubnet(row)">扫描</el-button><el-button v-if="canManage" link type="primary" size="small" @click="openSubnetDialog(row)">编辑</el-button><el-button v-if="canManage" link type="danger" size="small" @click="removeSubnet(row)">删除</el-button></template></el-table-column>
+        </el-table>
+      </section>
+
+      <section v-else class="ipam-tab-content pool-card">
+        <div class="section-toolbar">
+          <div class="toolbar-head"><span class="toolbar-title">地址池详情</span><span class="toolbar-desc">{{ activeSubnet ? `${activeSubnet.name} · ${activeSubnet.cidr} · ${activeSubnet.vlan_name || '未设置 VLAN / Port Group'}` : '请选择需要查看的子网' }}</span></div>
+          <div class="pool-actions"><el-button v-if="canManage" type="primary" :disabled="!activeSubnet" :loading="scanningId === activeSubnet?.id" @click="scanSubnet(activeSubnet)"><el-icon><RefreshRight /></el-icon>重新扫描当前地址池</el-button></div>
+        </div>
+        <div class="workbench-toolbar workbench-toolbar--history">
+          <div class="workbench-toolbar-left"><el-select :model-value="activeSubnet?.id" placeholder="筛选子网" style="width: 250px" @update:model-value="selectPoolSubnet"><el-option v-for="subnet in subnets" :key="subnet.id" :label="`${subnet.cidr} · ${subnet.name}`" :value="subnet.id" /></el-select><el-select v-model="poolStatusFilter" clearable placeholder="全部地址" style="width: 116px"><el-option v-for="item in statusOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select><el-input v-model="poolSearch" clearable placeholder="搜索 IP 或关联资产" style="width: 230px" /></div>
+          <div class="workbench-toolbar-right"><span class="scan-note">CMDB 中状态为停机且保留了历史 IP 记录的地址，会标记为停机。</span></div>
+        </div>
+        <div class="pool-summary"><span><i class="dot dot--available" />空闲 {{ poolSummary.available || 0 }}</span><span><i class="dot dot--in-use" />使用中 {{ poolSummary.in_use || 0 }}</span><span><i class="dot dot--offline" />停机 {{ poolSummary.offline || 0 }}</span><span><i class="dot dot--reserved" />保留 {{ poolSummary.reserved || 0 }}</span></div>
+        <div v-loading="poolLoading" class="address-grid">
+          <button v-for="address in filteredAddresses" :key="address.address" type="button" class="address-cell" :class="[`address-cell--${address.status}`, { active: selectedAddress?.address === address.address }]" @click="selectedAddress = address">
+            <span>{{ address.address.split('.').pop() }}</span>
+          </button>
+        </div>
+        <div v-if="selectedAddress" class="address-detail">
+          <div><span class="detail-label">IP 地址</span><strong>{{ selectedAddress.address }}</strong></div>
+          <div><span class="detail-label">状态</span><el-tag size="small" :type="statusTagType(selectedAddress.status)">{{ statusLabel(selectedAddress.status) }}</el-tag></div>
+          <div><span class="detail-label">扫描</span><span>{{ reachabilityLabel(selectedAddress.reachability) }}</span></div>
+          <div><span class="detail-label">关联资产</span><span>{{ selectedAddress.linked_ci_names?.join('、') || selectedAddress.ci_name || '未关联 CMDB 资产' }}</span></div>
+        </div>
+      </section>
+
     </section>
 
     <el-dialog top="5vh" :close-on-click-modal="false" class="workbench-edit-dialog" v-model="subnetDialogVisible" :title="editingSubnet ? '编辑子网' : '添加 IPv4 子网'" width="620px" append-to-body>
@@ -149,6 +152,9 @@ onMounted(async () => {
 
 <style scoped>
 .ipam-page { display: flex; flex-direction: column; gap: 6px; }
+.ipam-content-card, .ipam-tab-content { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.ipam-content-card .section-toolbar, .ipam-content-card .workbench-toolbar { margin: 0; }
+.ipam-content-card .ipam-tabs { margin: 0; box-shadow: none; background: var(--el-fill-color-light); }
 .panel, .workbench-card { background: linear-gradient(180deg, rgba(255,255,255,.98), rgba(250,252,255,.96)); border: 1px solid rgba(15,23,42,.08); box-shadow: 0 8px 24px rgba(15,23,42,.04); }
 .panel { padding: 14px 16px; border-radius: 18px; }
 .hero.panel { border-radius: 20px; background: linear-gradient(135deg, #fbfdff 0%, #f7faff 52%, #f9fbfd 100%); border-color: rgba(36,91,219,.09); }
