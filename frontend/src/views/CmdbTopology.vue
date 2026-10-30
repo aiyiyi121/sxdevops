@@ -1042,9 +1042,9 @@ onMounted(() => {
 .model-rule-main strong{font-size:13px;color:#0f172a}
 .model-rule-main small,.model-muted{font-size:12px;color:#64748b}
 .high-connected-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
-.high-connected-grid .service-row{min-width:0;padding:9px 10px}
-.service-row span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#0f172a;font-size:12px;font-weight:700}
-.service-row em{flex:none;color:#245bdb;font-size:12px;font-style:normal;font-weight:800}
+.high-connected-grid .service-row{min-width:0;gap:4px;padding:8px 4px}
+.service-row span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#0f172a;font-size:11px;font-weight:600}
+.service-row em{flex:none;color:#245bdb;font-size:11px;font-style:normal;font-weight:700;font-variant-numeric:tabular-nums}
 .section-title{margin:2px 0 -4px;color:#64748b;font-size:11px;font-weight:700}
 .model-description{margin:0;font-size:13px;line-height:1.7;color:#475569}
 .model-tag-row{display:flex;flex-wrap:wrap;gap:6px}
