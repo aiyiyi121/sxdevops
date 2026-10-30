@@ -1047,7 +1047,9 @@ onMounted(() => {
 .service-row em{flex:none;color:#245bdb;font-size:11px;font-style:normal;font-weight:700;font-variant-numeric:tabular-nums}
 .section-title{margin:2px 0 -4px;color:#64748b;font-size:11px;font-weight:700}
 .model-description{margin:0;font-size:13px;line-height:1.7;color:#475569}
-.model-tag-row{display:flex;flex-wrap:wrap;gap:6px}
+.model-tag-row{display:flex;flex-wrap:wrap;gap:4px}
+.model-tag-row :deep(.el-tag){flex:1 0 27%;min-width:fit-content;max-width:100%;height:auto;min-height:20px;padding:1px 2px;font-size:11px;line-height:1.4}
+.model-tag-row :deep(.el-tag__content){white-space:normal;overflow-wrap:anywhere}
 .model-side-empty{padding:8px 0 2px}
 .cmdb-model-topology-toolbar :deep(.el-select),.cmdb-model-topology-toolbar :deep(.el-input){flex:0 0 auto}
 
