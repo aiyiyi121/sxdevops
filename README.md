@@ -1,4 +1,34 @@
-# SxDevOps · v2
+<h1 align="center">SxDevOps · v2</h1>
+
+<p align="center"><strong>面向运维现场的开源智能运维 Agent 平台</strong></p>
+
+<p align="center">
+  <a href="https://github.com/aiyiyi121/sxdevops/releases/tag/v2.0.0"><img src="https://img.shields.io/badge/Version-v2.0.0-3370FF?style=flat-square" alt="版本 v2.0.0" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-0F9D8A?style=flat-square" alt="MIT License" /></a>
+  <a href="docs/AIOps-LangGraph-试点说明.md"><img src="https://img.shields.io/badge/LangGraph-1C3C3C?style=flat-square&logo=langgraph&logoColor=white" alt="LangGraph 智能体编排" /></a>
+</p>
+
+<p align="center">
+  <a href="https://www.sxdevops.top"><img src="https://img.shields.io/badge/%E4%BA%A7%E5%93%81%E4%BD%93%E9%AA%8C-%E7%AB%8B%E5%8D%B3%E8%BF%9B%E5%85%A5-3370FF?style=for-the-badge&logo=googlechrome&logoColor=white" alt="产品体验 · 立即进入" /></a>
+  &nbsp;
+  <a href="https://www.sxdevops.top/product"><img src="https://img.shields.io/badge/%E4%BA%A7%E5%93%81%E4%BB%8B%E7%BB%8D-%E4%BA%86%E8%A7%A3%E5%B9%B3%E5%8F%B0-0F9D8A?style=for-the-badge&logo=readthedocs&logoColor=white" alt="产品介绍 · 了解平台" /></a>
+</p>
+
+<p align="center">
+  <a href="docs/getting-started.md">快速开始</a> ·
+  <a href="docs/README.md">文档中心</a> ·
+  <a href="docs/releases/v2.0.0.md">版本更新</a> ·
+  <a href="docs/releases/v2.0.0-release-guide.md">升级指南</a>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://skillicons.dev/icons?i=python,django,vue,vite,postgres,mysql,redis,docker,kubernetes&theme=dark" />
+    <img src="https://skillicons.dev/icons?i=python,django,vue,vite,postgres,mysql,redis,docker,kubernetes&theme=light" alt="Python · Django · Vue · Vite · PostgreSQL · MySQL · Redis · Docker · Kubernetes" height="46" />
+  </picture>
+</p>
+
+<p align="center"><sub>Python · Django REST framework · Channels · Vue 3 · Element Plus · Vite · PostgreSQL · MySQL · Redis · Docker · Kubernetes</sub></p>
 
 SxDevOps 是一个面向真实运维现场的开源智能运维 Agent 平台。它把 **CMDB、可观测性、事件中心、任务中心、工单审批、容器管理、RBAC** 等平台能力组织成 Agent 可调用、可审计、可确认的运维工作流。
 
@@ -6,14 +36,7 @@ SxDevOps 是一个面向真实运维现场的开源智能运维 Agent 平台。�
 
 > 看态势、找证据、问系统、确认动作。
 
-- 在线体验：[https://www.sxdevops.top](https://www.sxdevops.top)
-- 产品介绍页：[SxDevOps AI Agent](https://www.sxdevops.top/product)
-- v2 文档：[版本更新说明](docs/releases/v2.0.0.md) · [升级与发布指南](docs/releases/v2.0.0-release-guide.md)
-- 文档中心：[安装、使用、运维与安全](docs/README.md) · [快速开始](docs/getting-started.md)
-- 技术栈：`Django REST framework + Channels + Vue 3 + Element Plus + LangGraph`
-- 开源协议：[MIT License](LICENSE)
-
-<img src="docs/screenshots/sxdevops-operation-flow.png" alt="SxDevOps 运转逻辑" width="820" />
+<p align="center"><img src="docs/screenshots/sxdevops-operation-flow.png" alt="SxDevOps 运转逻辑" width="820" /></p>
 
 ## v2 重点更新
 
@@ -174,6 +197,10 @@ flowchart TB
 
 ## 产品截图
 
+### 系统态势
+
+![系统态势与 SLA 统计](docs/screenshots/v2-dashboard.png)
+
 ### 炭灰主题与系统设置
 
 ![炭灰主题与网站基础配置](docs/screenshots/v2-system-settings-charcoal.png)
@@ -184,9 +211,11 @@ flowchart TB
 
 ![LangGraph 处置效果验证](docs/screenshots/v2-aiops-execution.png)
 
-### CMDB 资产与容量
+### CMDB 资产与拓扑
 
 ![CMDB 资产与容量](docs/screenshots/v2-cmdb-overview.png)
+
+![CMDB 资产拓扑与业务环境树](docs/screenshots/v2-cmdb-topology.png)
 
 ### 容器管理
 
