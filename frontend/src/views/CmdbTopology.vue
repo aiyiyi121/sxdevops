@@ -1051,6 +1051,12 @@ onMounted(() => {
 .model-side-empty{padding:8px 0 2px}
 .cmdb-model-topology-toolbar :deep(.el-select),.cmdb-model-topology-toolbar :deep(.el-input){flex:0 0 auto}
 
+@media (max-width: 1100px) {
+  .asset-topology-workspace{grid-template-columns:1fr;gap:12px}
+  .asset-scope-panel{min-height:0;padding:0 0 12px;border-right:0;border-bottom:1px solid var(--el-border-color-lighter)}
+  .asset-scope-body{min-height:0;max-height:240px}
+}
+
 @media (max-width: 980px) {
   .cmdb-model-topology-layout{grid-template-columns:1fr}
   .model-graph-canvas{min-height:480px}
@@ -1058,11 +1064,7 @@ onMounted(() => {
 }
 
 @media (max-width: 760px) {
-  .asset-topology-workspace{grid-template-columns:1fr}
   .cmdb-model-topology-card{padding:12px}
-  .asset-topology-workspace{gap:12px}
-  .asset-scope-panel{min-height:0;padding:0 0 12px;border-right:0;border-bottom:1px solid var(--el-border-color-lighter)}
-  .asset-scope-body{min-height:0;max-height:240px}
   .model-side-panel{display:flex}
   .model-graph-canvas{height:480px;min-height:480px}
 }
