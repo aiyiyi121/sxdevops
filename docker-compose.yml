@@ -7,17 +7,17 @@ services:
     container_name: sxdevops-app
     restart: unless-stopped
     depends_on:
-      mysql:
+      postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     environment:
-      DATABASE_ENGINE: mysql
-      MYSQL_HOST: mysql
-      MYSQL_PORT: "3306"
-      MYSQL_DATABASE: sxdevops
-      MYSQL_USER: sxdevops
-      MYSQL_PASSWORD: sxdevops_password
+      DATABASE_ENGINE: postgresql
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: sxdevops
+      POSTGRES_USER: sxdevops
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run start.sh or start.cmd to generate POSTGRES_PASSWORD}
       CACHE_BACKEND: redis
       CACHE_IGNORE_EXCEPTIONS: "0"
       SXDEVOPS_TRUSTED_PROXIES: ${SXDEVOPS_TRUSTED_PROXIES:-}
@@ -32,7 +32,7 @@ services:
       SXDEVOPS_MIGRATE: "1"
       SXDEVOPS_SEED_DATA: "0"
       SXDEVOPS_SEED_TEMPLATES: "1"
-      AIOPS_LANGGRAPH_CHECKPOINT_BACKEND: mysql
+      AIOPS_LANGGRAPH_CHECKPOINT_BACKEND: postgresql
     volumes:
       - aiops_runtime:/app/backend/runtime
     ports:
@@ -43,17 +43,17 @@ services:
     container_name: sxdevops-cmdb-sync-scheduler
     restart: unless-stopped
     depends_on:
-      mysql:
+      postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     environment:
-      DATABASE_ENGINE: mysql
-      MYSQL_HOST: mysql
-      MYSQL_PORT: "3306"
-      MYSQL_DATABASE: sxdevops
-      MYSQL_USER: sxdevops
-      MYSQL_PASSWORD: sxdevops_password
+      DATABASE_ENGINE: postgresql
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: sxdevops
+      POSTGRES_USER: sxdevops
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run start.sh or start.cmd to generate POSTGRES_PASSWORD}
       CACHE_BACKEND: redis
       CACHE_IGNORE_EXCEPTIONS: "0"
       SXDEVOPS_TRUSTED_PROXIES: ${SXDEVOPS_TRUSTED_PROXIES:-}
@@ -76,15 +76,15 @@ services:
     depends_on:
       sxdevops:
         condition: service_started
-      mysql:
+      postgres:
         condition: service_healthy
     environment:
-      DATABASE_ENGINE: mysql
-      MYSQL_HOST: mysql
-      MYSQL_PORT: "3306"
-      MYSQL_DATABASE: sxdevops
-      MYSQL_USER: sxdevops
-      MYSQL_PASSWORD: sxdevops_password
+      DATABASE_ENGINE: postgresql
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: sxdevops
+      POSTGRES_USER: sxdevops
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run start.sh or start.cmd to generate POSTGRES_PASSWORD}
       CACHE_BACKEND: redis
       CACHE_IGNORE_EXCEPTIONS: "0"
       SXDEVOPS_TRUSTED_PROXIES: ${SXDEVOPS_TRUSTED_PROXIES:-}
@@ -98,29 +98,25 @@ services:
       SXDEVOPS_WAIT_FOR_SCHEMA: "1"
       SXDEVOPS_SEED_DATA: "0"
       SXDEVOPS_SEED_TEMPLATES: "0"
-      AIOPS_LANGGRAPH_CHECKPOINT_BACKEND: mysql
+      AIOPS_LANGGRAPH_CHECKPOINT_BACKEND: postgresql
     volumes:
       - aiops_runtime:/app/backend/runtime
     command: ["python", "manage.py", "run_aiops_chat_worker", "--interval", "2"]
 
-  mysql:
-    image: mysql:8.0
-    container_name: sxdevops-mysql
+  postgres:
+    image: postgres:16-alpine
+    container_name: sxdevops-postgres
     restart: unless-stopped
-    command:
-      - --character-set-server=utf8mb4
-      - --collation-server=utf8mb4_unicode_ci
-      - --default-authentication-plugin=mysql_native_password
     environment:
-      MYSQL_DATABASE: sxdevops
-      MYSQL_USER: sxdevops
-      MYSQL_PASSWORD: sxdevops_password
-      MYSQL_ROOT_PASSWORD: sxdevops_root_password
+      PGDATA: /var/lib/postgresql/data/pgdata
+      POSTGRES_DB: sxdevops
+      POSTGRES_USER: sxdevops
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run start.sh or start.cmd to generate POSTGRES_PASSWORD}
       TZ: Asia/Shanghai
     volumes:
-      - mysql_data:/var/lib/mysql
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$${MYSQL_ROOT_PASSWORD} --silent"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 10s
       timeout: 5s
       retries: 20
@@ -139,6 +135,6 @@ services:
       retries: 20
 
 volumes:
-  mysql_data:
+  postgres_data:
   redis_data:
   aiops_runtime:

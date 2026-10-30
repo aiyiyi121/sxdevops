@@ -1,4 +1,4 @@
-﻿from unittest.mock import patch
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
@@ -15,13 +15,13 @@ User = get_user_model()
 class SqlAuditSupportTests(TestCase):
     def test_demo_datasource_returns_mock_connection_and_databases(self):
         datasource = DataSource(
-            name='commerce-prod-polardb',
-            db_type='polardb',
-            host='polardb-prod.cluster-demo.rds.aliyuncs.com',
-            port=3306,
+            name='commerce-prod-postgresql',
+            db_type='postgresql',
+            host='postgres.demo.invalid',
+            port=5432,
             user='audit_reader',
             password='secret',
-            charset='utf8mb4',
+            charset='UTF8',
         )
 
         success, message = db_executor.test_connection(datasource)
@@ -87,14 +87,14 @@ class SqlAuditSupportTests(TestCase):
             '查询工单只允许 SELECT / SHOW / DESC 语句',
         )
 
-    @patch('sqlaudit.db_executor._test_mysql_connection')
-    def test_polardb_reuses_mysql_connection(self, mock_test_mysql_connection):
-        mock_test_mysql_connection.return_value = (True, '连接成功')
-        datasource = DataSource(db_type='polardb', host='127.0.0.1', port=3306, user='root', password='secret', charset='utf8mb4')
+    @patch('sqlaudit.db_executor._test_postgresql_connection')
+    def test_postgresql_uses_its_own_driver(self, mock_test_postgresql_connection):
+        mock_test_postgresql_connection.return_value = (True, '连接成功')
+        datasource = DataSource(db_type='postgresql', host='127.0.0.1', port=5432, user='postgres', password='secret', charset='UTF8')
         success, message = db_executor.test_connection(datasource)
         self.assertTrue(success)
         self.assertEqual(message, '连接成功')
-        mock_test_mysql_connection.assert_called_once()
+        mock_test_postgresql_connection.assert_called_once()
 
 
 class SqlAuditRBACTests(TestCase):

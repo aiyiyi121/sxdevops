@@ -1,15 +1,15 @@
 {
   "database": {
-    "type": "mysql",
+    "type": "postgresql",
     "host": "127.0.0.1",
-    "port": 3306,
+    "port": 5432,
     "database_name": "sxdevops",
     "user": "sxdevops",
     "password": "change-me",
-    "charset": "utf8mb4",
     "conn_max_age": 60,
     "options": {
-      "init_command": "SET sql_mode='STRICT_TRANS_TABLES'"
+      "sslmode": "prefer",
+      "connect_timeout": 10
     }
   },
   "cache": {

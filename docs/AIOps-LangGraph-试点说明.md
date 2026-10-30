@@ -59,7 +59,7 @@ flowchart TD
 
 ## checkpoint、worker 与恢复
 
-- 本地默认 SQLite 文件，Compose 使用 MySQL；应用与 worker 共用存储配置和代码版本，见[配置参考](configuration.md#aiops-checkpoint-与运行参数)。
+- checkpoint 默认跟随平台数据库：新部署的 Compose / Kubernetes 推荐 PostgreSQL，也保留 MySQL；本地测试显式配置 SQLite 文件。应用与 worker 共用存储配置和代码版本，见[配置参考](configuration.md#aiops-checkpoint-与运行参数)。
 - `AIOpsChatJob` 的租约支持过期接管。旧 worker 在更新消息和发布结果前核对租约，失去租约后不能继续写入。
 - 已完成并 checkpoint 的节点复用结果；节点内部或 checkpoint 写入前中断仍可能重试当前调用，语义为至少一次，不能承诺外部调用恰好一次。
 - 保存运行所需 ID、配置指纹和证据，不保存模型 API Key、MCP 鉴权配置、SSH 密码、kubeconfig 或客户端对象。checkpoint 仍包含业务证据，应按敏感数据保护。

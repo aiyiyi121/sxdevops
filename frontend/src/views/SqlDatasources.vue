@@ -90,7 +90,7 @@
               <el-input-number v-model="form.port" :min="1" :max="65535" style="width:100%" />
             </el-form-item>
             <el-form-item label="用户名">
-              <el-input v-model="form.user" :placeholder="form.db_type === 'mongodb' ? '例如 admin' : '例如 root'" />
+              <el-input v-model="form.user" :placeholder="form.db_type === 'postgresql' ? '例如 postgres' : form.db_type === 'mongodb' ? '例如 admin' : '例如 root'" />
             </el-form-item>
             <el-form-item label="密码">
               <el-input v-model="form.password" type="password" show-password
@@ -101,12 +101,18 @@
         <section class="workbench-editor-section workbench-editor-section--tinted">
           <div class="workbench-editor-heading"><span class="workbench-editor-step">03</span><h3>其他设置</h3></div>
           <div class="workbench-editor-grid">
+            <el-form-item v-if="form.db_type === 'postgresql'" class="workbench-editor-full" label="连接数据库">
+              <el-input v-model="form.database" placeholder="默认 postgres；用于测试连接和发现库列表" />
+            </el-form-item>
             <el-form-item label="字符集">
-              <el-select v-model="form.charset" style="width:100%" :disabled="form.db_type === 'mongodb'">
-                <el-option label="utf8mb4" value="utf8mb4" />
-                <el-option label="utf8" value="utf8" />
-                <el-option label="latin1" value="latin1" />
-                <el-option label="gbk" value="gbk" />
+              <el-select v-model="form.charset" style="width:100%" :disabled="form.db_type !== 'mysql'">
+                <el-option v-if="form.db_type === 'postgresql'" label="UTF8" value="UTF8" />
+                <template v-else>
+                  <el-option label="utf8mb4" value="utf8mb4" />
+                  <el-option label="utf8" value="utf8" />
+                  <el-option label="latin1" value="latin1" />
+                  <el-option label="gbk" value="gbk" />
+                </template>
               </el-select>
             </el-form-item>
             <el-form-item label="状态">
@@ -161,7 +167,7 @@ const editingId = ref(null)
 const saving = ref(false)
 const defaultForm = {
   db_type: 'mysql', name: '', host: '', port: 3306, user: 'root',
-  password: '', charset: 'utf8mb4', is_active: true, remark: '',
+  password: '', database: '', charset: 'utf8mb4', is_active: true, remark: '',
 }
 const form = ref({ ...defaultForm })
 const canManageSqlDatasources = computed(() => authStore.hasPermission('sqlaudit.datasource.manage'))
@@ -184,7 +190,7 @@ const openDialog = (row) => {
     form.value = {
       db_type: row.db_type || 'mysql',
       name: row.name, host: row.host, port: row.port,
-      user: row.user, password: '', charset: row.charset,
+      user: row.user, password: '', database: row.database || '', charset: row.charset,
       is_active: row.is_active, remark: row.remark,
     }
   } else {
@@ -196,13 +202,14 @@ const openDialog = (row) => {
 
 const handleTypeChange = (nextType) => {
   const currentPort = form.value.port
-  const useDefaultPort = !editingId.value || currentPort === 3306 || currentPort === 27017
+  const useDefaultPort = !currentPort || [3306, 27017, 5432].includes(currentPort)
   form.value.db_type = nextType
   if (useDefaultPort) {
     form.value.port = getDatasourceDefaultPort(nextType)
   }
-  if (nextType === 'mongodb') {
-    form.value.charset = 'utf8mb4'
+  form.value.charset = nextType === 'postgresql' ? 'UTF8' : 'utf8mb4'
+  if (['root', 'postgres', 'admin'].includes(form.value.user)) {
+    form.value.user = nextType === 'postgresql' ? 'postgres' : nextType === 'mongodb' ? 'admin' : 'root'
   }
 }
 

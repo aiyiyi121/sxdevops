@@ -304,12 +304,12 @@ def seed_sqlaudit_demo(stdout):
     )
     ds_member = DataSource.objects.create(
         name='member-archive',
-        db_type='polardb',
+        db_type='postgresql',
         host='10.20.8.18',
-        port=3306,
+        port=5432,
         user='archive_reader',
         password='demo-secret',
-        charset='utf8mb4',
+        charset='UTF8',
         remark='会员归档库，供只读查询演示使用',
         is_active=True,
     )

@@ -4,6 +4,7 @@ SQL 语法检查规则引擎
 """
 import json
 import re
+import sqlparse
 
 
 class CheckItem:
@@ -39,16 +40,25 @@ def check_sql(sql_content, sql_type='DML', db_type='mysql'):
         if not stmt_stripped:
             continue
 
-        upper = stmt_stripped.upper()
+        upper = sqlparse.format(stmt_stripped, strip_comments=True).strip().upper()
+        statement_type = sqlparse.parse(stmt_stripped)[0].get_type()
 
-        if upper.startswith('DELETE') and 'WHERE' not in upper:
+        if db_type == 'postgresql':
+            if re.search(r'`|\bAUTO_INCREMENT\b|\bUNSIGNED\b|\bENGINE\s*=|\bADD\s+INDEX\b', upper):
+                results.append(CheckItem('error', 'POSTGRESQL_DIALECT',
+                                         f'语句 #{idx}: 包含 MySQL 专用语法，请改为 PostgreSQL 语法', line_no=idx))
+            if re.match(r'^(BEGIN|START\s+TRANSACTION|COMMIT|END|ROLLBACK|ABORT|PREPARE\s+TRANSACTION|SAVEPOINT|RELEASE)\b', upper):
+                results.append(CheckItem('error', 'TRANSACTION_CONTROL',
+                                         f'语句 #{idx}: 工单事务由平台统一提交或回滚', line_no=idx))
+
+        if statement_type == 'DELETE' and 'WHERE' not in upper:
             results.append(CheckItem(
                 'error', 'NO_WHERE_DELETE',
                 f'语句 #{idx}: DELETE 语句缺少 WHERE 条件，可能删除全表数据',
                 line_no=idx,
             ))
 
-        if upper.startswith('UPDATE') and 'WHERE' not in upper:
+        if statement_type == 'UPDATE' and 'WHERE' not in upper:
             results.append(CheckItem(
                 'error', 'NO_WHERE_UPDATE',
                 f'语句 #{idx}: UPDATE 语句缺少 WHERE 条件，可能更新全表数据',
@@ -173,28 +183,5 @@ def _check_mongodb_command(sql_content, sql_type):
 
 
 def _split_statements(sql_content):
-    """
-    按分号切分 SQL 语句，简单实现。
-    忽略字符串内的分号。
-    """
-    statements = []
-    current = []
-    in_single_quote = False
-    in_double_quote = False
-
-    for char in sql_content:
-        if char == "'" and not in_double_quote:
-            in_single_quote = not in_single_quote
-        elif char == '"' and not in_single_quote:
-            in_double_quote = not in_double_quote
-        elif char == ';' and not in_single_quote and not in_double_quote:
-            statements.append(''.join(current))
-            current = []
-            continue
-        current.append(char)
-
-    remaining = ''.join(current).strip()
-    if remaining:
-        statements.append(remaining)
-
-    return statements
+    """Preserve quoted semicolons, comments and PostgreSQL dollar-quoted bodies."""
+    return sqlparse.split(sql_content or '')

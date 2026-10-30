@@ -1,21 +1,10 @@
-# Replace the sample secrets and all application image references before applying.
-# Use the same immutable image digest for web, scheduler, worker and schema gates.
+# Prefer: python3 k8s/deploy.py <your-versioned-image>
+# Manual installs must create sxdevops-secrets separately and replace all app images.
+# Never put passwords or encryption keys in this manifest.
 apiVersion: v1
 kind: Namespace
 metadata:
   name: sxdevops
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: sxdevops-secrets
-  namespace: sxdevops
-type: Opaque
-stringData:
-  MYSQL_PASSWORD: sxdevops_password
-  MYSQL_ROOT_PASSWORD: sxdevops_root_password
-  SECRET_KEY: sxdevops-change-me-in-production
-  CMDB_PASSWORD_ENCRYPTION_KEY: replace-with-generated-persistent-fernet-key
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -23,11 +12,11 @@ metadata:
   name: sxdevops-config
   namespace: sxdevops
 data:
-  DATABASE_ENGINE: mysql
-  MYSQL_HOST: mysql
-  MYSQL_PORT: '3306'
-  MYSQL_DATABASE: sxdevops
-  MYSQL_USER: sxdevops
+  DATABASE_ENGINE: postgresql
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: '5432'
+  POSTGRES_DB: sxdevops
+  POSTGRES_USER: sxdevops
   REDIS_URL: redis://redis:6379/0
   CHANNEL_REDIS_URL: redis://redis:6379/1
   DEBUG: '0'
@@ -40,13 +29,13 @@ data:
   TZ: Asia/Shanghai
   CACHE_BACKEND: redis
   CACHE_IGNORE_EXCEPTIONS: '0'
-  AIOPS_LANGGRAPH_CHECKPOINT_BACKEND: mysql
+  AIOPS_LANGGRAPH_CHECKPOINT_BACKEND: postgresql
   SXDEVOPS_TRUSTED_PROXIES: ''
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: mysql-data
+  name: postgres-data
   namespace: sxdevops
 spec:
   accessModes:
@@ -70,21 +59,21 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: mysql
+  name: postgres
   namespace: sxdevops
 spec:
   selector:
-    app.kubernetes.io/name: mysql
+    app.kubernetes.io/name: postgres
     app.kubernetes.io/part-of: sxdevops
   ports:
-  - name: mysql
-    port: 3306
-    targetPort: mysql
+  - name: postgres
+    port: 5432
+    targetPort: postgres
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: mysql
+  name: postgres
   namespace: sxdevops
 spec:
   replicas: 1
@@ -92,60 +81,53 @@ spec:
     type: Recreate
   selector:
     matchLabels:
-      app.kubernetes.io/name: mysql
+      app.kubernetes.io/name: postgres
       app.kubernetes.io/part-of: sxdevops
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: mysql
+        app.kubernetes.io/name: postgres
         app.kubernetes.io/part-of: sxdevops
     spec:
       containers:
-      - name: mysql
-        image: mysql:8.0
+      - name: postgres
+        image: postgres:16-alpine
         imagePullPolicy: IfNotPresent
-        args:
-        - --character-set-server=utf8mb4
-        - --collation-server=utf8mb4_unicode_ci
-        - --default-authentication-plugin=mysql_native_password
         ports:
-        - name: mysql
-          containerPort: 3306
+        - name: postgres
+          containerPort: 5432
         env:
-        - name: MYSQL_DATABASE
+        - name: POSTGRES_DB
           valueFrom:
             configMapKeyRef:
               name: sxdevops-config
-              key: MYSQL_DATABASE
-        - name: MYSQL_USER
+              key: POSTGRES_DB
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        - name: POSTGRES_USER
           valueFrom:
             configMapKeyRef:
               name: sxdevops-config
-              key: MYSQL_USER
-        - name: MYSQL_PASSWORD
+              key: POSTGRES_USER
+        - name: POSTGRES_PASSWORD
           valueFrom:
             secretKeyRef:
               name: sxdevops-secrets
-              key: MYSQL_PASSWORD
-        - name: MYSQL_ROOT_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: sxdevops-secrets
-              key: MYSQL_ROOT_PASSWORD
+              key: POSTGRES_PASSWORD
         - name: TZ
           valueFrom:
             configMapKeyRef:
               name: sxdevops-config
               key: TZ
         volumeMounts:
-        - name: mysql-data
-          mountPath: /var/lib/mysql
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
         startupProbe:
           exec:
             command:
             - /bin/sh
             - -ec
-            - mysqladmin ping -h 127.0.0.1 -uroot -p"$MYSQL_ROOT_PASSWORD" --silent
+            - pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
           periodSeconds: 5
           failureThreshold: 60
         readinessProbe:
@@ -153,7 +135,7 @@ spec:
             command:
             - /bin/sh
             - -ec
-            - mysqladmin ping -h 127.0.0.1 -uroot -p"$MYSQL_ROOT_PASSWORD" --silent
+            - pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
           periodSeconds: 10
           timeoutSeconds: 5
         livenessProbe:
@@ -161,7 +143,7 @@ spec:
             command:
             - /bin/sh
             - -ec
-            - mysqladmin ping -h 127.0.0.1 -uroot -p"$MYSQL_ROOT_PASSWORD" --silent
+            - pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
           periodSeconds: 20
           timeoutSeconds: 5
         resources:
@@ -172,9 +154,9 @@ spec:
             cpu: '1'
             memory: 1Gi
       volumes:
-      - name: mysql-data
+      - name: postgres-data
         persistentVolumeClaim:
-          claimName: mysql-data
+          claimName: postgres-data
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -202,7 +184,7 @@ spec:
         command:
         - /bin/sh
         - -ec
-        - 'until nc -z mysql 3306; do sleep 2; done
+        - 'until nc -z postgres 5432; do sleep 2; done
 
           until nc -z redis 6379; do sleep 2; done
 
@@ -220,11 +202,11 @@ spec:
         - configMapRef:
             name: sxdevops-config
         env:
-        - name: MYSQL_PASSWORD
+        - name: POSTGRES_PASSWORD
           valueFrom:
             secretKeyRef:
               name: sxdevops-secrets
-              key: MYSQL_PASSWORD
+              key: POSTGRES_PASSWORD
         - name: SECRET_KEY
           valueFrom:
             secretKeyRef:
@@ -257,11 +239,11 @@ spec:
         - configMapRef:
             name: sxdevops-config
         env:
-        - name: MYSQL_PASSWORD
+        - name: POSTGRES_PASSWORD
           valueFrom:
             secretKeyRef:
               name: sxdevops-secrets
-              key: MYSQL_PASSWORD
+              key: POSTGRES_PASSWORD
         - name: SECRET_KEY
           valueFrom:
             secretKeyRef:
@@ -399,7 +381,7 @@ spec:
         command:
         - /bin/sh
         - -ec
-        - 'until nc -z mysql 3306; do sleep 2; done
+        - 'until nc -z postgres 5432; do sleep 2; done
 
           until nc -z redis 6379; do sleep 2; done
 
@@ -412,11 +394,11 @@ spec:
         - name: http
           containerPort: 8000
         env:
-        - name: MYSQL_PASSWORD
+        - name: POSTGRES_PASSWORD
           valueFrom:
             secretKeyRef:
               name: sxdevops-secrets
-              key: MYSQL_PASSWORD
+              key: POSTGRES_PASSWORD
         - name: SECRET_KEY
           valueFrom:
             secretKeyRef:
@@ -476,7 +458,7 @@ spec:
         command:
         - /bin/sh
         - -ec
-        - 'until nc -z mysql 3306; do sleep 2; done
+        - 'until nc -z postgres 5432; do sleep 2; done
 
           until nc -z redis 6379; do sleep 2; done
 
@@ -494,11 +476,11 @@ spec:
         - configMapRef:
             name: sxdevops-config
         env:
-        - name: MYSQL_PASSWORD
+        - name: POSTGRES_PASSWORD
           valueFrom:
             secretKeyRef:
               name: sxdevops-secrets
-              key: MYSQL_PASSWORD
+              key: POSTGRES_PASSWORD
         - name: SECRET_KEY
           valueFrom:
             secretKeyRef:
@@ -529,11 +511,11 @@ spec:
         - configMapRef:
             name: sxdevops-config
         env:
-        - name: MYSQL_PASSWORD
+        - name: POSTGRES_PASSWORD
           valueFrom:
             secretKeyRef:
               name: sxdevops-secrets
-              key: MYSQL_PASSWORD
+              key: POSTGRES_PASSWORD
         - name: SECRET_KEY
           valueFrom:
             secretKeyRef:

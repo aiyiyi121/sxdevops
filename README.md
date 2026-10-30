@@ -1,6 +1,6 @@
 # SxDevOps · v2
 
-SxDevOps 是一个面向真实运维现场的开源智能运维 Agent 平台。它把 **可观测性、事件中心、任务中心、工单审批、容器管理、RBAC** 等平台能力组织成 Agent 可调用、可审计、可确认的运维工作流。
+SxDevOps 是一个面向真实运维现场的开源智能运维 Agent 平台。它把 **CMDB、可观测性、事件中心、任务中心、工单审批、容器管理、RBAC** 等平台能力组织成 Agent 可调用、可审计、可确认的运维工作流。
 
 项目不是简单做一个聊天框，而是希望让运维从“到处查系统”升级为：
 
@@ -10,14 +10,14 @@ SxDevOps 是一个面向真实运维现场的开源智能运维 Agent 平台。�
 - 产品介绍页：[SxDevOps AI Agent](https://www.sxdevops.top/product)
 - v2 文档：[版本更新说明](docs/releases/v2.0.0.md) · [升级与发布指南](docs/releases/v2.0.0-release-guide.md)
 - 文档中心：[安装、使用、运维与安全](docs/README.md) · [快速开始](docs/getting-started.md)
-- 技术栈：`Django REST framework + Channels + LangGraph + Vue 3 + Element Plus`
+- 技术栈：`Django REST framework + Channels + Vue 3 + Element Plus + LangGraph`
 - 开源协议：[MIT License](LICENSE)
 
 <img src="docs/screenshots/sxdevops-operation-flow.png" alt="SxDevOps 运转逻辑" width="820" />
 
 ## v2 重点更新
 
-v2 围绕 **CMDB 资产底座、LangGraph 智能体编排、Kubernetes / Docker 运维工作台** 完善从资源、取证、人工确认到执行验证的链路。平台版本使用 `v2.0.0`；文档中的聊天图 v12、动作图 v1 和验证图 v1 是内部流程版本，与平台发行版本分别管理。
+v2 围绕 **CMDB 资产底座、LangGraph 智能体编排、容器管理工作台** 完善从资源、取证、人工确认到执行验证的链路。平台版本使用 `v2.0.0`；文档中的聊天图 v12、动作图 v1 和验证图 v1 是内部流程版本，与平台发行版本分别管理。
 
 | 方向 | 本版能力与调整 |
 | --- | --- |
@@ -204,9 +204,9 @@ flowchart TB
 | 层级 | 技术 |
 | --- | --- |
 | 后端 | Django REST framework、Channels、Daphne |
-| 智能体编排 | LangGraph、SQLite / MySQL checkpoint、数据库任务队列与独立 worker |
+| 智能体编排 | LangGraph、PostgreSQL / MySQL / SQLite checkpoint、数据库任务队列与独立 worker |
 | 前端 | Vue 3、Vue Router、Pinia、Element Plus、ECharts、Vite |
-| 数据库 | 本地默认 SQLite，Docker Compose 默认 MySQL 8 |
+| 数据库 | 新部署默认 PostgreSQL 16（推荐），MySQL 8 可选；本地测试使用 SQLite |
 | 缓存与实时通信 | Redis、Channels Redis |
 | 外部集成 | Kubernetes API、Docker、SSH、Prometheus / Grafana、SkyWalking、Tempo、Jaeger、Zipkin、Loki / ELK / SLS |
 
@@ -222,27 +222,48 @@ flowchart LR
     aiops --> queue["异步聊天与验证队列"]
     queue --> worker["AIOps worker"]
     worker --> aiops
-    aiops --> checkpoint["SQLite / MySQL checkpoint"]
+    aiops --> checkpoint["PostgreSQL / MySQL / SQLite checkpoint"]
     api --> ops["任务 / 工单 / 事件"]
     aiops --> facts["可观测性事实层"]
     ops --> facts
     facts --> integrations["Prometheus / Grafana / Logs / Trace / K8s / SSH"]
-    api --> db["MySQL 或 SQLite"]
+    api --> db["PostgreSQL / MySQL / SQLite"]
     ws --> redis["Redis"]
 ```
 
 ## 快速启动
 
-完整步骤见[快速开始](docs/getting-started.md)。Compose 包含应用、MySQL、Redis、CMDB 调度器和 AIOps worker；先在本机 `.env` 中设置独立随机的 `SECRET_KEY`，然后执行：
+安装并启动 Docker（v20.10及以上均可，要求含 Docker Compose V2），在仓库根目录执行一条命令：
 
 ```bash
-docker compose up -d --build
-docker compose exec sxdevops python manage.py createsuperuser
+sh start.sh
 ```
 
-访问 `http://localhost:8000`，使用新建管理员登录。演示数据默认关闭，平台没有固定默认密码。Compose 中的数据库密码、CMDB 密钥和 CORS 是示例配置；公网部署前按[配置参考](docs/configuration.md)与[部署运维指南](docs/deployment.md)调整。
+Windows 用户执行 `.\start.cmd`，也可以直接双击 `start.cmd`。
 
-本地开发使用 Python 3.12、Node.js 20，按[快速开始](docs/getting-started.md#本地开发)启动后端、前端和 worker。Kubernetes 部署使用[集群部署指南](docs/Kubernetes部署指南.md)，基础清单还需补齐 AIOps worker 与共享 checkpoint。
+脚本会自动生成并保存密钥、构建镜像、启动应用 / PostgreSQL / Redis / CMDB 调度器 / AIOps worker，并完成数据库迁移。**首次只需按提示输入并确认 `admin` 密码**，不需要手工创建 `.env` 或生成密钥。
+
+启动完成后打开 [平台登录页](http://localhost:8000/login)，用户名为 `admin`，密码为刚才自行设置的密码。已有管理员时沿用原账号和密码；平台没有固定默认密码，演示数据默认关闭。
+
+再次启动执行同一命令即可，脚本会保留现有配置和账号。自动生成的 `.env` 请妥善备份，升级时沿用原密钥；完整步骤与手动配置见[快速开始](docs/getting-started.md)。忘记 `admin` 密码时可交互重设：
+
+```bash
+docker compose exec sxdevops python manage.py changepassword admin
+```
+
+新部署默认使用 **PostgreSQL 16（推荐）**，数据库密码自动生成并保存在 `.env`；本地测试环境仍用 SQLite，无需迁移。MySQL 8 作为备选：Linux / macOS 执行 `sh start.sh --mysql`，Windows 执行 `.\start.cmd -Database mysql`，对应独立的 [MySQL Compose 配置](docker-compose.mysql.yml)。已有 MySQL 环境继续用此选项，切换数据库类型不会自动迁移业务数据或 checkpoint。
+
+公网部署前按[配置参考](docs/configuration.md)与[部署运维指南](docs/deployment.md)调整。
+
+本地开发使用 Python 3.12、Node.js 20，按[快速开始](docs/getting-started.md#本地开发)启动后端、前端和 worker；在 `backend` 目录执行 `python manage.py createsuperuser --username admin` 创建管理员，再通过 [本地开发登录页](http://localhost:3000/login)使用自行设置的密码登录。
+
+Kubernetes 已准备好集群可拉取的应用镜像时，在任意可连接目标集群的电脑或跳板机上执行（将示例镜像替换为自己的固定版本镜像；执行机需 Python 3、`kubectl` 及本仓库源码）：
+
+```bash
+python3 k8s/deploy.py registry.example.com/your-team/sxdevops:v2.0.0
+```
+
+可追加 `--kubeconfig ./kubeconfig --context production` 指定远程集群；省略时沿用 kubectl 默认配置。脚本在目标集群创建随机密钥、配置共享 PostgreSQL / Redis / checkpoint、执行迁移并启动 Web、CMDB 调度器和 AIOps worker，首次按提示设置 `admin` 密码，随后打开执行机上的本地访问隧道。Windows 将 `python3` 换为 `python`。新安装可追加 `--database mysql` 选择 MySQL；已有安装会保留原数据库类型，拒绝直接切换引擎。存储类、私有仓库与升级选项见[集群部署指南](docs/Kubernetes部署指南.md)。
 
 ## 账号与升级
 

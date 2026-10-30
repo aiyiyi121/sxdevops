@@ -2,6 +2,7 @@
 .codex
 .runlogs
 .venv
+.env
 tmp_deploy
 
 backend/__pycache__

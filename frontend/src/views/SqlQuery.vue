@@ -136,7 +136,9 @@ const currentDatasourceType = computed(() => currentDatasource.value?.db_type ||
 const queryPlaceholder = computed(() => getQueryPlaceholder(currentDatasourceType.value))
 const queryHint = computed(() => currentDatasourceType.value === 'mongodb'
   ? 'MongoDB 查询支持 find / aggregate / count / distinct 四种命令格式'
-  : 'MySQL / PolarDB 查询仅允许 SELECT / SHOW / DESC 语句')
+  : currentDatasourceType.value === 'postgresql'
+    ? 'PostgreSQL 查询仅允许单条 SELECT / WITH / SHOW，使用只读事务'
+    : 'MySQL 查询仅允许 SELECT / SHOW / DESC 语句')
 
 const formatTime = (t) => t ? new Date(t).toLocaleString('zh-CN') : ''
 

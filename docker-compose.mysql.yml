@@ -1,0 +1,144 @@
+services:
+  sxdevops:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sxdevops:latest
+    container_name: sxdevops-app
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_ENGINE: mysql
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_DATABASE: sxdevops
+      MYSQL_USER: sxdevops
+      MYSQL_PASSWORD: sxdevops_password
+      CACHE_BACKEND: redis
+      CACHE_IGNORE_EXCEPTIONS: "0"
+      SXDEVOPS_TRUSTED_PROXIES: ${SXDEVOPS_TRUSTED_PROXIES:-}
+      REDIS_URL: redis://redis:6379/0
+      CHANNEL_REDIS_URL: redis://redis:6379/1
+      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY to a unique random value before starting Compose}
+      # Keep this Fernet key unchanged after CMDB credentials have been saved.
+      CMDB_PASSWORD_ENCRYPTION_KEY: ${CMDB_PASSWORD_ENCRYPTION_KEY:?Set a persistent Fernet key; preserve the existing key on upgrades}
+      DEBUG: "0"
+      CORS_ALLOW_ALL_ORIGINS: "1"
+      SXDEVOPS_WAIT_FOR_DB: "1"
+      SXDEVOPS_MIGRATE: "1"
+      SXDEVOPS_SEED_DATA: "0"
+      SXDEVOPS_SEED_TEMPLATES: "1"
+      AIOPS_LANGGRAPH_CHECKPOINT_BACKEND: mysql
+    volumes:
+      - aiops_runtime:/app/backend/runtime
+    ports:
+      - "8000:8000"
+
+  cmdb-sync-scheduler:
+    image: sxdevops:latest
+    container_name: sxdevops-cmdb-sync-scheduler
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_ENGINE: mysql
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_DATABASE: sxdevops
+      MYSQL_USER: sxdevops
+      MYSQL_PASSWORD: sxdevops_password
+      CACHE_BACKEND: redis
+      CACHE_IGNORE_EXCEPTIONS: "0"
+      SXDEVOPS_TRUSTED_PROXIES: ${SXDEVOPS_TRUSTED_PROXIES:-}
+      REDIS_URL: redis://redis:6379/0
+      CHANNEL_REDIS_URL: redis://redis:6379/1
+      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY to a unique random value before starting Compose}
+      CMDB_PASSWORD_ENCRYPTION_KEY: ${CMDB_PASSWORD_ENCRYPTION_KEY:?Set a persistent Fernet key; preserve the existing key on upgrades}
+      DEBUG: "0"
+      SXDEVOPS_WAIT_FOR_DB: "1"
+      SXDEVOPS_MIGRATE: "0"
+      SXDEVOPS_WAIT_FOR_SCHEMA: "1"
+      SXDEVOPS_SEED_DATA: "0"
+      SXDEVOPS_SEED_TEMPLATES: "0"
+    command: ["python", "manage.py", "run_cmdb_sync_scheduler", "--interval", "60", "--limit", "10"]
+
+  aiops-chat-worker:
+    image: sxdevops:latest
+    container_name: sxdevops-aiops-chat-worker
+    restart: unless-stopped
+    depends_on:
+      sxdevops:
+        condition: service_started
+      mysql:
+        condition: service_healthy
+    environment:
+      DATABASE_ENGINE: mysql
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_DATABASE: sxdevops
+      MYSQL_USER: sxdevops
+      MYSQL_PASSWORD: sxdevops_password
+      CACHE_BACKEND: redis
+      CACHE_IGNORE_EXCEPTIONS: "0"
+      SXDEVOPS_TRUSTED_PROXIES: ${SXDEVOPS_TRUSTED_PROXIES:-}
+      REDIS_URL: redis://redis:6379/0
+      CHANNEL_REDIS_URL: redis://redis:6379/1
+      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY to a unique random value before starting Compose}
+      CMDB_PASSWORD_ENCRYPTION_KEY: ${CMDB_PASSWORD_ENCRYPTION_KEY:?Set a persistent Fernet key; preserve the existing key on upgrades}
+      DEBUG: "0"
+      SXDEVOPS_WAIT_FOR_DB: "1"
+      SXDEVOPS_MIGRATE: "0"
+      SXDEVOPS_WAIT_FOR_SCHEMA: "1"
+      SXDEVOPS_SEED_DATA: "0"
+      SXDEVOPS_SEED_TEMPLATES: "0"
+      AIOPS_LANGGRAPH_CHECKPOINT_BACKEND: mysql
+    volumes:
+      - aiops_runtime:/app/backend/runtime
+    command: ["python", "manage.py", "run_aiops_chat_worker", "--interval", "2"]
+
+  mysql:
+    image: mysql:8.0
+    container_name: sxdevops-mysql
+    restart: unless-stopped
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-authentication-plugin=mysql_native_password
+    environment:
+      MYSQL_DATABASE: sxdevops
+      MYSQL_USER: sxdevops
+      MYSQL_PASSWORD: sxdevops_password
+      MYSQL_ROOT_PASSWORD: sxdevops_root_password
+      TZ: Asia/Shanghai
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$${MYSQL_ROOT_PASSWORD} --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    container_name: sxdevops-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  mysql_data:
+  redis_data:
+  aiops_runtime:

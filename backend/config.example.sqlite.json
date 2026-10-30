@@ -1,0 +1,9 @@
+{
+  "database": {
+    "type": "sqlite",
+    "path": "db.sqlite3"
+  },
+  "cache": {
+    "type": "local"
+  }
+}

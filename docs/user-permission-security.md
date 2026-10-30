@@ -46,7 +46,7 @@ Django 管理站点、数据库和服务器权限由独立的运维边界控制�
 
 ## 初始化与旧账号升级
 
-平台没有固定默认密码。使用 `createsuperuser` 创建管理员，或在首次迁移前设置 `SXDEVOPS_ADMIN_INITIAL_PASSWORD`；登录请求不创建管理员，也不隐式同步内置角色。
+平台没有固定默认密码。一键启动脚本会等待应用就绪，再通过 `quickstart_admin` 引导设置 `admin` 密码；已有管理员时不修改账号或密码。也可使用 `createsuperuser` 手动创建管理员，或在首次迁移前设置 `SXDEVOPS_ADMIN_INITIAL_PASSWORD`；登录请求不创建管理员，也不隐式同步内置角色。
 
 `seed_data` 只导入业务演示数据。显式角色测试命令 `seed_rbac_demo` 及密码行为见[快速开始](getting-started.md#演示数据与测试角色)，不应在公开服务中运行。
 

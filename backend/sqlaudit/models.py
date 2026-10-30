@@ -6,7 +6,7 @@ class DataSource(models.Model):
     DB_TYPE_CHOICES = [
         ('mysql', 'MySQL'),
         ('mongodb', 'MongoDB'),
-        ('polardb', 'PolarDB'),
+        ('postgresql', 'PostgreSQL'),
     ]
 
     name = models.CharField('名称', max_length=128, unique=True)
@@ -15,6 +15,7 @@ class DataSource(models.Model):
     port = models.PositiveIntegerField('端口', default=3306)
     user = models.CharField('用户名', max_length=128)
     password = models.CharField('密码', max_length=512)
+    database = models.CharField('连接数据库', max_length=128, blank=True, default='')
     charset = models.CharField('字符集', max_length=32, default='utf8mb4')
     remark = models.TextField('备注', blank=True, default='')
     is_active = models.BooleanField('启用', default=True)

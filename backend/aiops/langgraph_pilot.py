@@ -42,6 +42,13 @@ try:
 except ImportError:  # pragma: no cover - local SQLite pilot installations.
     PyMySQLSaver = None
 
+try:
+    from langgraph.checkpoint.postgres import PostgresSaver
+    from psycopg.rows import dict_row
+    from psycopg_pool import ConnectionPool
+except ImportError:  # pragma: no cover - installations without PostgreSQL support.
+    PostgresSaver = ConnectionPool = None
+
 
 if PyMySQLSaver is not None:
     class _SxPyMySQLSaver(PyMySQLSaver):
@@ -173,13 +180,55 @@ def _checkpoint_path() -> str:
     return str(path)
 
 
+def _checkpoint_backend():
+    configured = str(os.getenv('AIOPS_LANGGRAPH_CHECKPOINT_BACKEND') or '').strip().lower()
+    if configured:
+        return configured
+    engine = settings.DATABASES['default']['ENGINE']
+    return {'django.db.backends.postgresql': 'postgresql', 'django.db.backends.mysql': 'mysql'}.get(engine, 'sqlite')
+
+
 def _get_checkpointer():
     global _CHECKPOINTER, _CHECKPOINTER_CONNECTION
     _require_langgraph()
     with _GRAPH_LOCK:
         if _CHECKPOINTER is None:
-            backend = str(os.getenv('AIOPS_LANGGRAPH_CHECKPOINT_BACKEND') or 'sqlite').strip().lower()
-            if backend == 'mysql':
+            backend = _checkpoint_backend()
+            if backend in {'postgresql', 'postgres', 'pg'}:
+                if PostgresSaver is None:
+                    raise LangGraphPilotUnavailable('PostgreSQL checkpoint 依赖未安装，请安装 requirements.txt。')
+                database = settings.DATABASES['default']
+                if database['ENGINE'] != 'django.db.backends.postgresql':
+                    raise ValueError('PostgreSQL checkpoint 需要 Django PostgreSQL 数据库配置。')
+                options = dict(database.get('OPTIONS') or {})
+                for key in ('pool', 'isolation_level', 'server_side_binding', 'assume_role'):
+                    options.pop(key, None)
+                options.update({
+                    'host': database.get('HOST') or 'localhost',
+                    'port': int(database.get('PORT') or 5432),
+                    'dbname': database['NAME'], 'user': database.get('USER') or '',
+                    'password': database.get('PASSWORD') or '',
+                    'autocommit': True, 'prepare_threshold': 0, 'row_factory': dict_row,
+                })
+                pool = ConnectionPool(conninfo='', kwargs=options, min_size=1, max_size=10, timeout=30)
+                try:
+                    pool.wait(timeout=30)
+                    checkpointer = PostgresSaver(pool)
+                    # Serialize schema initialization across Web and worker processes.
+                    with pool.connection() as connection:
+                        connection.execute("SET lock_timeout = '30s'")
+                        connection.execute('SELECT pg_advisory_lock(%s)', (735702019,))
+                        try:
+                            checkpointer.setup()
+                        finally:
+                            connection.execute('SELECT pg_advisory_unlock(%s)', (735702019,))
+                            connection.execute('RESET lock_timeout')
+                except Exception:
+                    pool.close()
+                    raise
+                _CHECKPOINTER_CONNECTION = pool
+                _CHECKPOINTER = checkpointer
+            elif backend == 'mysql':
                 if PyMySQLSaver is None:
                     raise LangGraphPilotUnavailable('MySQL checkpoint 依赖未安装。')
                 import pymysql

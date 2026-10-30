@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <div class="fade-in sql-audit-page workbench-page-shell">
     <section class="hero panel">
       <div class="release-hero-copy">
@@ -123,7 +123,7 @@ const availableTabs = computed(() => {
 
 const activeTabDescription = computed(() => {
   const descMap = {
-    datasources: '维护 MySQL / PolarDB / MongoDB 数据源，支持测试连接与库列表发现。',
+    datasources: '维护 MySQL / PostgreSQL / MongoDB 数据源，支持测试连接与库列表发现。',
     orders: '覆盖提交、预检查、审核与执行链路，适合演示标准数据库变更流程。',
     query: '只读查询入口，支持 SQL / MongoDB 查询并自动沉淀到历史记录。',
   }

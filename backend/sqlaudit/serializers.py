@@ -17,6 +17,14 @@ class DataSourceSerializer(serializers.ModelSerializer):
     def get_status_label(self, obj):
         return '启用' if obj.is_active else '停用'
 
+    def validate(self, attrs):
+        db_type = attrs.get('db_type', getattr(self.instance, 'db_type', 'mysql'))
+        if db_type == 'postgresql':
+            attrs['charset'] = 'UTF8'
+            if self.instance is None:
+                attrs.setdefault('port', 5432)
+        return attrs
+
 
 class SqlCheckResultSerializer(serializers.ModelSerializer):
     level_display = serializers.CharField(source='get_level_display', read_only=True)

@@ -1,32 +1,31 @@
 #!/bin/sh
 set -eu
 
-wait_for_tcp() {
-  host="$1"
-  port="$2"
-  label="$3"
-
-  python - "$host" "$port" "$label" <<'PY'
+if [ "${SXDEVOPS_WAIT_FOR_DB:-1}" = "1" ]; then
+  python - <<'PY'
+import os
 import socket
-import sys
 import time
 
-host, port, label = sys.argv[1], int(sys.argv[2]), sys.argv[3]
-deadline = time.time() + 120
-while time.time() < deadline:
-    try:
-        with socket.create_connection((host, port), timeout=3):
-            print(f"{label} is ready")
-            sys.exit(0)
-    except OSError:
-        time.sleep(2)
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'sxdevops.settings')
+from django.conf import settings
 
-raise SystemExit(f"Timed out waiting for {label} at {host}:{port}")
+database = settings.DATABASES['default']
+engine = database['ENGINE'].rsplit('.', 1)[-1]
+if engine != 'sqlite3':
+    host = database.get('HOST') or 'localhost'
+    port = int(database.get('PORT') or (5432 if engine == 'postgresql' else 3306))
+    deadline = time.monotonic() + 120
+    while True:
+        try:
+            with socket.create_connection((host, port), timeout=3):
+                print(f'{engine} is ready')
+                break
+        except OSError:
+            if time.monotonic() >= deadline:
+                raise SystemExit(f'Timed out waiting for {engine} at {host}:{port}')
+            time.sleep(2)
 PY
-}
-
-if [ "${SXDEVOPS_WAIT_FOR_DB:-1}" = "1" ]; then
-  wait_for_tcp "${MYSQL_HOST:-mysql}" "${MYSQL_PORT:-3306}" "MySQL"
 fi
 
 if [ "${SXDEVOPS_MIGRATE:-1}" = "1" ]; then

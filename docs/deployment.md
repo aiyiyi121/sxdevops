@@ -2,6 +2,8 @@
 
 本文适用于从源码构建的 Docker Compose / Podman Compose 环境。Kubernetes 另见[集群部署指南](Kubernetes部署指南.md)，v2 的迁移差异见[升级说明](releases/v2.0.0-release-guide.md)。
 
+新部署默认推荐 PostgreSQL 16。MySQL 8 作为备选，使用 `docker-compose.mysql.yml`（启动脚本为 `sh start.sh --mysql` 或 Windows `.\start.cmd -Database mysql`）；已有 MySQL 部署继续沿用该清单及原密钥。下文覆盖示例基于 PostgreSQL；MySQL 环境应改用 `MYSQL_PASSWORD`、`MYSQL_ROOT_PASSWORD` 及 `AIOPS_LANGGRAPH_CHECKPOINT_BACKEND=mysql`，不要合入 PostgreSQL 配置。切换引擎不会自动转换业务数据库或 checkpoint，本地 SQLite 测试库保持原配置。
+
 ## 服务与状态
 
 | 服务 | Compose 服务名 | 职责 |
@@ -9,7 +11,7 @@
 | Web / ASGI | `sxdevops` | 页面、API 和 WebSocket |
 | CMDB 调度器 | `cmdb-sync-scheduler` | 每 60 秒扫描到期采集任务，每轮最多 10 个；保持单实例 |
 | AIOps worker | `aiops-chat-worker` | 异步聊天、租约恢复和处置效果验证 |
-| MySQL / Redis | `mysql` / `redis` | 业务数据、共享 checkpoint、缓存与实时通信 |
+| PostgreSQL / Redis | `postgres` / `redis` | 业务数据、共享 checkpoint、缓存与实时通信 |
 
 应用、调度器和 worker 必须使用同一份发行镜像及兼容配置。只更新 Web 会造成 worker 沿用旧图或旧权限逻辑。
 
@@ -23,8 +25,7 @@
 
 ```dotenv
 SECRET_KEY=<独立长随机值>
-SXDEVOPS_DB_PASSWORD=<独立数据库密码>
-SXDEVOPS_DB_ROOT_PASSWORD=<独立数据库管理密码>
+POSTGRES_PASSWORD=<独立数据库密码>
 CMDB_PASSWORD_ENCRYPTION_KEY=<首次生成或保留的原Fernet密钥>
 SXDEVOPS_HOSTS=<实际访问域名,必要的本机地址>
 SXDEVOPS_TRUSTED_PROXIES=<实际可信入口代理IP或CIDR，多个用逗号分隔>
@@ -35,14 +36,14 @@ SXDEVOPS_TRUSTED_PROXIES=<实际可信入口代理IP或CIDR，多个用逗号分
 ```yaml
 x-app-env: &app-env
   SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY}
-  MYSQL_PASSWORD: ${SXDEVOPS_DB_PASSWORD:?Set SXDEVOPS_DB_PASSWORD}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
   CMDB_PASSWORD_ENCRYPTION_KEY: ${CMDB_PASSWORD_ENCRYPTION_KEY:?Set CMDB_PASSWORD_ENCRYPTION_KEY}
   DEBUG: "0"
   ALLOWED_HOSTS: ${SXDEVOPS_HOSTS:?Set SXDEVOPS_HOSTS}
   CORS_ALLOW_ALL_ORIGINS: "0"
   SXDEVOPS_SEED_DATA: "0"
   SXDEVOPS_SEED_TEMPLATES: "0"
-  AIOPS_LANGGRAPH_CHECKPOINT_BACKEND: mysql
+  AIOPS_LANGGRAPH_CHECKPOINT_BACKEND: postgresql
   CACHE_BACKEND: redis
   CACHE_IGNORE_EXCEPTIONS: "0"
   SXDEVOPS_TRUSTED_PROXIES: ${SXDEVOPS_TRUSTED_PROXIES:-}
@@ -54,13 +55,12 @@ services:
     environment: *app-env
   aiops-chat-worker:
     environment: *app-env
-  mysql:
+  postgres:
     environment:
-      MYSQL_PASSWORD: ${SXDEVOPS_DB_PASSWORD:?Set SXDEVOPS_DB_PASSWORD}
-      MYSQL_ROOT_PASSWORD: ${SXDEVOPS_DB_ROOT_PASSWORD:?Set SXDEVOPS_DB_ROOT_PASSWORD}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
 ```
 
-该示例只覆盖配置，保留基础编排的命令、依赖及卷。不要在已有 MySQL 数据卷上仅修改初始化密码变量来“轮换密码”：已有账号密码须在数据库内另行变更，并同步应用配置。
+该示例只覆盖配置，保留基础编排的命令、依赖及卷。不要在已有 PostgreSQL / MySQL 数据卷上仅修改初始化密码变量来“轮换密码”：已有账号密码须在数据库内另行变更，并同步应用配置。
 
 基础编排已移除历史默认 Fernet 密钥，缺少外部密钥时 Compose 会拒绝启动。首次部署生成独立密钥；已有环境先备份并核对实际生效的旧密钥及凭据解密情况。若曾使用公开默认值，应在维护窗口内使用旧密钥解密并用新密钥重新加密全部相关凭据，再同步三个服务，验证后恢复流量。仅更改环境变量会使旧数据无法解密；不能把源码移除默认值视为已经完成线上轮换。
 
@@ -73,7 +73,7 @@ docker compose -f docker-compose.yml -f compose.production.local exec sxdevops p
 
 模板同步按需显式执行 `python manage.py seed_templates`；先检查模板变更，不导入业务演示数据或角色测试账号。使用 Podman 时将命令入口替换为本机支持的 `podman-compose`，并先确认覆盖文件合并结果。
 
-基础编排把 8000 端口发布到所有接口。正式环境应在私有部署配置中改为本机或内网监听，并由 HTTPS 反向代理统一入口；注意 Compose 的 `ports` 合并可能保留旧映射，应检查最终映射。代理需支持 WebSocket Upgrade，限制实际域名访问。不要把 MySQL、Redis 和管理终端直接暴露到公网。
+基础编排把 8000 端口发布到所有接口。正式环境应在私有部署配置中改为本机或内网监听，并由 HTTPS 反向代理统一入口；注意 Compose 的 `ports` 合并可能保留旧映射，应检查最终映射。代理需支持 WebSocket Upgrade，限制实际域名访问。不要把 PostgreSQL、MySQL、Redis 和管理终端直接暴露到公网。
 
 配置检查可使用 Compose 的 `config --quiet`；不要把包含解析后密码的完整 `config` 输出粘贴到 Issue 或日志中。完整变量含义与优先级见[配置参考](configuration.md)。
 
@@ -87,7 +87,7 @@ docker compose -f docker-compose.yml -f compose.production.local exec sxdevops p
 
 1. 进入维护窗口，停止接收新的聊天和执行任务，处理 queued/running 聊天、实际任务、待确认动作及未完成验证。
 2. 备份业务数据库、共享 checkpoint 表或 SQLite checkpoint 文件、运行卷、私有配置与加密密钥；记录旧镜像摘要并验证备份可读取。SQLite 文件应在写入进程停止后备份，或使用 SQLite 一致性备份方式。
-3. 需要跨数据库表一致性的备份时，停止所有写入方后执行。MySQL 可使用受控备份工具或 `mysqldump --single-transaction`（适用于事务表），凭据通过受限配置提供；不要在共享命令行或日志中明文传递密码。
+3. 需要跨数据库表一致性的备份时，停止所有写入方后执行。PostgreSQL 可使用 `pg_dump` / `pg_restore`；MySQL 可使用受控备份工具或 `mysqldump --single-transaction`（适用于事务表），凭据通过受限配置提供；不要在共享命令行或日志中明文传递密码。
 4. 停止三项应用服务，保留数据库和卷，构建候选镜像并执行一次完整迁移。
 
 ```bash

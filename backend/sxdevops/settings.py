@@ -251,15 +251,49 @@ def _mysql_database_config(section):
     return config
 
 
+def _postgresql_database_config(section):
+    options = section.get('options', {})
+    if not isinstance(options, dict):
+        raise RuntimeError('database.options must be a JSON object.')
+    options = dict(options)
+    options.setdefault('connect_timeout', 10)
+    sslmode = _setting_value(section, 'sslmode', ('POSTGRES_SSLMODE', 'PGSSLMODE'), '')
+    if sslmode:
+        options['sslmode'] = sslmode
+    config = {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': _setting_value(section, ('database_name', 'database', 'name'),
+                               ('POSTGRES_DB', 'DATABASE_NAME', 'DB_NAME'), 'sxdevops'),
+        'USER': _setting_value(section, 'user', ('POSTGRES_USER', 'DATABASE_USER', 'DB_USER'), 'sxdevops'),
+        'PASSWORD': _setting_value(section, 'password', ('POSTGRES_PASSWORD', 'DATABASE_PASSWORD', 'DB_PASSWORD'),
+                                   '', allow_blank=True),
+        'HOST': _setting_value(section, 'host', ('POSTGRES_HOST', 'DATABASE_HOST', 'DB_HOST'), '127.0.0.1'),
+        'PORT': str(_setting_value(section, 'port', ('POSTGRES_PORT', 'DATABASE_PORT', 'DB_PORT'), '5432')),
+        'OPTIONS': options,
+        'CONN_MAX_AGE': _int_value(_setting_value(section, ('conn_max_age', 'connMaxAge'),
+                                                ('DATABASE_CONN_MAX_AGE', 'DB_CONN_MAX_AGE'), 60),
+                                   'database.conn_max_age'),
+        'CONN_HEALTH_CHECKS': True,
+    }
+    test_config = section.get('test')
+    if test_config is not None:
+        if not isinstance(test_config, dict):
+            raise RuntimeError('database.test must be a JSON object.')
+        config['TEST'] = test_config
+    return config
+
+
 def _build_database_config():
     section = _app_config_section('database', 'db')
     engine = str(_setting_value(
         section,
         ('type', 'engine'),
         ('DATABASE_ENGINE', 'DB_ENGINE'),
-        'sqlite',
-    ) or 'sqlite').strip().lower()
+        'postgresql',
+    ) or 'postgresql').strip().lower()
 
+    if engine in {'postgresql', 'postgres', 'pg', 'django.db.backends.postgresql'}:
+        return {'default': _postgresql_database_config(section)}
     if engine in {'', 'sqlite', 'sqlite3', 'django.db.backends.sqlite3'}:
         return {'default': _sqlite_database_config(section)}
     if engine in {'mysql', 'mariadb', 'django.db.backends.mysql'}:
