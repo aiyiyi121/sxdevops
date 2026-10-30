@@ -22,22 +22,17 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/PostgreSQL-4169E1?style=flat-square&logo=postgresql&logoColor=white" alt="PostgreSQL" />
-  <img src="https://img.shields.io/badge/MySQL-4479A1?style=flat-square&logo=mysql&logoColor=white" alt="MySQL" />
+  <img src="https://img.shields.io/badge/OpenTelemetry-000000?style=flat-square&logo=opentelemetry&logoColor=white" alt="OpenTelemetry" />
   <img src="https://img.shields.io/badge/Redis-FF4438?style=flat-square&logo=redis&logoColor=white" alt="Redis" />
   <img src="https://img.shields.io/badge/Docker-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker" />
   <img src="https://img.shields.io/badge/Kubernetes-326CE5?style=flat-square&logo=kubernetes&logoColor=white" alt="Kubernetes" />
 </p>
 
-<p align="center">
-  <a href="docs/getting-started.md">快速开始</a> ·
-  <a href="docs/README.md">文档中心</a> ·
-  <a href="docs/releases/v2.0.0.md">版本更新</a> ·
-  <a href="docs/releases/v2.0.0-release-guide.md">升级指南</a>
-</p>
-
 **产品体验：进入平台，体验智能运维工作台 → [https://www.sxdevops.top](https://www.sxdevops.top)**
 
 **产品介绍：了解平台能力、产品界面与工作流程 → [https://www.sxdevops.top/product](https://www.sxdevops.top/product)**
+
+**文档中心：查看安装、使用与部署文档 → [https://github.com/aiyiyi121/sxdevops/blob/main/docs/README.md](https://github.com/aiyiyi121/sxdevops/blob/main/docs/README.md)**
 
 SxDevOps 是一个面向真实运维现场的开源智能运维 Agent 平台。它把 **CMDB、可观测性、事件中心、任务中心、工单审批、容器管理、RBAC** 等平台能力组织成 Agent 可调用、可审计、可确认的运维工作流。
 
