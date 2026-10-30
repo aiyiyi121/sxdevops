@@ -11,10 +11,11 @@
     <div class="workbench-card cmdb-model-topology-card">
       <div class="section-toolbar">
         <div class="toolbar-head">
-          <span class="toolbar-title">分类关系</span>
-          <span class="toolbar-desc" :title="selectedScope?.path">{{ selectedScope?.path || '全部资产' }} · {{ visibleModels.length }} 个分类</span>
+          <span class="toolbar-title">资产拓扑关系</span>
+          <span class="toolbar-desc">按业务环境或云账号筛选资产分类，查看分类间的关系规则。</span>
         </div>
         <div class="workbench-card-actions">
+          <el-tag size="small" type="info" :title="selectedScope?.path || '全部资产'">{{ selectedScope?.label || '全部资产' }} · {{ visibleModels.length }} 个分类</el-tag>
           <el-tag size="small" type="info">{{ visibleRules.length }} 条规则</el-tag>
           <el-button :loading="loading" @click="loadModelTopology">
             <el-icon><RefreshRight /></el-icon>
@@ -937,7 +938,7 @@ onMounted(() => {
 
 <style scoped>
 .cmdb-model-topology-page{display:flex;flex-direction:column;gap:6px}
-.asset-topology-workspace{display:grid;grid-template-columns:260px minmax(0,1fr);gap:18px;align-items:stretch}
+.asset-topology-workspace{display:grid;flex:1;grid-template-columns:260px minmax(0,1fr);gap:18px;align-items:stretch}
 .asset-scope-panel{min-width:0;padding:0 12px 0 0;margin:0;min-height:520px;border-right:4px solid var(--el-border-color-lighter)}
 .asset-scope-heading{margin-bottom:12px;font-size:14px;font-weight:700;line-height:1.3;color:var(--text-primary)}
 .asset-scope-panel>.el-input{margin-bottom:12px}
@@ -982,7 +983,7 @@ onMounted(() => {
 .topology-filter-dot{width:7px;height:7px;border-radius:999px;background:#245bdb;box-shadow:0 0 0 3px rgba(51,112,255,.1)}
 .cmdb-model-topology-toolbar :deep(.el-input__wrapper),.cmdb-model-topology-toolbar :deep(.el-select__wrapper){min-height:32px;border-radius:10px;box-shadow:0 0 0 1px rgba(148,163,184,.16) inset;background:#fff}
 .cmdb-model-topology-toolbar :deep(.el-button){height:32px;border-radius:10px;margin-left:0;font-weight:700}
-.cmdb-model-topology-layout{display:grid;flex:1;grid-template-columns:minmax(0,1fr) 280px;gap:10px;min-height:480px}
+.cmdb-model-topology-layout{display:grid;flex:1;grid-template-columns:minmax(0,1fr) 224px;gap:10px;min-height:480px}
 .model-graph-panel{min-width:0;min-height:0;display:flex;flex-direction:column;gap:10px}
 .model-side-panel{position:relative;min-width:0;border:1px solid rgba(148,163,184,.18);border-radius:22px;background:linear-gradient(180deg,#fff 0%,#f8fafc 100%);padding:15px;color:#0f172a;overflow:hidden;box-shadow:0 18px 42px rgba(15,23,42,.1)}
 .model-side-header,.model-section-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
@@ -1050,7 +1051,7 @@ onMounted(() => {
 .model-side-empty{padding:8px 0 2px}
 .cmdb-model-topology-toolbar :deep(.el-select),.cmdb-model-topology-toolbar :deep(.el-input){flex:0 0 auto}
 
-@media (max-width: 1120px) {
+@media (max-width: 980px) {
   .cmdb-model-topology-layout{grid-template-columns:1fr}
   .model-graph-canvas{min-height:480px}
   .model-side-panel{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;border-radius:14px;box-shadow:none}
