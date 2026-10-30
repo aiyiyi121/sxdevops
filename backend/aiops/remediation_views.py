@@ -14,6 +14,7 @@ class VerificationInputSerializer(serializers.Serializer):
     environment_id = serializers.IntegerField(min_value=1)
     alert_id = serializers.IntegerField(min_value=1)
     observation_seconds = serializers.IntegerField(min_value=0, max_value=600, default=60)
+    health_policy = serializers.DictField(required=False, default=dict)
 
 
 @api_view(['GET', 'POST'])

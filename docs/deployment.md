@@ -27,6 +27,7 @@ SXDEVOPS_DB_PASSWORD=<独立数据库密码>
 SXDEVOPS_DB_ROOT_PASSWORD=<独立数据库管理密码>
 CMDB_PASSWORD_ENCRYPTION_KEY=<首次生成或保留的原Fernet密钥>
 SXDEVOPS_HOSTS=<实际访问域名,必要的本机地址>
+SXDEVOPS_TRUSTED_PROXIES=<实际可信入口代理IP或CIDR，多个用逗号分隔>
 ```
 
 `compose.production.local` 覆盖示例：
@@ -42,6 +43,9 @@ x-app-env: &app-env
   SXDEVOPS_SEED_DATA: "0"
   SXDEVOPS_SEED_TEMPLATES: "0"
   AIOPS_LANGGRAPH_CHECKPOINT_BACKEND: mysql
+  CACHE_BACKEND: redis
+  CACHE_IGNORE_EXCEPTIONS: "0"
+  SXDEVOPS_TRUSTED_PROXIES: ${SXDEVOPS_TRUSTED_PROXIES:-}
 
 services:
   sxdevops:
@@ -58,6 +62,8 @@ services:
 
 该示例只覆盖配置，保留基础编排的命令、依赖及卷。不要在已有 MySQL 数据卷上仅修改初始化密码变量来“轮换密码”：已有账号密码须在数据库内另行变更，并同步应用配置。
 
+基础编排已移除历史默认 Fernet 密钥，缺少外部密钥时 Compose 会拒绝启动。首次部署生成独立密钥；已有环境先备份并核对实际生效的旧密钥及凭据解密情况。若曾使用公开默认值，应在维护窗口内使用旧密钥解密并用新密钥重新加密全部相关凭据，再同步三个服务，验证后恢复流量。仅更改环境变量会使旧数据无法解密；不能把源码移除默认值视为已经完成线上轮换。
+
 启动时始终带上同一份覆盖文件：
 
 ```bash
@@ -70,6 +76,10 @@ docker compose -f docker-compose.yml -f compose.production.local exec sxdevops p
 基础编排把 8000 端口发布到所有接口。正式环境应在私有部署配置中改为本机或内网监听，并由 HTTPS 反向代理统一入口；注意 Compose 的 `ports` 合并可能保留旧映射，应检查最终映射。代理需支持 WebSocket Upgrade，限制实际域名访问。不要把 MySQL、Redis 和管理终端直接暴露到公网。
 
 配置检查可使用 Compose 的 `config --quiet`；不要把包含解析后密码的完整 `config` 输出粘贴到 Issue 或日志中。完整变量含义与优先级见[配置参考](configuration.md)。
+
+登录限流使用同一 Redis 缓存库的原子计数，缓存不可用时拒绝登录。代理信任列表默认空；仅列入实际受控代理地址，由入口覆盖或正确追加 `X-Forwarded-For`。错误地信任任意网段会允许伪造来源，未配可信代理则可能将同一入口后的用户合并到一个 IP 限额，详见[账号与权限](user-permission-security.md)。
+
+调度器和 worker 启动时通过 `wait_for_schema` 等待迁移完成（最长 600 秒），自身不运行迁移。这避免新安装的启动竞态；已有环境仍需按下述维护窗口排空和停止旧进程。
 
 ## 备份与升级
 
@@ -116,7 +126,7 @@ docker compose exec sxdevops python manage.py showmigrations
 | 聊天一直排队 | worker 是否运行、数据库与 checkpoint 是否一致、是否存在旧图版本或过期租约 |
 | 定时采集不执行 | 调度器日志、任务启用状态与到期时间；不要并行启动多个调度器 |
 | CMDB 密码无法解密 | 是否沿用原 Fernet 密钥，JSON 配置是否覆盖环境变量 |
-| 权限变化后仍有终端连接 | HTTP 和新连接已重新鉴权；已建立 WebSocket 需另行主动关闭 |
+| 权限变化后仍有终端连接 | 确认 ASGI 已重启；四类终端每次输入及空闲每 5 秒复核权限，检查数据库可用性和进程调度 |
 | 返回 403 | 分别检查能力权限、资源范围、账号状态和功能开关，不只检查菜单 |
 | WebSocket 连接失败 | 代理 Upgrade / 超时、当前 Token、用户状态及对应终端权限 |
 | Chrome 安全警告仍存在 | 权限修复与浏览器信誉复审分别处理；见[站点安全说明](user-permission-security.md#站点安全告警处理) |

@@ -22,7 +22,7 @@ Compose 的 `.env` 用于变量插值，只有编排 `environment` / `env_file` 
 | `REDIS_URL` | Django 共享缓存，例如 `redis://redis:6379/0` |
 | `CHANNEL_REDIS_URL` | Channels 通信，例如 `redis://redis:6379/1` |
 | `CACHE_BACKEND` | `redis` 或 `local`；未配 Redis 时默认进程内缓存 |
-| `CACHE_IGNORE_EXCEPTIONS` | Redis 异常是否忽略；应结合限流和可用性要求明确设置 |
+| `CACHE_IGNORE_EXCEPTIONS` | Redis 异常是否忽略；部署清单设为 `0`，登录计数失败时拒绝登录 |
 
 JSON 示例中的 `database` 和 `cache` 字段分别映射这些设置。多实例环境应使用共享 Redis；进程内缓存无法统一登录限流计数。缓存容错不等于限流始终有效，应监控 Redis 故障并在入口网关补充限流。
 
@@ -35,6 +35,7 @@ JSON 示例中的 `database` 和 `cache` 字段分别映射这些设置。多实
 | `DEBUG` | 当前默认 `0`；生产保持关闭 |
 | `ALLOWED_HOSTS` | 当前默认 `*`；生产填写实际域名/IP，逗号分隔，不带协议和路径 |
 | `CORS_ALLOW_ALL_ORIGINS` | 当前后端默认开启；同源生产部署显式设置 `0` |
+| `SXDEVOPS_TRUSTED_PROXIES` | 默认空；逗号分隔的可信入口代理 IP/CIDR，控制登录 IP 对 `X-Forwarded-For` 的信任 |
 
 生成 Fernet 密钥：
 
@@ -52,6 +53,7 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 | --- | --- |
 | `SXDEVOPS_WAIT_FOR_DB` | 容器默认 `1`，等待 MySQL TCP 可连接，最长 120 秒 |
 | `SXDEVOPS_MIGRATE` | 容器默认 `1`；多实例升级应改为一次独立迁移 |
+| `SXDEVOPS_WAIT_FOR_SCHEMA` | 容器默认 `0`；Compose 后台服务设为 `1`，等待当前镜像要求的迁移完成，最长 600 秒；Kubernetes 使用初始化容器完成同一检查 |
 | `SXDEVOPS_SEED_DATA` | 默认 `0`；只在隔离体验环境显式导入业务演示数据 |
 | `SXDEVOPS_SEED_TEMPLATES` | 容器默认 `1`；正式升级建议独立评估模板同步，后台服务保持 `0` |
 | `SXDEVOPS_ADMIN_INITIAL_PASSWORD` | 迁移后在满足条件时创建初始 `admin`，不会重置现有账号；也可直接用 `createsuperuser` |

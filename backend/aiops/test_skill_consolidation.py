@@ -125,7 +125,7 @@ class ReusableSkillConsolidationTests(TestCase):
         config.refresh_from_db()
         self.assertEqual(config.enabled_skill_ids, [sources['answer-formatter'].pk])
 
-    def test_old_empty_selection_expands_but_new_empty_selection_stays_empty(self):
+    def test_legacy_selection_migrates_but_asset_switches_control_runtime(self):
         _, config = self.seed_legacy()
         config.enabled_skill_ids = []
         config.save(update_fields=['enabled_skill_ids'])
@@ -137,6 +137,9 @@ class ReusableSkillConsolidationTests(TestCase):
         get_agent_config()
         config.refresh_from_db()
         self.assertEqual(config.enabled_skill_ids, [])
+        enabled = AIOpsSkill.objects.filter(is_enabled=True, merged_into__isnull=True)
+        self.assertCountEqual(_get_selected_skills(config), enabled)
+        enabled.update(is_enabled=False)
         self.assertEqual(_get_selected_skills(config), [])
 
     def test_bootstrap_keeps_user_edits_disabled_state_and_bindings(self):

@@ -1877,6 +1877,7 @@ def _action_question_matches(action_code, question, analysis_scope=None):
         return (
             _question_contains_any(lowered, ['自愈', '修复', '处置', '脚本', '方案', '建议', '推荐', '自动恢复', '恢复'])
             and _question_contains_any(lowered, ['推荐', '方案', '脚本', '处置', '建议', '确认', '可以', '能不能', '是否', '恢复'])
+            and _question_contains_any(lowered, ['自愈', '修复', '处置', '脚本', '恢复', '告警', '故障', '异常', '错误', '超时', '服务'])
         )
     if action_code == 'host_task.generate':
         if _looks_like_k8s_task_request(text, {}):
@@ -3784,6 +3785,9 @@ def _resolve_cmdb_environment_scope(query='', environment='', business_line='', 
             best_name = next(item[1] for item in ranked if item[0] == best_length)
             matched_nodes = [item[2] for item in ranked if item[0] == best_length and item[1] == best_name]
 
+    if not explicit and not matched_nodes:
+        explicit = _extract_environment(text)
+        explicit_lower = explicit.lower()
     legacy_values = []
     if matched_nodes and queryset is not None:
         legacy_values = list(

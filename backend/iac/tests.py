@@ -4,13 +4,20 @@ import zipfile
 from unittest import mock
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
 from rest_framework.test import APIClient
 
 from cmdb.models import CIRelation, ConfigItem
 from iac.models import TerraformExecution, TerraformResourceBinding, TerraformStack
 
 
+class RetiredIacRouteTests(SimpleTestCase):
+    def test_legacy_endpoints_remain_unpublished(self):
+        for endpoint in ('catalog/', 'render/', 'bundle/', 'stacks/'):
+            self.assertEqual(self.client.get(f'/api/iac/{endpoint}').status_code, 404)
+
+
+@override_settings(ROOT_URLCONF='iac.test_urls')
 class TerraformIacTests(TestCase):
     def setUp(self):
         self.client = APIClient()

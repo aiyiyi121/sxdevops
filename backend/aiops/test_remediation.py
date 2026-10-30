@@ -10,7 +10,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from eventwall.models import EventRecord
-from ops.models import Alert, Host, HostTask, HostTaskExecution
+from ops.models import Alert, Host, HostTask, HostTaskExecution, MetricDataSource
 from rbac.models import PermissionDefinition, Role
 
 from . import langgraph_pilot, remediation
@@ -44,12 +44,12 @@ class RemediationVerificationTests(TestCase):
         langgraph_pilot.close_langgraph_resources()
         self.addCleanup(langgraph_pilot.close_langgraph_resources)
 
-    def configure(self, observation_seconds=0):
+    def configure(self, observation_seconds=0, health_policy=None):
         with mock.patch('aiops.remediation.timezone.now', return_value=self.base):
-            return remediation.configure_verification(self.action, self.user, self.environment.id, self.alert.id, observation_seconds)
+            return remediation.configure_verification(self.action, self.user, self.environment.id, self.alert.id, observation_seconds, health_policy)
 
-    def task(self, status='success'):
-        verification = self.configure()
+    def task(self, status='success', health_policy=None):
+        verification = self.configure(60 if health_policy else 0, health_policy)
         self.action.status = 'executed'
         self.action.confirmed_by = self.user.username
         self.action.confirmed_at = self.base + timedelta(seconds=1)
@@ -96,6 +96,126 @@ class RemediationVerificationTests(TestCase):
         result = self.run_verification()
         self.assertEqual(result.status, 'failed')
         self.assertIn('仍活跃', result.summary)
+
+    def health_policy(self, related_alert_ids=None):
+        source = MetricDataSource.objects.create(name='verification-metrics', config={'query_url': 'https://metrics.example.test'})
+        self.environment.metric_datasource_ids = [source.pk]
+        self.environment.save(update_fields=['metric_datasource_ids'])
+        return {'signals': [
+            {'name': '错误率', 'datasource_id': source.pk, 'query': 'service_error_ratio{service="order-service"}', 'comparison': 'lte', 'threshold': 0.01, 'step_seconds': 15},
+            {'name': '可用性', 'datasource_id': source.pk, 'query': 'service_up{service="order-service"}', 'comparison': 'eq', 'threshold': 1, 'step_seconds': 15},
+        ], 'related_alert_ids': related_alert_ids or []}
+
+    def metric_response(self, query, **kwargs):
+        start, end, step = kwargs['start_time'], kwargs['end_time'], kwargs['step']
+        value = 1 if query.startswith('service_up') else 0.001
+        samples = [[start.timestamp() + offset, str(value)] for offset in range(0, int((end - start).total_seconds()) + 1, step)]
+        return {'resultType': 'matrix', 'result': [{'metric': {'service': 'order-service'}, 'values': samples}]}
+
+    @mock.patch('aiops.verification_health.execute_promql_query')
+    def test_sustained_multi_signal_health_records_before_after_evidence(self, query):
+        query.side_effect = self.metric_response
+        policy = self.health_policy()
+        verification, task = self.task(health_policy=policy)
+        self.recover_alert()
+        result = self.run_verification()
+        self.assertEqual(result.status, 'passed', result.summary)
+        self.assertEqual(len(result.baseline['health_policy']['baseline_signals']), 2)
+        self.assertEqual(len(result.evidence['health']['signals']), 2)
+        self.assertFalse(result.evidence['causality']['causal_proof'])
+        self.assertEqual(result.evidence['health']['window_start'], self.alert.ends_at.isoformat())
+        self.assertEqual(query.call_count, 4)
+
+    @mock.patch('aiops.verification_health.execute_promql_query')
+    def test_missing_nan_and_unhealthy_samples_never_pass(self, query):
+        query.side_effect = self.metric_response
+        self.task(health_policy=self.health_policy())
+        self.recover_alert()
+        for defect, expected in [('gap', 'inconclusive'), ('nan', 'inconclusive'), ('threshold', 'failed'), ('empty', 'inconclusive')]:
+            with self.subTest(defect=defect):
+                def response(expression, **kwargs):
+                    payload = self.metric_response(expression, **kwargs)
+                    values = payload['result'][0]['values']
+                    if defect == 'gap':
+                        values.pop(1)
+                    elif defect == 'nan':
+                        values[1][1] = 'NaN'
+                    elif defect == 'threshold':
+                        values[1][1] = '10'
+                    else:
+                        payload['result'] = []
+                    return payload
+                query.side_effect = response
+                verification = AIOpsRemediationVerification.objects.get(action=self.action)
+                state = {'verification_id': verification.pk, **remediation._task_node({'verification_id': verification.pk}),
+                         **remediation._alert_node({'verification_id': verification.pk})}
+                self.assertEqual(remediation._verdict_node(state)['result']['status'], expected)
+
+    @mock.patch('aiops.verification_health.execute_promql_query')
+    def test_active_related_alert_prevents_health_success(self, query):
+        query.side_effect = self.metric_response
+        related = Alert.objects.create(title='关联可用性告警', environment='verification-test', status='active', fingerprint='availability')
+        self.task(health_policy=self.health_policy([related.pk]))
+        self.recover_alert()
+        self.assertEqual(self.run_verification().status, 'failed')
+
+    def test_related_alert_requires_valid_recovery_event(self):
+        related = Alert.objects.create(title='关联告警', environment='verification-test', status='active', fingerprint='related')
+        self.task(health_policy={'related_alert_ids': [related.pk]})
+        self.recover_alert()
+        related.status = 'resolved'
+        related.save(update_fields=['status'])
+        result = self.run_verification()
+        self.assertEqual(result.status, 'inconclusive')
+        self.assertIn('恢复时间', result.summary)
+
+    @mock.patch('aiops.verification_health.execute_promql_query')
+    def test_revoked_metric_permission_blocks_existing_health_evidence(self, query):
+        query.side_effect = self.metric_response
+        self.task(health_policy=self.health_policy())
+        self.recover_alert()
+        self.user.is_superuser = False
+        self.user.save(update_fields=['is_superuser'])
+        role = Role.objects.create(code='verification-observer', name='验证观察者')
+        for code in remediation.VERIFICATION_PERMISSIONS:
+            permission, _ = PermissionDefinition.objects.get_or_create(code=code, defaults={'name': code, 'category': 'aiops'})
+            role.permissions.add(permission)
+        role.users.add(self.user)
+        result = self.run_verification()
+        self.assertEqual(result.status, 'inconclusive')
+        self.assertFalse(remediation.verification_details(result, self.user)['evidence'])
+        self.assertEqual(query.call_count, 2)
+
+    @mock.patch('aiops.verification_health.execute_promql_query')
+    def test_health_observation_starts_after_recovery(self, query):
+        query.side_effect = self.metric_response
+        self.task(health_policy=self.health_policy())
+        self.recover_alert()
+        with mock.patch('aiops.remediation.timezone.now', return_value=self.base + timedelta(seconds=85)):
+            self.assertIsNone(remediation.claim_verification())
+
+    @mock.patch('aiops.verification_health.execute_promql_query')
+    def test_datasource_rebinding_invalidates_health_evidence(self, query):
+        query.side_effect = self.metric_response
+        policy = self.health_policy()
+        self.task(health_policy=policy)
+        self.recover_alert()
+        MetricDataSource.objects.filter(pk=policy['signals'][0]['datasource_id']).update(config={'query_url': 'https://changed.example.test'})
+        self.assertEqual(self.run_verification().status, 'inconclusive')
+
+    def test_health_policy_rejects_datasource_outside_environment(self):
+        policy = self.health_policy()
+        self.environment.metric_datasource_ids = []
+        self.environment.save(update_fields=['metric_datasource_ids'])
+        from django.core.exceptions import PermissionDenied
+        with self.assertRaises(PermissionDenied):
+            self.configure(60, policy)
+
+    @mock.patch('aiops.verification_health.execute_promql_query', side_effect=RuntimeError('sensitive upstream error'))
+    def test_baseline_query_failure_is_redacted_and_not_saved(self, query):
+        with self.assertRaisesRegex(ValueError, '无法读取'):
+            self.configure(60, self.health_policy())
+        self.assertFalse(AIOpsRemediationVerification.objects.filter(action=self.action).exists())
 
     def test_verification_audit_actions_fit_database_field(self):
         verification, task = self.task()
@@ -169,7 +289,7 @@ class RemediationVerificationTests(TestCase):
         with mock.patch('aiops.remediation._alert_node', side_effect=revoke):
             result = self.run_verification()
         self.assertEqual(result.status, 'inconclusive')
-        self.assertEqual(result.evidence, {'task': {}, 'alert': {}})
+        self.assertEqual(result.evidence, {'task': {}, 'alert': {}, 'health': {}, 'causality': {}})
 
     def test_environment_mapping_changes_do_not_expand_scope(self):
         self.task()
@@ -307,4 +427,4 @@ class RemediationVerificationTests(TestCase):
         remediation.process_verification(result)
         result.refresh_from_db()
         self.assertEqual(result.status, 'inconclusive')
-        self.assertEqual(result.evidence, {'task': {}, 'alert': {}})
+        self.assertEqual(result.evidence, {'task': {}, 'alert': {}, 'health': {}, 'causality': {}})

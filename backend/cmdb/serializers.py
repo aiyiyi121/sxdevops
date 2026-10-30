@@ -616,11 +616,9 @@ class ConfigItemSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({'environment_node': '所选环境不属于当前业务线'})
 
         if 'business_node' in attrs:
-            attrs['business_line'] = business_node.name if business_node else ''
+            attrs['business_line'] = business_node.name if business_node else attrs.get('business_line', '')
         if 'environment_node' in attrs:
-            # Environment resource nodes use display names such as "生产". Persist
-            # the CMDB environment code so filters, permissions, and statistics agree.
-            attrs['environment'] = _normalize_resource_environment(environment_node.name) if environment_node else ''
+            attrs['environment'] = _normalize_resource_environment(environment_node.name) if environment_node else attrs.get('environment', '')
 
         if 'resource_node' in attrs:
             attributes = dict(attrs.get('attributes', getattr(instance, 'attributes', {}) or {}))
@@ -640,10 +638,10 @@ class ConfigItemSerializer(serializers.ModelSerializer):
     def _sync_scope_fields(self, validated_data):
         if 'business_node' in validated_data:
             business_node = validated_data['business_node']
-            validated_data['business_line'] = business_node.name if business_node else ''
+            validated_data['business_line'] = business_node.name if business_node else validated_data.get('business_line', '')
         if 'environment_node' in validated_data:
             environment_node = validated_data['environment_node']
-            validated_data['environment'] = _normalize_resource_environment(environment_node.name) if environment_node else ''
+            validated_data['environment'] = _normalize_resource_environment(environment_node.name) if environment_node else validated_data.get('environment', '')
         return validated_data
 
     def create(self, validated_data):

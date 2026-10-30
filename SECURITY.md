@@ -4,7 +4,9 @@
 
 ## 私密反馈
 
-优先使用仓库的 [GitHub 私密漏洞报告](https://github.com/aiyiyi121/sxdevops-bak/security/advisories/new)。该入口需要仓库维护者启用 Private vulnerability reporting；本文不代表该设置已经开启。
+仓库的 [GitHub 私密漏洞报告](https://github.com/aiyiyi121/sxdevops/security/advisories/new)需要维护者先启用 Private vulnerability reporting。2026-10-30 通过 GitHub API 核实，该设置为关闭状态，目前不能将此链接视为已可用的报告渠道。
+
+维护者可在 [仓库安全设置](https://github.com/aiyiyi121/sxdevops/settings/security_analysis)启用 Private vulnerability reporting，随后核对报告入口，并用 `GET /repos/aiyiyi121/sxdevops/private-vulnerability-reporting` 确认 `enabled: true`。未配置专用安全邮箱前，必须先完成此项再对外承诺私密报告服务。
 
 若入口不可用，请通过 [维护者 GitHub 主页](https://github.com/aiyiyi121)已有的私密联系方式联系。项目目前未公布专用安全邮箱；没有可用私密渠道时，只在 Issue 留下“需要私密安全联系渠道”的请求，不公开漏洞细节、载荷或凭据。维护者应在正式对外运营前确认至少一条渠道可用。
 

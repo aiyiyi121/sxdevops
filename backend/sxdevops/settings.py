@@ -568,6 +568,10 @@ OBSERVABILITY_CONFIG = {
 
 CACHES = _build_cache_config()
 
+# Only these reverse proxies may supply client IP forwarding headers.
+LOGIN_TRUSTED_PROXIES = [value.strip() for value in os.getenv('SXDEVOPS_TRUSTED_PROXIES', '').split(',') if value.strip()]
+WEBSOCKET_AUTH_RECHECK_SECONDS = 5
+
 
 def _build_channel_layers():
     redis_url = os.getenv('CHANNEL_REDIS_URL') or os.getenv('REDIS_URL', '')

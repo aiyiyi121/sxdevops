@@ -546,12 +546,12 @@ def _is_chat_change_correlation_question(question: str) -> bool:
     lowered = str(question or '').lower()
     has_change_scope = any(keyword in lowered for keyword in (
         '变更', '发布', '上线', '部署', '工单', '回滚', '事件',
-        'release', 'deploy', 'change', 'rollout', 'event',
+        'release', 'change', 'rollout', 'event',
     ))
     has_correlation_intent = any(keyword in lowered for keyword in (
         '关联', '关系', '影响', '导致', '相关', '时间线',
         '异常', '错误率', '升高', '下降', '原因', '为什么', '排查',
-        'correlat', 'impact', 'caused', '有哪些', '哪些', '最近', '今天', '查询', '查看', '分析',
+        'correlat', 'impact', 'caused',
     ))
     return has_change_scope and has_correlation_intent
 

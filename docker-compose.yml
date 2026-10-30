@@ -18,11 +18,14 @@ services:
       MYSQL_DATABASE: sxdevops
       MYSQL_USER: sxdevops
       MYSQL_PASSWORD: sxdevops_password
+      CACHE_BACKEND: redis
+      CACHE_IGNORE_EXCEPTIONS: "0"
+      SXDEVOPS_TRUSTED_PROXIES: ${SXDEVOPS_TRUSTED_PROXIES:-}
       REDIS_URL: redis://redis:6379/0
       CHANNEL_REDIS_URL: redis://redis:6379/1
       SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY to a unique random value before starting Compose}
       # Keep this Fernet key unchanged after CMDB credentials have been saved.
-      CMDB_PASSWORD_ENCRYPTION_KEY: Bm9pdbvCPunUeVOQFB159RpP7vXe3tsczstEx1kw76I=
+      CMDB_PASSWORD_ENCRYPTION_KEY: ${CMDB_PASSWORD_ENCRYPTION_KEY:?Set a persistent Fernet key; preserve the existing key on upgrades}
       DEBUG: "0"
       CORS_ALLOW_ALL_ORIGINS: "1"
       SXDEVOPS_WAIT_FOR_DB: "1"
@@ -51,13 +54,17 @@ services:
       MYSQL_DATABASE: sxdevops
       MYSQL_USER: sxdevops
       MYSQL_PASSWORD: sxdevops_password
+      CACHE_BACKEND: redis
+      CACHE_IGNORE_EXCEPTIONS: "0"
+      SXDEVOPS_TRUSTED_PROXIES: ${SXDEVOPS_TRUSTED_PROXIES:-}
       REDIS_URL: redis://redis:6379/0
       CHANNEL_REDIS_URL: redis://redis:6379/1
       SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY to a unique random value before starting Compose}
-      CMDB_PASSWORD_ENCRYPTION_KEY: Bm9pdbvCPunUeVOQFB159RpP7vXe3tsczstEx1kw76I=
+      CMDB_PASSWORD_ENCRYPTION_KEY: ${CMDB_PASSWORD_ENCRYPTION_KEY:?Set a persistent Fernet key; preserve the existing key on upgrades}
       DEBUG: "0"
       SXDEVOPS_WAIT_FOR_DB: "1"
       SXDEVOPS_MIGRATE: "0"
+      SXDEVOPS_WAIT_FOR_SCHEMA: "1"
       SXDEVOPS_SEED_DATA: "0"
       SXDEVOPS_SEED_TEMPLATES: "0"
     command: ["python", "manage.py", "run_cmdb_sync_scheduler", "--interval", "60", "--limit", "10"]
@@ -78,13 +85,17 @@ services:
       MYSQL_DATABASE: sxdevops
       MYSQL_USER: sxdevops
       MYSQL_PASSWORD: sxdevops_password
+      CACHE_BACKEND: redis
+      CACHE_IGNORE_EXCEPTIONS: "0"
+      SXDEVOPS_TRUSTED_PROXIES: ${SXDEVOPS_TRUSTED_PROXIES:-}
       REDIS_URL: redis://redis:6379/0
       CHANNEL_REDIS_URL: redis://redis:6379/1
       SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY to a unique random value before starting Compose}
-      CMDB_PASSWORD_ENCRYPTION_KEY: Bm9pdbvCPunUeVOQFB159RpP7vXe3tsczstEx1kw76I=
+      CMDB_PASSWORD_ENCRYPTION_KEY: ${CMDB_PASSWORD_ENCRYPTION_KEY:?Set a persistent Fernet key; preserve the existing key on upgrades}
       DEBUG: "0"
       SXDEVOPS_WAIT_FOR_DB: "1"
       SXDEVOPS_MIGRATE: "0"
+      SXDEVOPS_WAIT_FOR_SCHEMA: "1"
       SXDEVOPS_SEED_DATA: "0"
       SXDEVOPS_SEED_TEMPLATES: "0"
       AIOPS_LANGGRAPH_CHECKPOINT_BACKEND: mysql

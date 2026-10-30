@@ -13,8 +13,9 @@ django_asgi_app = get_asgi_application()
 
 from channels.routing import ProtocolTypeRouter, URLRouter
 from ops.routing import websocket_urlpatterns
+from rbac.websocket import TerminalRevocationMiddleware
 
 application = ProtocolTypeRouter({
     'http': django_asgi_app,
-    'websocket': URLRouter(websocket_urlpatterns),
+    'websocket': TerminalRevocationMiddleware(URLRouter(websocket_urlpatterns)),
 })

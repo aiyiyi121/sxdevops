@@ -33,6 +33,10 @@ if [ "${SXDEVOPS_MIGRATE:-1}" = "1" ]; then
   python manage.py migrate --noinput
 fi
 
+if [ "${SXDEVOPS_WAIT_FOR_SCHEMA:-0}" = "1" ]; then
+  python manage.py wait_for_schema --timeout 600
+fi
+
 if [ "${SXDEVOPS_SEED_DATA:-0}" = "1" ]; then
   python manage.py seed_data
 fi

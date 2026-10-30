@@ -64,6 +64,8 @@ def _ci_type(name, **defaults):
 class AuthenticatedTestCase(TestCase):
     def setUp(self):
         super().setUp()
+        cache.clear()
+        self.addCleanup(cache.clear)
         self.user = get_user_model().objects.create_superuser('cmdb-admin', 'cmdb@example.com', 'Admin@123456')
         self.client.force_login(self.user)
 
@@ -2605,7 +2607,7 @@ class CmdbResourceRequestTests(AuthenticatedTestCase):
         self.assertEqual(delete_env_response.status_code, 400)
         self.assertIn('detail', delete_env_response.json())
 
-    def test_request_api_only_accepts_host_resource_type(self):
+    def test_request_api_accepts_supported_cloud_resources_and_rejects_unknown_types(self):
         response = self.client.post(
             '/api/cmdb/resource-requests/',
             {
@@ -2617,8 +2619,13 @@ class CmdbResourceRequestTests(AuthenticatedTestCase):
             },
         )
 
-        self.assertEqual(response.status_code, 400)
-        self.assertIn('resource_type', response.json())
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(response.json()['resource_type'], 'redis')
+        invalid = self.client.post('/api/cmdb/resource-requests/', {
+            'title': '不支持的类型', 'resource_type': 'unsupported-resource', 'reason': 'validation',
+        })
+        self.assertEqual(invalid.status_code, 400)
+        self.assertIn('resource_type', invalid.json())
 
 
 class CmdbSearchAndSyncTests(AuthenticatedTestCase):
@@ -4864,9 +4871,8 @@ class CmdbPhaseOneMetadataTests(AuthenticatedTestCase):
             'esxi_version',
             'esxi_build',
             'cpu_total_mhz',
-            'cpu_used_mhz',
-            'memory_used_gb',
         }.issubset(idc_fields))
+        self.assertTrue({'cpu_used_mhz', 'memory_used_gb'}.isdisjoint(idc_fields))
         self.assertFalse(CIField.objects.get(ci_type=idc_type, code='private_ip').required)
         self.assertFalse(CIField.objects.get(ci_type=idc_type, code='idc').required)
         cloud_fields = set(CIField.objects.filter(ci_type=cloud_type).values_list('code', flat=True))
@@ -5561,7 +5567,7 @@ class CmdbPhaseOneMetadataTests(AuthenticatedTestCase):
         dashboard_response = self.client.get('/api/cmdb/dashboard/stats/')
         self.assertEqual(dashboard_response.status_code, 200)
         dashboard = dashboard_response.json()
-        self.assertEqual(dashboard['risk_summary']['third_party_expiry'], 1)
+        self.assertEqual(dashboard['risk_summary']['service_expiry'], 1)
         self.assertTrue(any(item['type'].startswith('third_party_') for item in dashboard['application_suggestions']))
 
         summary_response = self.client.get('/api/cmdb/config-items/third-party-expiry-summary/')
@@ -10436,7 +10442,7 @@ class CmdbPhaseOneMetadataTests(AuthenticatedTestCase):
         response = self.client.post(f'/api/cmdb/sync-jobs/{job.id}/retry-failed/')
 
         self.assertEqual(response.status_code, 200, response.content)
-        self.assertEqual(response.json()['summary']['create'], 1)
+        self.assertEqual(response.json()['summary'].get('create'), 1, response.json())
         failed_record.refresh_from_db()
         self.assertEqual(failed_record.retry_status, 'success')
         self.assertEqual(failed_record.retry_count, 1)
@@ -10755,8 +10761,8 @@ class CmdbPhaseOneMetadataTests(AuthenticatedTestCase):
 
     def test_config_item_bulk_import_accepts_utf8_bom_csv_template(self):
         csv_text = (
-            '\ufeffci_type_name,ci_type_code,name,source_unique_id,business_line,environment,admin_user\n'
-            '云主机(ECS),CLOUD_SERVER,bom-import-ecs-01,bom-import-001,core,prod,ops\n'
+            '\ufeffci_type_name,ci_type_code,name,source_unique_id,business_line,environment,admin_user,instance_id,private_ip\n'
+            '云主机(ECS),CLOUD_SERVER,bom-import-ecs-01,bom-import-001,core,prod,ops,i-bom-001,192.0.2.10\n'
         )
 
         response = self.client.post(
@@ -10771,7 +10777,7 @@ class CmdbPhaseOneMetadataTests(AuthenticatedTestCase):
         )
 
         self.assertEqual(response.status_code, 200, response.content)
-        self.assertEqual(response.json()['summary']['create'], 1)
+        self.assertEqual(response.json()['summary'].get('create'), 1, response.json())
 
     def test_config_item_bulk_import_accepts_chinese_template_headers(self):
         ci_type = _ci_type('中文导入云主机', code='CHINESE_IMPORT_CLOUD_SERVER')
@@ -11144,7 +11150,7 @@ class CmdbPhaseOneMetadataTests(AuthenticatedTestCase):
         first_issue.refresh_from_db()
         second_issue.refresh_from_db()
         self.assertEqual(first.business_line, 'core')
-        self.assertEqual(second.environment, environment_node.name)
+        self.assertEqual(second.environment, 'prod')
         self.assertEqual(first.attributes['department'], '基础架构部')
         self.assertEqual(first_issue.status, 'resolved')
         self.assertEqual(second_issue.status, 'resolved')
@@ -11348,7 +11354,7 @@ class CmdbPhaseOneMetadataTests(AuthenticatedTestCase):
     def test_config_item_bulk_update_updates_scope_tags_attributes_and_audit(self):
         ci_type = _ci_type('批量维护云主机', code='BULK_UPDATE_SERVER')
         business_node = ResourceNode.objects.create(name='bulk-target-business', node_type='biz')
-        environment_node = ResourceNode.objects.create(name='生产', node_type='env', parent=business_node)
+        environment_node = ResourceNode.objects.create(name='prod', node_type='env', parent=business_node)
         first = ConfigItem.objects.create(
             name='bulk-update-ecs-01',
             ci_type=ci_type,

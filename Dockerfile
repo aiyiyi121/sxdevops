@@ -35,6 +35,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY LICENSE /app/LICENSE
+COPY THIRD_PARTY_NOTICES.md /app/THIRD_PARTY_NOTICES.md
+COPY licenses/ /app/licenses/
 COPY backend/ /app/backend/
 COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
 COPY docker/entrypoint.sh /entrypoint.sh

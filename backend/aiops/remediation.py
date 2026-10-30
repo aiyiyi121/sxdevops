@@ -15,9 +15,10 @@ from ops.models import Alert, HostTask
 from rbac.services import user_has_permissions
 
 from .models import AIOpsGraphNodeRun, AIOpsKnowledgeEnvironment, AIOpsPendingAction, AIOpsRemediationVerification
+from .verification_health import collect_signal, observation_end, prepare_health_policy, require_health_access
 
 
-VERIFICATION_GRAPH_VERSION = 1
+VERIFICATION_GRAPH_VERSION = 2
 VERIFICATION_PERMISSIONS = ('aiops.chat.analyze', 'ops.alert.view')
 TERMINAL_TASK_STATUSES = ('success', 'partial', 'failed', 'canceled')
 
@@ -31,6 +32,7 @@ class VerificationState(TypedDict, total=False):
     thread_id: str
     task_evidence: dict
     alert_evidence: dict
+    health_evidence: dict
     result: dict
     trace: list
 
@@ -54,11 +56,12 @@ def _require_access(verification, user=None):
     if (not environment or not environment.is_enabled
             or sorted(environment.alert_environments) != sorted(baseline.get('alert_environments') or [])):
         raise PermissionDenied('知识环境或告警关联已变化，请重新核对验证范围。')
+    require_health_access(baseline, environment, user)
     return user
 
 
 @transaction.atomic
-def configure_verification(action, user, environment_id, alert_id, observation_seconds=60):
+def configure_verification(action, user, environment_id, alert_id, observation_seconds=60, health_policy=None):
     if not user.is_active or not user_has_permissions(user, VERIFICATION_PERMISSIONS):
         raise PermissionDenied('当前账号无权配置效果验证。')
     if not isinstance(observation_seconds, int) or not 0 <= observation_seconds <= 600:
@@ -75,7 +78,8 @@ def configure_verification(action, user, environment_id, alert_id, observation_s
     existing = AIOpsRemediationVerification.objects.filter(action=action).first()
     if existing:
         if (existing.environment_id == environment_id and existing.baseline.get('alert', {}).get('id') == alert_id
-                and existing.observation_seconds == observation_seconds):
+                and existing.observation_seconds == observation_seconds
+                and existing.baseline.get('health_request', {}) == (health_policy or {})):
             return existing
         raise ValueError('本次动作已有验证基线，请保留原始证据。')
     environment = AIOpsKnowledgeEnvironment.objects.filter(pk=environment_id, is_enabled=True).first()
@@ -84,13 +88,16 @@ def configure_verification(action, user, environment_id, alert_id, observation_s
     alert = Alert.objects.filter(pk=alert_id, environment__in=environment.alert_environments).first()
     if not alert or alert.status != Alert.STATUS_ACTIVE:
         raise ValueError('请选择该环境内当前活跃的告警。')
+    captured_at = timezone.now()
+    health = prepare_health_policy(health_policy, environment, user, observation_seconds, captured_at, _snapshot, alert)
     verification = AIOpsRemediationVerification.objects.create(
         action=action, environment=environment,
         thread_id=f'aiops-verification-{action.id}-{uuid.uuid4().hex}',
         observation_seconds=observation_seconds,
         baseline={
             'environment_name': environment.name, 'alert_environments': list(environment.alert_environments),
-            'captured_at': timezone.now().isoformat(), 'alert': _snapshot(alert),
+            'captured_at': captured_at.isoformat(), 'alert': _snapshot(alert),
+            'health_request': health_policy or {}, 'health_policy': health,
         },
         summary='已保存处置前告警证据，等待在任务中心创建并执行任务。',
     )
@@ -151,7 +158,23 @@ def _alert_node(state, config=None):
     alert = Alert.objects.filter(
         pk=(baseline.get('alert') or {}).get('id'), environment__in=baseline['alert_environments'],
     ).first()
-    return {'alert_evidence': _snapshot(alert) if alert else {}}
+    policy = baseline.get('health_policy') or {}
+    related = list(Alert.objects.filter(
+        pk__in=[row['id'] for row in policy.get('related_alerts') or []],
+        environment__in=baseline['alert_environments'],
+    ).order_by('id'))
+    end = observation_end(verification, timezone.now())
+    start = end - timedelta(seconds=verification.observation_seconds)
+    health = {'related_alerts': [_snapshot(row) for row in related], 'signals': [],
+              'window_start': start.isoformat(), 'window_end': end.isoformat()}
+    if policy and timezone.now() < end:
+        raise ValueError('告警恢复后的完整观察窗口尚未结束，不能提前判定健康。')
+    for signal in policy.get('signals') or []:
+        try:
+            health['signals'].append(collect_signal(signal, start, end))
+        except Exception:
+            health['signals'].append({'name': signal['name'], 'status': 'inconclusive', 'error': '指标查询失败'})
+    return {'alert_evidence': _snapshot(alert) if alert else {}, 'health_evidence': health}
 
 
 def _verdict_node(state, config=None):
@@ -182,7 +205,43 @@ def _verdict_node(state, config=None):
         summary = '平台已收到该告警在任务开始后的恢复事件；此结果不证明处置因果或业务整体健康。'
     elif alert.get('status') in (Alert.STATUS_CLOSED, Alert.STATUS_MUTED):
         summary = '告警被关闭或屏蔽，不能据此判定故障恢复。'
-    return {'result': {'status': status, 'summary': summary, 'task': task, 'alert': alert}}
+    health = state.get('health_evidence') or {}
+    policy = baseline.get('health_policy') or {}
+    if status == AIOpsRemediationVerification.STATUS_PASSED and policy:
+        related = {row['id']: row for row in health.get('related_alerts') or []}
+        for before in policy.get('related_alerts') or []:
+            after = related.get(before['id'], {})
+            if after.get('status') == Alert.STATUS_ACTIVE:
+                status, summary = 'failed', '关联告警仍活跃，多信号验证未通过。'
+                break
+            if after.get('fingerprint') != before['fingerprint'] or after.get('status') != Alert.STATUS_RESOLVED:
+                status, summary = 'inconclusive', '关联告警缺失、已变更或被人工关闭，健康证据不足。'
+                break
+            related_ended = parse_datetime(after.get('ends_at') or '')
+            related_received = parse_datetime(after.get('last_received_at') or '')
+            if (not related_ended or not related_received or related_ended > timezone.now()
+                    or related_received > timezone.now()
+                    or (before.get('status') == Alert.STATUS_ACTIVE
+                        and (related_ended < started or related_received < started))):
+                status, summary = 'inconclusive', '关联告警缺少有效恢复时间，健康证据不足。'
+                break
+        if status == 'passed':
+            results = health.get('signals') or []
+            if len(results) != len(policy.get('signals') or []) or any(row['status'] == 'inconclusive' for row in results):
+                status, summary = 'inconclusive', '观察窗口存在缺失、非有限值或查询失败，不能判定持续达标。'
+            elif any(row['status'] == 'unhealthy' for row in results):
+                status, summary = 'failed', '观察窗口内至少一个指标采样未达阈值，多信号验证未通过。'
+            elif health.get('signals'):
+                summary = '告警已恢复，配置的指标在完整观察窗口的每个采样点均达标；结果不证明处置因果或未观测业务健康。'
+            else:
+                summary = '主告警及配置的关联告警均已恢复；结果不证明持续指标达标、处置因果或未观测业务健康。'
+    causality = {'assessment': 'temporal_association_only', 'causal_proof': False,
+                 'action_id': verification.action_id, 'task_id': verification.task_id,
+                 'baseline_captured_at': baseline.get('captured_at'), 'task_started_at': task.get('started_at'),
+                 'alert_recovered_at': alert.get('ends_at'),
+                 'review_required': '需结合任务目标、同期变更及独立业务证据复核归因；不能排除自发恢复或其他干预。'}
+    return {'result': {'status': status, 'summary': summary, 'task': task, 'alert': alert,
+                       'health': health, 'causality': causality}}
 
 
 def get_verification_graph():
@@ -217,7 +276,7 @@ def claim_verification(lease_seconds=120):
     ).select_related('task').order_by('created_at', 'id')[:100]
     for candidate in candidates:
         if (not candidate.task or not candidate.task.finished_at
-                or candidate.task.finished_at + timedelta(seconds=candidate.observation_seconds) > now):
+                or observation_end(candidate, now) > now):
             continue
         token = uuid.uuid4()
         claimed = AIOpsRemediationVerification.objects.filter(pk=candidate.pk).filter(
@@ -259,8 +318,12 @@ def process_verification(verification):
         final = snapshot.values if snapshot.values and not snapshot.next else graph.invoke(initial, config=config)
         _verification({'verification_id': verification.id})
         result = final['result']
+        current_alert = Alert.objects.filter(pk=verification.baseline['alert']['id']).first()
+        related_ids = [row['id'] for row in (verification.baseline.get('health_policy') or {}).get('related_alerts') or []]
+        current_related = [_snapshot(row) for row in Alert.objects.filter(pk__in=related_ids).order_by('id')]
         if (_task_node(final)['task_evidence'] != result['task']
-                or _alert_node(final)['alert_evidence'] != result['alert']):
+                or (_snapshot(current_alert) if current_alert else {}) != result['alert']
+                or current_related != (result.get('health') or {}).get('related_alerts', [])):
             result = {'status': 'inconclusive', 'summary': '验证期间任务或告警发生变化，请重新核对当前证据。', 'task': {}, 'alert': {}}
     except ChatJobLeaseLost:
         return
@@ -273,7 +336,10 @@ def process_verification(verification):
         return
     with transaction.atomic():
         changed = owned().update(
-            status=result['status'], summary=result['summary'], evidence={'task': result['task'], 'alert': result['alert']},
+            status=result['status'], summary=result['summary'], evidence={
+                'task': result['task'], 'alert': result['alert'],
+                'health': result.get('health', {}), 'causality': result.get('causality', {}),
+            },
             finished_at=timezone.now(), claim_token=None, lease_until=None, updated_at=timezone.now(),
         )
         if changed:

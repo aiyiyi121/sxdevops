@@ -1,12 +1,12 @@
 # Kubernetes 部署指南
 
-仓库 [k8s/sxdevops.yaml](../k8s/sxdevops.yaml) 是单副本基础示例，包含应用、CMDB 调度器、MySQL 8、Redis 7 与 PVC；尚未包含 AIOps worker。正式部署需补齐下面的配置与 worker，已有环境升级另见 [v2 升级说明](releases/v2.0.0-release-guide.md)。
+仓库 [k8s/sxdevops.yaml](../k8s/sxdevops.yaml) 是单副本基础示例，包含 Web、CMDB 调度器、AIOps worker、MySQL 8、Redis 7 与 PVC。三个应用进程使用共享 MySQL / Redis，checkpoint 使用 MySQL。已有环境升级另见 [v2 升级说明](releases/v2.0.0-release-guide.md)。
 
 ## 部署前准备
 
 - 集群有可用 StorageClass 或预先准备的 PV，支持 `ReadWriteOnce`。
 - 应用镜像由 CI/CD 或独立构建机从固定提交构建，并推送到节点可访问的 OCI 仓库；Kubernetes 节点不负责构建镜像。
-- 将应用、调度器和新增 worker 的镜像替换为同一固定版本或 digest。清单原有的 `v1.0.0` 地址只是占位示例，不是当前发行镜像。
+- 将应用、调度器、worker 及两个 `wait-for-schema` 初始化容器的镜像替换为同一固定版本或 digest。`registry.example.com/sxdevops/sxdevops:latest` 只是占位示例，不是可直接部署的发行镜像。
 - 私有仓库认证通过 `imagePullSecrets` 提供，基础镜像也需满足集群网络策略。
 
 仅在私有部署副本中配置真实参数，不把密钥提交回公共仓库。
@@ -23,6 +23,9 @@
 ALLOWED_HOSTS: "<实际访问域名,必要的本机地址>"
 CORS_ALLOW_ALL_ORIGINS: "0"
 AIOPS_LANGGRAPH_CHECKPOINT_BACKEND: mysql
+CACHE_BACKEND: redis
+CACHE_IGNORE_EXCEPTIONS: "0"
+SXDEVOPS_TRUSTED_PROXIES: "<实际可信入口代理的IP或CIDR，多个用逗号分隔>"
 SXDEVOPS_SEED_DATA: "0"
 ```
 
@@ -30,47 +33,15 @@ SXDEVOPS_SEED_DATA: "0"
 
 ## AIOps worker 与共享 checkpoint
 
-在应用和 worker 读取的 ConfigMap 中设置 MySQL checkpoint 后，新增以下 Deployment，并替换镜像。私有仓库的 `imagePullSecrets` 也需配置到 worker。
+基础清单已经包含 `aiops-chat-worker` Deployment，命令为 `python manage.py run_aiops_chat_worker --interval 2`；不要再创建另一套重复 worker。调度器和 worker 的初始化容器先等待依赖端口，再通过 `wait_for_schema --timeout 600` 等待当前镜像要求的迁移全部完成。此命令只检查，不执行迁移；超时需检查迁移进程。
 
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: sxdevops-aiops-chat-worker
-  namespace: sxdevops
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: sxdevops-aiops-chat-worker
-  template:
-    metadata:
-      labels:
-        app: sxdevops-aiops-chat-worker
-    spec:
-      containers:
-        - name: worker
-          image: your-registry/sxdevops:v2.0.0
-          args: ["python", "manage.py", "run_aiops_chat_worker", "--interval", "2"]
-          envFrom:
-            - configMapRef:
-                name: sxdevops-config
-            - secretRef:
-                name: sxdevops-secrets
-          env:
-            - name: SXDEVOPS_MIGRATE
-              value: "0"
-            - name: SXDEVOPS_SEED_DATA
-              value: "0"
-            - name: SXDEVOPS_SEED_TEMPLATES
-              value: "0"
-```
+Web、调度器和 worker 从同一 ConfigMap 读取 MySQL、Redis、checkpoint 配置，并只引用所需的应用 Secret 键，后台进程禁用迁移与自动初始化。`MYSQL_ROOT_PASSWORD` 仅供 MySQL 使用。三者共享 `CMDB_PASSWORD_ENCRYPTION_KEY`，不能各自生成。MySQL checkpoint 保存在数据库中；不要配置每个 Pod 独立的 SQLite checkpoint 来共享异步任务。
 
-worker 沿用镜像入口等待数据库，部署前先完成迁移。MySQL checkpoint 保存在数据库中；若另有运行文件，按实际需求挂载持久存储。不要给不同 Pod 配置各自本地 SQLite checkpoint 来共享异步任务。
+这些等待机制用于启动顺序，不能保证新旧镜像并行写入的兼容性。已有环境仍需排空并停止旧后台服务，完成一次迁移后再启动同版本的三个应用进程。验证图版本从 1 升到 2，旧验证 checkpoint 不跨图版本恢复；升级前处理完未完成验证。
 
 ## 启动与验证
 
-下面命令中的路径应替换为已完成上述配置的私有部署清单；worker 单独保存时也需应用。不要直接使用公共示例默认密码上线。
+下面命令中的路径应替换为已完成上述配置的私有部署清单。不要直接使用公共示例默认密码上线。
 
 ```bash
 kubectl apply -f <私有部署清单>
@@ -78,7 +49,7 @@ kubectl -n sxdevops rollout status deployment/mysql --timeout=5m
 kubectl -n sxdevops rollout status deployment/redis --timeout=5m
 kubectl -n sxdevops rollout status deployment/sxdevops --timeout=10m
 kubectl -n sxdevops rollout status deployment/cmdb-sync-scheduler --timeout=5m
-kubectl -n sxdevops rollout status deployment/sxdevops-aiops-chat-worker --timeout=5m
+kubectl -n sxdevops rollout status deployment/aiops-chat-worker --timeout=5m
 kubectl -n sxdevops exec deployment/sxdevops -- python manage.py createsuperuser
 kubectl -n sxdevops port-forward service/sxdevops 8000:8000
 ```
@@ -93,7 +64,7 @@ kubectl -n sxdevops exec deployment/sxdevops -- python manage.py check
 kubectl -n sxdevops exec deployment/sxdevops -- python manage.py showmigrations
 kubectl -n sxdevops logs deployment/sxdevops --tail=100
 kubectl -n sxdevops logs deployment/cmdb-sync-scheduler --tail=100
-kubectl -n sxdevops logs deployment/sxdevops-aiops-chat-worker --tail=100
+kubectl -n sxdevops logs deployment/aiops-chat-worker --tail=100
 ```
 
 外部域名通过 HTTPS Ingress 暴露应用 8000 端口，启用 WebSocket Upgrade 并验证超时。MySQL 和 Redis 保持内部访问。CMDB 调度器维持单副本；worker 与应用配置变更后要重启对应 Pod，使环境变量生效。

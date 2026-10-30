@@ -7970,13 +7970,16 @@ class AIOpsApiTests(TestCase):
         session_id = session_response.data['id']
         AIOpsChatSession.objects.filter(pk=session_id).update(context={'current_environment': {'name': 'prod'}})
         Host.objects.create(hostname='legacy-data-sync', ip_address='192.0.2.3', environment='prod', status='offline')
+        resource_env = TaskResourceGroup.objects.create(name='任务生产环境', code='task-prod', group_type='environment')
+        TaskResource.objects.create(name='legacy-data-sync', environment=resource_env, resource_type='host', status='active', ip_address='192.0.2.3')
+        AIOpsKnowledgeEnvironment.objects.filter(name='prod').update(task_resource_environment_ids=[resource_env.id])
         response = self.client.post(
             f'/api/aiops/sessions/{session_id}/send_message/',
             {'content': '为 legacy-data-sync 生成巡检任务'},
             format='json',
         )
         self.assertEqual(response.status_code, 201)
-        self.assertIsNotNone(response.data['pending_action'])
+        self.assertIsNotNone(response.data['pending_action'], response.data)
 
     def test_confirm_pending_action_returns_editable_task_draft(self):
         self.ensure_prod_knowledge_environment()
@@ -8191,12 +8194,12 @@ class AIOpsApiTests(TestCase):
         AIOpsChatSession.objects.filter(pk=session_id).update(context={'current_environment': {'name': 'prod'}})
         response = self.client.post(
             f'/api/aiops/sessions/{session_id}/send_message/',
-            {'content': '请帮我看下生产环境资源关联'},
+            {'content': '请评估生产环境的运维能力并给出建议'},
             format='json',
         )
 
         self.assertEqual(response.status_code, 201)
-        self.assertIn('query_knowledge_graph', response.data['assistant_message']['tool_calls'])
+        self.assertIn('query_knowledge_graph', response.data['assistant_message']['tool_calls'], response.data)
         step_titles = [item.get('title') for item in response.data['assistant_message']['metadata'].get('processing_steps', [])]
         self.assertIn('加载 MCP 与 Skill', step_titles)
         self.assertIn('模型规划', step_titles)

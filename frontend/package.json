@@ -6,6 +6,7 @@
     "type": "module",
     "scripts": {
         "dev": "vite",
+        "prebuild": "node scripts/license-notices.mjs",
         "build": "vite build",
         "preview": "vite preview"
     },

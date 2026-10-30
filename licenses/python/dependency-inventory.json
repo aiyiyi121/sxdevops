@@ -1,0 +1,1249 @@
+{
+  "date": "2026-10-30",
+  "scope": "Installed dependency closure in the local validation environment; regenerate for each built distribution.",
+  "backend": [
+    {
+      "name": "aiofiles",
+      "version": "24.1.0",
+      "license": "Apache-2.0",
+      "license_files": [
+        "aiofiles-24.1.0.dist-info/licenses/LICENSE",
+        "aiofiles-24.1.0.dist-info/licenses/NOTICE"
+      ]
+    },
+    {
+      "name": "aiohappyeyeballs",
+      "version": "2.7.1",
+      "license": "PSF-2.0",
+      "license_files": [
+        "aiohappyeyeballs-2.7.1.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "aiohttp",
+      "version": "3.14.1",
+      "license": "Apache-2.0 AND MIT",
+      "license_files": [
+        "aiohttp-3.14.1.dist-info/licenses/LICENSE.txt",
+        "aiohttp-3.14.1.dist-info/licenses/vendor/llhttp/LICENSE"
+      ]
+    },
+    {
+      "name": "aiosignal",
+      "version": "1.4.0",
+      "license": "Apache 2.0",
+      "license_files": [
+        "aiosignal-1.4.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "aiosqlite",
+      "version": "0.22.1",
+      "license": "MIT License",
+      "license_files": [
+        "aiosqlite-0.22.1.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "alibabacloud-credentials",
+      "version": "1.0.10",
+      "license": "Apache License 2.0",
+      "license_files": [],
+      "supplement": {
+        "basis": "publisher-declared Apache-2.0; canonical terms, not recovered package NOTICE",
+        "metadata_source": "https://pypi.org/pypi/alibabacloud-credentials/1.0.10/json",
+        "notices": [
+          {
+            "notice_file": "licenses/python/alibabacloud-credentials-1.0.10-declared-APACHE.txt",
+            "source": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+            "terms_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+          }
+        ]
+      }
+    },
+    {
+      "name": "alibabacloud-credentials-api",
+      "version": "1.0.1",
+      "license": "Apache License 2.0",
+      "license_files": [],
+      "supplement": {
+        "notices": [
+          {
+            "notice_file": "licenses/python/aliyun-alibabacloud-gateway-LICENSE.txt",
+            "source": "https://github.com/aliyun/alibabacloud-gateway/blob/master/LICENSE",
+            "git_blob": "0c44dcefe3df7e146aeb9717c5f96c4f5b2afbc0",
+            "sha256": "aefc84881757b27b42ed6998db23e877b7d630956816f85bc11dd25452de5367"
+          }
+        ]
+      }
+    },
+    {
+      "name": "alibabacloud-gateway-spi",
+      "version": "0.0.4",
+      "license": "Apache License 2.0",
+      "license_files": [],
+      "supplement": {
+        "notices": [
+          {
+            "notice_file": "licenses/python/aliyun-alibabacloud-gateway-LICENSE.txt",
+            "source": "https://github.com/aliyun/alibabacloud-gateway/blob/master/LICENSE",
+            "git_blob": "0c44dcefe3df7e146aeb9717c5f96c4f5b2afbc0",
+            "sha256": "aefc84881757b27b42ed6998db23e877b7d630956816f85bc11dd25452de5367"
+          }
+        ]
+      }
+    },
+    {
+      "name": "alibabacloud-hologram20220601",
+      "version": "1.11.0",
+      "license": "Apache License 2.0",
+      "license_files": [
+        "alibabacloud_hologram20220601-1.11.0.dist-info/LICENSE"
+      ]
+    },
+    {
+      "name": "alibabacloud-tea",
+      "version": "0.4.3",
+      "license": "Apache License 2.0",
+      "license_files": [],
+      "supplement": {
+        "basis": "publisher-declared Apache-2.0; canonical terms, not recovered package NOTICE",
+        "metadata_source": "https://pypi.org/pypi/alibabacloud-tea/0.4.3/json",
+        "notices": [
+          {
+            "notice_file": "licenses/python/alibabacloud-tea-0.4.3-declared-APACHE.txt",
+            "source": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+            "terms_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+          }
+        ]
+      }
+    },
+    {
+      "name": "alibabacloud-tea-openapi",
+      "version": "0.4.5",
+      "license": "Apache License 2.0",
+      "license_files": [],
+      "supplement": {
+        "basis": "publisher-declared Apache-2.0; canonical terms, not recovered package NOTICE",
+        "metadata_source": "https://pypi.org/pypi/alibabacloud-tea-openapi/0.4.5/json",
+        "notices": [
+          {
+            "notice_file": "licenses/python/alibabacloud-tea-openapi-0.4.5-declared-APACHE.txt",
+            "source": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+            "terms_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+          }
+        ]
+      }
+    },
+    {
+      "name": "alibabacloud-tea-util",
+      "version": "0.3.15",
+      "license": "Apache License 2.0",
+      "license_files": [],
+      "supplement": {
+        "notices": [
+          {
+            "notice_file": "licenses/python/aliyun-tea-util-LICENSE.txt",
+            "source": "https://github.com/aliyun/tea-util/blob/master/LICENSE",
+            "git_blob": "0c44dcefe3df7e146aeb9717c5f96c4f5b2afbc0",
+            "sha256": "aefc84881757b27b42ed6998db23e877b7d630956816f85bc11dd25452de5367"
+          }
+        ]
+      }
+    },
+    {
+      "name": "alibabacloud-waf-openapi20211001",
+      "version": "7.8.3",
+      "license": "Apache License 2.0",
+      "license_files": [
+        "alibabacloud_waf_openapi20211001-7.8.3.dist-info/LICENSE"
+      ]
+    },
+    {
+      "name": "aliyun-python-sdk-alikafka",
+      "version": "1.0.6",
+      "license": "Apache",
+      "license_files": [
+        "aliyun_python_sdk_alikafka-1.0.6.dist-info/LICENSE"
+      ]
+    },
+    {
+      "name": "aliyun-python-sdk-bssopenapi",
+      "version": "2.0.3",
+      "license": "Apache",
+      "license_files": [
+        "aliyun_python_sdk_bssopenapi-2.0.3.dist-info/LICENSE"
+      ]
+    },
+    {
+      "name": "aliyun-python-sdk-clickhouse",
+      "version": "3.1.6",
+      "license": "Apache",
+      "license_files": [
+        "aliyun_python_sdk_clickhouse-3.1.6.dist-info/LICENSE"
+      ]
+    },
+    {
+      "name": "aliyun-python-sdk-cms",
+      "version": "7.0.33",
+      "license": "Apache",
+      "license_files": [
+        "aliyun_python_sdk_cms-7.0.33.dist-info/LICENSE"
+      ]
+    },
+    {
+      "name": "aliyun-python-sdk-core",
+      "version": "2.16.0",
+      "license": "Apache License 2.0",
+      "license_files": [
+        "aliyun_python_sdk_core-2.16.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "aliyun-python-sdk-cs",
+      "version": "4.8.1",
+      "license": "Apache",
+      "license_files": [],
+      "supplement": {
+        "notices": [
+          {
+            "notice_file": "licenses/python/aliyun-aliyun-openapi-python-sdk-License.txt",
+            "source": "https://github.com/aliyun/aliyun-openapi-python-sdk/blob/master/License",
+            "git_blob": "f47270ac3631072447d0c3a9ac98dbef682d6e3c",
+            "sha256": "937742fecad97b766133c28909d89bda88d2d7a030dd24a9c73cf67e3073dce4"
+          }
+        ]
+      }
+    },
+    {
+      "name": "aliyun-python-sdk-dataworks-public",
+      "version": "6.1.12",
+      "license": "Apache",
+      "license_files": [
+        "aliyun_python_sdk_dataworks_public-6.1.12.dist-info/LICENSE"
+      ]
+    },
+    {
+      "name": "aliyun-python-sdk-dds",
+      "version": "3.7.25",
+      "license": "Apache",
+      "license_files": [
+        "aliyun_python_sdk_dds-3.7.25.dist-info/LICENSE"
+      ]
+    },
+    {
+      "name": "aliyun-python-sdk-ecs",
+      "version": "4.24.83",
+      "license": "Apache",
+      "license_files": [
+        "aliyun_python_sdk_ecs-4.24.83.dist-info/LICENSE"
+      ]
+    },
+    {
+      "name": "aliyun-python-sdk-elasticsearch",
+      "version": "3.1.2",
+      "license": "Apache",
+      "license_files": [
+        "aliyun_python_sdk_elasticsearch-3.1.2.dist-info/LICENSE"
+      ]
+    },
+    {
+      "name": "aliyun-python-sdk-kms",
+      "version": "2.16.5",
+      "license": "Apache",
+      "license_files": [
+        "aliyun_python_sdk_kms-2.16.5.dist-info/LICENSE"
+      ]
+    },
+    {
+      "name": "aliyun-python-sdk-maxcompute",
+      "version": "1.0.3",
+      "license": "Apache",
+      "license_files": [
+        "aliyun_python_sdk_maxcompute-1.0.3.dist-info/LICENSE"
+      ]
+    },
+    {
+      "name": "aliyun-python-sdk-nas",
+      "version": "3.14.5",
+      "license": "Apache",
+      "license_files": [
+        "aliyun_python_sdk_nas-3.14.5.dist-info/LICENSE"
+      ]
+    },
+    {
+      "name": "aliyun-python-sdk-ons",
+      "version": "3.2.3",
+      "license": "Apache",
+      "license_files": [
+        "aliyun_python_sdk_ons-3.2.3.dist-info/LICENSE"
+      ]
+    },
+    {
+      "name": "aliyun-python-sdk-r-kvstore",
+      "version": "2.20.17",
+      "license": "Apache",
+      "license_files": [
+        "aliyun_python_sdk_r_kvstore-2.20.17.dist-info/LICENSE"
+      ]
+    },
+    {
+      "name": "aliyun-python-sdk-rds",
+      "version": "2.7.53",
+      "license": "Apache",
+      "license_files": [
+        "aliyun_python_sdk_rds-2.7.53.dist-info/LICENSE"
+      ]
+    },
+    {
+      "name": "aliyun-python-sdk-slb",
+      "version": "3.3.22",
+      "license": "Apache",
+      "license_files": [
+        "aliyun_python_sdk_slb-3.3.22.dist-info/LICENSE"
+      ]
+    },
+    {
+      "name": "aliyun-python-sdk-vpc",
+      "version": "3.0.48",
+      "license": "Apache",
+      "license_files": [
+        "aliyun_python_sdk_vpc-3.0.48.dist-info/LICENSE"
+      ]
+    },
+    {
+      "name": "annotated-types",
+      "version": "0.8.0",
+      "license": "MIT",
+      "license_files": [
+        "annotated_types-0.8.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "anyio",
+      "version": "4.15.1",
+      "license": "MIT",
+      "license_files": [
+        "anyio-4.15.1.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "APScheduler",
+      "version": "3.11.3",
+      "license": "MIT",
+      "license_files": [
+        "apscheduler-3.11.3.dist-info/licenses/LICENSE.txt"
+      ]
+    },
+    {
+      "name": "asgiref",
+      "version": "3.11.1",
+      "license": "BSD-3-Clause",
+      "license_files": [
+        "asgiref-3.11.1.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "attrs",
+      "version": "26.1.0",
+      "license": "MIT",
+      "license_files": [
+        "attrs-26.1.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "autobahn",
+      "version": "26.6.2",
+      "license": "MIT",
+      "license_files": [
+        "autobahn-26.6.2.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "Automat",
+      "version": "25.4.16",
+      "license": "Copyright (c) 2014\nRackspace\n\nPermission is hereby granted, free of charge, to any person obtaining\na copy of this software and associated documentati",
+      "license_files": [
+        "automat-25.4.16.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "bcrypt",
+      "version": "5.0.0",
+      "license": "Apache-2.0",
+      "license_files": [
+        "bcrypt-5.0.0.dist-info/LICENSE"
+      ]
+    },
+    {
+      "name": "cbor2",
+      "version": "6.1.3",
+      "license": "MIT",
+      "license_files": [
+        "cbor2-6.1.3.dist-info/licenses/LICENSE.txt"
+      ]
+    },
+    {
+      "name": "certifi",
+      "version": "2026.6.17",
+      "license": "MPL-2.0",
+      "license_files": [
+        "certifi-2026.6.17.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "cffi",
+      "version": "2.1.0",
+      "license": "MIT-0",
+      "license_files": [
+        "cffi-2.1.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "channels",
+      "version": "4.3.2",
+      "license": "BSD",
+      "license_files": [
+        "channels-4.3.2.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "channels_redis",
+      "version": "4.3.0",
+      "license": "BSD",
+      "license_files": [
+        "channels_redis-4.3.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "charset-normalizer",
+      "version": "3.4.9",
+      "license": "MIT",
+      "license_files": [
+        "charset_normalizer-3.4.9.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "constantly",
+      "version": "23.10.4",
+      "license": "MIT",
+      "license_files": [
+        "constantly-23.10.4.dist-info/LICENSE"
+      ]
+    },
+    {
+      "name": "crcmod",
+      "version": "1.7",
+      "license": "MIT",
+      "license_files": [
+        "crcmod-1.7.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "cryptography",
+      "version": "48.0.1",
+      "license": "Apache-2.0 OR BSD-3-Clause",
+      "license_files": [
+        "cryptography-48.0.1.dist-info/licenses/LICENSE",
+        "cryptography-48.0.1.dist-info/licenses/LICENSE.APACHE",
+        "cryptography-48.0.1.dist-info/licenses/LICENSE.BSD"
+      ]
+    },
+    {
+      "name": "daphne",
+      "version": "4.2.2",
+      "license": "BSD",
+      "license_files": [
+        "daphne-4.2.2.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "darabonba-core",
+      "version": "1.0.8",
+      "license": "Apache License 2.0",
+      "license_files": [],
+      "supplement": {
+        "basis": "publisher-declared Apache-2.0; canonical terms, not recovered package NOTICE",
+        "metadata_source": "https://pypi.org/pypi/darabonba-core/1.0.8/json",
+        "notices": [
+          {
+            "notice_file": "licenses/python/darabonba-core-1.0.8-declared-APACHE.txt",
+            "source": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+            "terms_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+          }
+        ]
+      }
+    },
+    {
+      "name": "defusedxml",
+      "version": "0.7.1",
+      "license": "PSFL",
+      "license_files": [
+        "defusedxml-0.7.1.dist-info/LICENSE"
+      ]
+    },
+    {
+      "name": "distro",
+      "version": "1.9.0",
+      "license": "Apache License, Version 2.0",
+      "license_files": [
+        "distro-1.9.0.dist-info/LICENSE"
+      ]
+    },
+    {
+      "name": "Django",
+      "version": "6.0.7",
+      "license": "BSD-3-Clause",
+      "license_files": [
+        "django-6.0.7.dist-info/licenses/AUTHORS",
+        "django-6.0.7.dist-info/licenses/LICENSE",
+        "django-6.0.7.dist-info/licenses/LICENSE.python",
+        "django/contrib/admin/static/admin/css/vendor/select2/LICENSE-SELECT2.md",
+        "django/contrib/admin/static/admin/js/vendor/jquery/LICENSE.txt",
+        "django/contrib/admin/static/admin/js/vendor/select2/LICENSE.md",
+        "django/contrib/admin/static/admin/js/vendor/xregexp/LICENSE.txt",
+        "django/contrib/gis/gdal/LICENSE",
+        "django/contrib/gis/geos/LICENSE",
+        "django/dispatch/license.txt"
+      ]
+    },
+    {
+      "name": "django-cors-headers",
+      "version": "4.9.0",
+      "license": "MIT",
+      "license_files": [
+        "django_cors_headers-4.9.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "django-filter",
+      "version": "25.1",
+      "license": "BSD License",
+      "license_files": [
+        "django_filter-25.1.dist-info/LICENSE"
+      ]
+    },
+    {
+      "name": "django-redis",
+      "version": "7.0.0",
+      "license": "BSD-3-Clause",
+      "license_files": [
+        "django_redis-7.0.0.dist-info/licenses/AUTHORS.rst",
+        "django_redis-7.0.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "djangorestframework",
+      "version": "3.17.1",
+      "license": "BSD-3-Clause",
+      "license_files": [
+        "djangorestframework-3.17.1.dist-info/licenses/LICENSE.md"
+      ]
+    },
+    {
+      "name": "dnspython",
+      "version": "2.8.0",
+      "license": "ISC",
+      "license_files": [
+        "dnspython-2.8.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "durationpy",
+      "version": "0.10",
+      "license": "MIT",
+      "license_files": [
+        "durationpy-0.10.dist-info/LICENSE"
+      ]
+    },
+    {
+      "name": "frozenlist",
+      "version": "1.8.0",
+      "license": "Apache-2.0",
+      "license_files": [
+        "frozenlist-1.8.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "h11",
+      "version": "0.16.0",
+      "license": "MIT",
+      "license_files": [
+        "h11-0.16.0.dist-info/licenses/LICENSE.txt"
+      ]
+    },
+    {
+      "name": "httpcore",
+      "version": "1.0.9",
+      "license": "BSD-3-Clause",
+      "license_files": [
+        "httpcore-1.0.9.dist-info/licenses/LICENSE.md"
+      ]
+    },
+    {
+      "name": "httpcore2",
+      "version": "2.16.0",
+      "license": "BSD-3-Clause",
+      "license_files": [
+        "httpcore2-2.16.0.dist-info/licenses/LICENSE.md"
+      ]
+    },
+    {
+      "name": "httpx",
+      "version": "0.28.1",
+      "license": "BSD-3-Clause",
+      "license_files": [
+        "httpx-0.28.1.dist-info/licenses/LICENSE.md"
+      ]
+    },
+    {
+      "name": "httpx2",
+      "version": "2.16.0",
+      "license": "BSD-3-Clause",
+      "license_files": [
+        "httpx2-2.16.0.dist-info/licenses/LICENSE.md"
+      ]
+    },
+    {
+      "name": "huaweicloudsdkces",
+      "version": "3.1.206",
+      "license": "Apache-2.0",
+      "license_files": [
+        "huaweicloudsdkces-3.1.206.dist-info/licenses/LICENSE",
+        "huaweicloudsdkces/v2/model/__pycache__/notice_type_notification_template_list.cpython-314.pyc",
+        "huaweicloudsdkces/v2/model/notice_type_notification_template_list.py"
+      ]
+    },
+    {
+      "name": "huaweicloudsdkcore",
+      "version": "3.1.206",
+      "license": "Apache-2.0",
+      "license_files": [
+        "huaweicloudsdkcore-3.1.206.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "huaweicloudsdkcss",
+      "version": "3.1.206",
+      "license": "Apache-2.0",
+      "license_files": [
+        "huaweicloudsdkcss-3.1.206.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "huaweicloudsdkdcs",
+      "version": "3.1.205",
+      "license": "Apache-2.0",
+      "license_files": [
+        "huaweicloudsdkdcs-3.1.205.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "huaweicloudsdkecs",
+      "version": "3.1.204",
+      "license": "Apache-2.0",
+      "license_files": [
+        "huaweicloudsdkecs-3.1.204.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "huaweicloudsdkeip",
+      "version": "3.1.206",
+      "license": "Apache-2.0",
+      "license_files": [
+        "huaweicloudsdkeip-3.1.206.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "huaweicloudsdkobs",
+      "version": "3.1.206",
+      "license": "Apache-2.0",
+      "license_files": [
+        "huaweicloudsdkobs-3.1.206.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "huaweicloudsdkrds",
+      "version": "3.1.205",
+      "license": "Apache-2.0",
+      "license_files": [
+        "huaweicloudsdkrds-3.1.205.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "hyperlink",
+      "version": "21.0.0",
+      "license": "MIT",
+      "license_files": [
+        "hyperlink-21.0.0.dist-info/LICENSE"
+      ]
+    },
+    {
+      "name": "idna",
+      "version": "3.18",
+      "license": "BSD-3-Clause",
+      "license_files": [
+        "idna-3.18.dist-info/licenses/LICENSE.md"
+      ]
+    },
+    {
+      "name": "Incremental",
+      "version": "24.11.0",
+      "license": "MIT License",
+      "license_files": [
+        "incremental-24.11.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "invoke",
+      "version": "3.0.3",
+      "license": "BSD-2-Clause",
+      "license_files": [
+        "invoke-3.0.3.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "jmespath",
+      "version": "0.10.0",
+      "license": "MIT",
+      "license_files": [
+        "jmespath-0.10.0.dist-info/LICENSE.txt"
+      ]
+    },
+    {
+      "name": "jsonpatch",
+      "version": "1.36",
+      "license": "BSD-3-Clause",
+      "license_files": [
+        "jsonpatch-1.36.dist-info/licenses/AUTHORS",
+        "jsonpatch-1.36.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "jsonpointer",
+      "version": "3.4",
+      "license": "Modified BSD License",
+      "license_files": [
+        "jsonpointer-3.4.dist-info/licenses/AUTHORS",
+        "jsonpointer-3.4.dist-info/licenses/LICENSE.txt"
+      ]
+    },
+    {
+      "name": "kubernetes",
+      "version": "36.0.2",
+      "license": "Apache License Version 2.0",
+      "license_files": [
+        "kubernetes-36.0.2.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "langchain-core",
+      "version": "1.6.13",
+      "license": "MIT",
+      "license_files": [
+        "langchain_core-1.6.13.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "langchain-protocol",
+      "version": "0.0.20",
+      "license": "MIT",
+      "license_files": [
+        "langchain_protocol-0.0.20.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "langgraph",
+      "version": "0.6.11",
+      "license": "MIT",
+      "license_files": [
+        "langgraph-0.6.11.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "langgraph-checkpoint",
+      "version": "2.1.2",
+      "license": "MIT",
+      "license_files": [
+        "langgraph_checkpoint-2.1.2.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "langgraph-checkpoint-mysql",
+      "version": "3.0.0",
+      "license": "MIT",
+      "license_files": [
+        "langgraph_checkpoint_mysql-3.0.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "langgraph-checkpoint-sqlite",
+      "version": "2.0.11",
+      "license": "MIT",
+      "license_files": [],
+      "supplement": {
+        "notices": [
+          {
+            "notice_file": "licenses/python/langchain-ai-langgraph-LICENSE.txt",
+            "source": "https://github.com/langchain-ai/langgraph/blob/main/LICENSE",
+            "git_blob": "fc0602feecdd6748623c852ab534e1ca612673c7",
+            "sha256": "d9bb52f2e3540d60ff50d8f0f5b6ba649b7fd346948c4c3d086c8afb120763c7"
+          }
+        ]
+      }
+    },
+    {
+      "name": "langgraph-prebuilt",
+      "version": "0.6.5",
+      "license": "MIT",
+      "license_files": [
+        "langgraph_prebuilt-0.6.5.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "langgraph-sdk",
+      "version": "0.2.15",
+      "license": "MIT",
+      "license_files": [
+        "langgraph_sdk-0.2.15.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "langsmith",
+      "version": "0.14.12",
+      "license": "MIT",
+      "license_files": [
+        "langsmith-0.14.12.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "msgpack",
+      "version": "1.2.1",
+      "license": "Apache-2.0",
+      "license_files": [
+        "msgpack-1.2.1.dist-info/licenses/COPYING"
+      ]
+    },
+    {
+      "name": "multidict",
+      "version": "6.7.1",
+      "license": "Apache License 2.0",
+      "license_files": [
+        "multidict-6.7.1.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "oauthlib",
+      "version": "3.3.1",
+      "license": "BSD-3-Clause",
+      "license_files": [
+        "oauthlib-3.3.1.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "orjson",
+      "version": "3.13.0",
+      "license": "MPL-2.0 AND (Apache-2.0 OR MIT)",
+      "license_files": [
+        "orjson-3.13.0.dist-info/licenses/LICENSE-APACHE",
+        "orjson-3.13.0.dist-info/licenses/LICENSE-MIT",
+        "orjson-3.13.0.dist-info/licenses/LICENSE-MPL-2.0"
+      ]
+    },
+    {
+      "name": "ormsgpack",
+      "version": "1.13.0",
+      "license": "Apache-2.0 OR MIT",
+      "license_files": [
+        "ormsgpack-1.13.0.dist-info/licenses/LICENSE-APACHE",
+        "ormsgpack-1.13.0.dist-info/licenses/LICENSE-MIT"
+      ]
+    },
+    {
+      "name": "oss2",
+      "version": "2.19.1",
+      "license": "MIT License",
+      "license_files": [
+        "oss2-2.19.1.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "packaging",
+      "version": "26.2",
+      "license": "Apache-2.0 OR BSD-2-Clause",
+      "license_files": [
+        "packaging-26.2.dist-info/licenses/LICENSE",
+        "packaging-26.2.dist-info/licenses/LICENSE.APACHE",
+        "packaging-26.2.dist-info/licenses/LICENSE.BSD",
+        "packaging/licenses/__init__.py",
+        "packaging/licenses/__pycache__/__init__.cpython-314.pyc",
+        "packaging/licenses/__pycache__/_spdx.cpython-314.pyc",
+        "packaging/licenses/_spdx.py"
+      ]
+    },
+    {
+      "name": "paramiko",
+      "version": "5.0.0",
+      "license": "LGPL-2.1",
+      "license_files": [
+        "paramiko-5.0.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "pillow",
+      "version": "12.3.0",
+      "license": "MIT-CMU",
+      "license_files": [
+        "pillow-12.3.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "propcache",
+      "version": "0.5.2",
+      "license": "Apache-2.0",
+      "license_files": [
+        "propcache-0.5.2.dist-info/licenses/LICENSE",
+        "propcache-0.5.2.dist-info/licenses/NOTICE"
+      ]
+    },
+    {
+      "name": "pyasn1",
+      "version": "0.6.3",
+      "license": "BSD-2-Clause",
+      "license_files": [
+        "pyasn1-0.6.3.dist-info/licenses/LICENSE.rst"
+      ]
+    },
+    {
+      "name": "pycparser",
+      "version": "3.0",
+      "license": "BSD-3-Clause",
+      "license_files": [
+        "pycparser-3.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "pycryptodome",
+      "version": "3.23.0",
+      "license": "BSD, Public Domain",
+      "license_files": [
+        "pycryptodome-3.23.0.dist-info/LICENSE.rst"
+      ]
+    },
+    {
+      "name": "pydantic",
+      "version": "2.14.1",
+      "license": "MIT",
+      "license_files": [
+        "pydantic-2.14.1.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "pydantic_core",
+      "version": "2.50.1",
+      "license": "MIT",
+      "license_files": [
+        "pydantic_core-2.50.1.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "pymongo",
+      "version": "4.15.1",
+      "license": "Apache License\n                           Version 2.0, January 2004\n                        http://www.apache.org/licenses/\n\n   TERMS AND CONDITIONS F",
+      "license_files": [
+        "pymongo-4.15.1.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "PyMySQL",
+      "version": "1.2.0",
+      "license": "MIT",
+      "license_files": [
+        "pymysql-1.2.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "PyNaCl",
+      "version": "1.6.2",
+      "license": "Apache-2.0",
+      "license_files": [
+        "pynacl-1.6.2.dist-info/licenses/LICENSE",
+        "pynacl-1.6.2.dist-info/licenses/licenses/LICENSE.libsodium.txt"
+      ]
+    },
+    {
+      "name": "pyOpenSSL",
+      "version": "26.3.0",
+      "license": "Apache License, Version 2.0",
+      "license_files": [
+        "pyopenssl-26.3.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "python-dateutil",
+      "version": "2.9.0.post0",
+      "license": "Dual License",
+      "license_files": [
+        "python_dateutil-2.9.0.post0.dist-info/LICENSE"
+      ]
+    },
+    {
+      "name": "pyvmomi",
+      "version": "9.1.0.0",
+      "license": "License :: OSI Approved :: Apache Software License",
+      "license_files": [
+        "pyvmomi-9.1.0.0.dist-info/licenses/LICENSE.txt"
+      ]
+    },
+    {
+      "name": "PyYAML",
+      "version": "6.0.3",
+      "license": "MIT",
+      "license_files": [
+        "pyyaml-6.0.3.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "redis",
+      "version": "8.0.1",
+      "license": "MIT",
+      "license_files": [
+        "redis-8.0.1.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "requests",
+      "version": "2.34.2",
+      "license": "Apache-2.0",
+      "license_files": [
+        "requests-2.34.2.dist-info/licenses/LICENSE",
+        "requests-2.34.2.dist-info/licenses/NOTICE"
+      ]
+    },
+    {
+      "name": "requests-oauthlib",
+      "version": "2.0.0",
+      "license": "ISC",
+      "license_files": [
+        "requests_oauthlib-2.0.0.dist-info/LICENSE"
+      ]
+    },
+    {
+      "name": "requests-toolbelt",
+      "version": "1.0.0",
+      "license": "Apache 2.0",
+      "license_files": [
+        "requests_toolbelt-1.0.0.dist-info/LICENSE"
+      ]
+    },
+    {
+      "name": "service-identity",
+      "version": "26.1.0",
+      "license": "MIT",
+      "license_files": [
+        "service_identity-26.1.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "simplejson",
+      "version": "4.1.1",
+      "license": "MIT OR AFL-2.1",
+      "license_files": [
+        "simplejson-4.1.1.dist-info/licenses/LICENSE.txt"
+      ]
+    },
+    {
+      "name": "six",
+      "version": "1.17.0",
+      "license": "MIT",
+      "license_files": [
+        "six-1.17.0.dist-info/LICENSE"
+      ]
+    },
+    {
+      "name": "sniffio",
+      "version": "1.3.1",
+      "license": "MIT OR Apache-2.0",
+      "license_files": [
+        "sniffio-1.3.1.dist-info/LICENSE",
+        "sniffio-1.3.1.dist-info/LICENSE.APACHE2",
+        "sniffio-1.3.1.dist-info/LICENSE.MIT"
+      ]
+    },
+    {
+      "name": "sqlite-vec",
+      "version": "0.1.9",
+      "license": "MIT License, Apache License, Version 2.0",
+      "license_files": [],
+      "supplement": {
+        "notices": [
+          {
+            "notice_file": "licenses/python/asg017-sqlite-vec-LICENSE-APACHE.txt",
+            "source": "https://github.com/asg017/sqlite-vec/blob/main/LICENSE-APACHE",
+            "git_blob": "abbef71fa08fc8040d469ea4e6e99f0ff8edd6cb",
+            "sha256": "a38070a94d4afd9cd710e3ce67bd1de78097cfe1784c1f0109ac95d3c196bfdc"
+          },
+          {
+            "notice_file": "licenses/python/asg017-sqlite-vec-LICENSE-MIT.txt",
+            "source": "https://github.com/asg017/sqlite-vec/blob/main/LICENSE-MIT",
+            "git_blob": "9c106bc48c760f7ed9f5b8255dea7adeef029cbe",
+            "sha256": "6ce72bbe12d975bd5286e5ab0a064c069693300c47bccbc57bec18485f1621ea"
+          }
+        ]
+      }
+    },
+    {
+      "name": "sqlparse",
+      "version": "0.5.5",
+      "license": "BSD License",
+      "license_files": [
+        "sqlparse-0.5.5.dist-info/licenses/AUTHORS",
+        "sqlparse-0.5.5.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "tenacity",
+      "version": "9.2.1",
+      "license": "Apache-2.0",
+      "license_files": [
+        "tenacity-9.2.1.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "truststore",
+      "version": "0.10.5",
+      "license": "MIT",
+      "license_files": [
+        "truststore-0.10.5.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "Twisted",
+      "version": "26.4.0",
+      "license": "MIT License",
+      "license_files": [
+        "twisted-26.4.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "txaio",
+      "version": "26.6.1",
+      "license": "MIT",
+      "license_files": [
+        "txaio-26.6.1.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "typing-inspection",
+      "version": "0.4.4",
+      "license": "MIT",
+      "license_files": [
+        "typing_inspection-0.4.4.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "typing_extensions",
+      "version": "4.16.0",
+      "license": "PSF-2.0",
+      "license_files": [
+        "typing_extensions-4.16.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "tzdata",
+      "version": "2026.3",
+      "license": "Apache-2.0",
+      "license_files": [
+        "tzdata-2026.3.dist-info/licenses/LICENSE",
+        "tzdata-2026.3.dist-info/licenses/licenses/LICENSE_APACHE"
+      ]
+    },
+    {
+      "name": "tzlocal",
+      "version": "5.4.4",
+      "license": "MIT",
+      "license_files": [
+        "tzlocal-5.4.4.dist-info/licenses/LICENSE.txt"
+      ]
+    },
+    {
+      "name": "ujson",
+      "version": "5.13.0",
+      "license": "BSD-3-Clause AND TCL",
+      "license_files": [
+        "ujson-5.13.0.dist-info/licenses/LICENSE.txt"
+      ]
+    },
+    {
+      "name": "urllib3",
+      "version": "2.7.0",
+      "license": "MIT",
+      "license_files": [
+        "urllib3-2.7.0.dist-info/licenses/LICENSE.txt"
+      ]
+    },
+    {
+      "name": "uuid_utils",
+      "version": "0.18.0",
+      "license": "BSD-3-Clause",
+      "license_files": [
+        "uuid_utils-0.18.0.dist-info/licenses/LICENSE.md"
+      ]
+    },
+    {
+      "name": "websocket-client",
+      "version": "1.9.0",
+      "license": "Apache-2.0",
+      "license_files": [
+        "websocket_client-1.9.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "websockets",
+      "version": "17.3",
+      "license": "BSD-3-Clause",
+      "license_files": [
+        "websockets-17.3.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "xxhash",
+      "version": "4.0.2",
+      "license": "BSD-2-Clause",
+      "license_files": [
+        "xxhash-4.0.2.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "yarl",
+      "version": "1.24.2",
+      "license": "Apache-2.0",
+      "license_files": [
+        "yarl-1.24.2.dist-info/licenses/LICENSE",
+        "yarl-1.24.2.dist-info/licenses/NOTICE"
+      ]
+    },
+    {
+      "name": "zope.interface",
+      "version": "8.5",
+      "license": "ZPL-2.1",
+      "license_files": [
+        "zope_interface-8.5.dist-info/licenses/LICENSE.txt"
+      ]
+    },
+    {
+      "name": "zstandard",
+      "version": "0.25.0",
+      "license": "BSD-3-Clause",
+      "license_files": [
+        "zstandard-0.25.0.dist-info/licenses/LICENSE"
+      ]
+    }
+  ],
+  "license_review_notes": [
+    "Upstream notice supplements are provided for Python distributions that omit license files; upstream Git blob ids identify the exact notice texts reviewed. These supplement declared package licenses and do not claim source equivalence between different upstream revisions.",
+    "Frontend npm tarballs omitting license files have exact-version supplemental notices.",
+    "Paramiko LGPL-2.1, Certifi MPL-2.0 and the MPL-covered portions of orjson retain their own obligations; no dependency source was modified.",
+    "Four Alibaba Python packages omit license files in both wheel and sdist and their Python source trees. Their supplements retain exact-version publisher metadata plus canonical Apache-2.0 terms; they do not assert recovery of any missing upstream NOTICE."
+  ]
+}
