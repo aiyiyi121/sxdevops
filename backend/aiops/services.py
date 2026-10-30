@@ -1,5 +1,5 @@
-import copy
 import hashlib
+import copy
 import json
 import os
 import queue
@@ -19,16 +19,15 @@ from urllib.parse import urlparse
 import requests
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
-from django.db import close_old_connections
-from django.db.models import Avg, Count, Q, Sum
+from django.db import DatabaseError, close_old_connections, transaction
+from django.db.models import Avg, Count, F, Q, Sum
 from django.http import QueryDict
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 
-from cmdb.models import ConfigItem
+from cmdb.models import CIRelation, CIType, ConfigItem, ResourceNode
 from eventwall.models import EventRecord
 from eventwall.services import record_event
-from sxdevops.features import filter_feature_tools, tool_feature_enabled
 from ops.host_tasks import build_host_target_snapshot as build_ops_host_target_snapshot
 from ops.host_tasks import build_k8s_target_snapshot as build_ops_k8s_target_snapshot
 from ops.host_tasks import resolve_host_source_refs, start_host_task
@@ -44,6 +43,8 @@ from ops.models import (
     LogEntry,
     MetricDataSource,
     ObservabilityDataSourceLink,
+    SystemPostureSLAHistory,
+    SystemPostureSystem,
     TaskResource,
     TaskResourceGroup,
     TracingDataSource,
@@ -60,7 +61,8 @@ from ops.tracing_providers import (
 from ops.log_views import _merge_config as merge_log_config
 from ops.log_views import _run_query as run_log_provider_query
 from ops.observability_views import execute_dashboard_panel_queries, execute_promql_query
-from rbac.services import is_demo_account, user_has_permissions
+from rbac.services import user_has_permissions
+from sxdevops.features import filter_feature_tools, is_system_posture_enabled, tool_feature_enabled
 
 from .knowledge_graph import build_knowledge_graph, resolve_knowledge_environment, resolve_knowledge_environments_from_text
 from .action_handlers import (
@@ -73,6 +75,7 @@ from .action_handlers import (
 )
 from .models import (
     AIOpsAgentConfig,
+    AIOpsChatJob,
     AIOpsChatMessage,
     AIOpsChatSession,
     AIOpsExternalTask,
@@ -87,9 +90,12 @@ from .models import (
     AIOpsSkill,
     AIOpsToolInvocation,
 )
-
-User = get_user_model()
-
+from .skill_catalog_v1 import (
+    BUILTIN_SKILLS,
+    CATALOG_VERSION,
+    consolidate_builtin_skills,
+    refine_consolidated_skills,
+)
 
 class AIOpsModelCallError(ValueError):
     """Raised when the LLM provider endpoint cannot produce a usable completion."""
@@ -100,8 +106,6 @@ MODEL_MAX_CALL_ATTEMPTS = 20
 MODEL_COMPACT_MAX_TOKENS = 2400
 
 
-DEMO_SYNC_SOURCE_USERNAME = 'admin'
-DEMO_SYNC_TARGET_USERNAME = 'demo'
 LEGACY_RICH_WELCOME_MESSAGE = (
     '\u4f60\u597d\uff0c\u6211\u53ef\u4ee5\u5e2e\u4f60\u7ed3\u5408\u5e73\u53f0\u4e0a\u4e0b\u6587'
     '\u67e5\u8be2\u8d44\u6e90\u3001\u5206\u6790\u544a\u8b66\u3001\u6210\u672c\u5206\u6790\u3001'
@@ -218,9 +222,16 @@ STOPWORDS = {
 }
 
 CMDB_QUERY_NOISE_PATTERNS = [
+    '帮我查询一下', '帮我查询下', '帮我查一下', '帮我查下', '帮我看看',
+    '查询一下', '查询下', '查看一下', '查看下', '看一下', '看下',
+    'cmdb里面', 'CMDB里面', 'cmdb中的', 'CMDB中的', 'cmdb里', 'CMDB里',
+    '有哪些', '有哪几', '有多少',
     'cmdb', 'CMDB', '配置项', '配置', '资产', '信息', '详情', '查下', '查一下', '查询', '查看', '获取', '告诉我',
-    'ip地址', 'IP地址', '地址', 'IP', 'ip', '是多少', '是什么', '是哪个CI', '是哪个ci', '哪个CI', '哪个ci',
-    '生产', '测试', '开发', 'prod', 'test', 'dev', '的', '吗', '呢',
+    '访问地址', '访问链接', '访问', 'ip地址', 'IP地址', '地址', 'IP', 'ip', '是多少', '是什么', '是啥', '是哪个CI', '是哪个ci', '哪个CI', '哪个ci',
+    '生产', '测试', '开发', 'prod', 'test', 'dev', '当前', '全部', '所有', '总量', '数量', '统计', '分布',
+    '盘点', '列表', '明细', '负责人', '业务线', '业务', '环境', '闲置', '停机', '离线', '下线', '使用中', '运行中', '状态',
+    '拓扑', '依赖', '上下游', '关联', '影响范围', '数据质量', '完整度', '孤岛', '治理风险', '待治理',
+    '的', '吗', '呢',
 ]
 
 ALERT_QUERY_NOISE_PATTERNS = [
@@ -231,6 +242,13 @@ ALERT_QUERY_NOISE_PATTERNS = [
     '请', '一下', '风险', '影响', '情况', '怎么样', '是否', '产生', '发生', '出现', '最新',
     '最近一小时', '近一小时', '过去一小时', '最近 1 小时', '近 1 小时', '过去 1 小时', '一小时', '1小时', '1 小时',
     '交易系统', '交易',
+]
+
+POSTURE_QUERY_NOISE_PATTERNS = [
+    '系统态势', '态势', 'SLA', 'sla', 'SLO', 'slo', '健康度', '健康', '可用性', '错误率', '延迟',
+    '风险', '状态', '怎么样', '如何', '是否', '有没有', '是多少', '看下', '看一下', '查下', '查一下',
+    '查询', '查看', '分析', '当前', '最近', '问题', '故障',
+    '今天', '今日', '这个', '环境', '一下',
 ]
 
 DANGEROUS_COMMAND_PATTERNS = [
@@ -298,6 +316,19 @@ PROCESSING_STATUS_FAILED = 'failed'
 
 BUILTIN_MCP_SERVERS = [
     {
+        'name': 'CMDB 资产 MCP',
+        'server_type': AIOpsMCPServer.SERVER_PLATFORM_BUILTIN,
+        'description': '按授权范围查询 CMDB 资产、成本、拓扑关系与数据质量。',
+        'tool_whitelist': [
+            'query_cmdb_items',
+            'query_cmdb_insights',
+            'query_cost_report',
+            'query_cmdb_topology',
+            'query_cmdb_quality',
+            'create_cmdb_asset_draft',
+        ],
+    },
+    {
         'name': '知识图谱 MCP',
         'server_type': AIOpsMCPServer.SERVER_PLATFORM_BUILTIN,
         'description': '查询知识图谱中的环境关联、系统拓扑、服务依赖与主机资源关系。',
@@ -307,7 +338,7 @@ BUILTIN_MCP_SERVERS = [
         'name': '可观测性 MCP',
         'server_type': AIOpsMCPServer.SERVER_PLATFORM_BUILTIN,
         'description': '查询告警、日志、链路与最近变更。',
-        'tool_whitelist': ['query_alerts', 'query_alert_root_cause', 'query_alert_metrics', 'query_observability', 'query_logs', 'query_traces', 'query_dashboard_metadata', 'query_grafana_promql', 'query_dashboard_panel_data', 'query_observability_links'],
+        'tool_whitelist': ['query_alerts', 'query_alert_root_cause', 'query_alert_metrics', 'query_system_posture', 'query_observability', 'query_logs', 'query_traces', 'query_dashboard_metadata', 'query_grafana_promql', 'query_dashboard_panel_data', 'query_observability_links'],
     },
     {
         'name': '工单系统 MCP',
@@ -325,7 +356,7 @@ BUILTIN_MCP_SERVERS = [
         'name': '时间中心 MCP',
         'server_type': AIOpsMCPServer.SERVER_PLATFORM_BUILTIN,
         'description': '查询事件墙中的关键事件与最近动态。',
-        'tool_whitelist': ['query_event_wall'],
+        'tool_whitelist': ['query_event_wall', 'query_recent_changes'],
     },
     {
         'name': '容器管理 MCP',
@@ -434,411 +465,43 @@ BUILTIN_MCP_SERVERS = [
 
 DEPRECATED_BUILTIN_MCP_SERVER_NAMES = {'CMDB MCP'}
 
-BUILTIN_SKILLS = [
-    {
-        'name': '告警证据清单',
-        'slug': 'sx-alert-evidence-checklist',
-        'category': '告警排障',
-        'description': '规范告警根因分析的证据收集顺序、判断口径和输出结构。',
-        'source_type': AIOpsSkill.SOURCE_INLINE,
-        'applicable_actions': ['alert.root_cause', 'slo.analysis', 'self_heal.recommend'],
-        'examples': [
-            '分析生产环境当前未恢复严重告警的根因',
-            '这条告警可能影响哪些服务和依赖',
-            '最近一小时 checkout 服务异常是不是告警引起的',
-        ],
-        'builtin_tools': ['query_alerts', 'query_alert_root_cause', 'query_alert_metrics', 'query_knowledge_graph'],
-        'recommended_tools': ['query_logs', 'query_traces', 'query_recent_changes'],
-        'max_iterations': 4,
-        'risk_level': AIOpsSkill.RISK_READ_ONLY,
-        'output_contract': {
-            'sections': ['结论', '关键证据', '影响范围', '建议动作'],
-            'blocks': ['incident_card', 'evidence_timeline', 'risk_notice'],
-        },
-        'content': """适用场景：
-- 告警根因、告警风险、告警影响范围、告警是否需要升级等问题。
-- 只负责分析和建议，不直接修改告警规则、不直接执行恢复动作。
 
-取证顺序：
-1. 先确认知识图谱环境，提取系统、服务、依赖和上下游范围。
-2. 查询当前告警和历史告警，优先关注级别、状态、开始时间、持续时长、确认状态和指纹。
-3. 如果有根因接口，优先读取根因候选和关联证据。
-4. 按影响对象追加日志、链路、事件和最近变更证据。
-5. 没有证据时要明确说明“暂未发现平台证据”，不能编造根因。
+def _mcp_binding_index():
+    """Build the reverse index used to explain Skill and capability wiring."""
+    bindings = {}
+    for server in AIOpsMCPServer.objects.exclude(name__in=DEPRECATED_BUILTIN_MCP_SERVER_NAMES).order_by('name', 'id'):
+        server_item = {
+            'id': server.id,
+            'name': server.name,
+            'server_type': server.server_type,
+            'is_builtin': server.is_builtin,
+            'is_enabled': server.is_enabled,
+        }
+        for tool in server.tool_whitelist or []:
+            tool_name = str(tool or '').strip()
+            if not tool_name:
+                continue
+            bindings.setdefault(tool_name, []).append(server_item)
+    return bindings
 
-判断要求：
-- 结论必须区分事实、推断和待验证假设。
-- 根因只能基于工具事实给出置信度，不允许凭经验直接定性。
-- 如果发现变更、发布、工单或事件时间线接近，要标记为候选原因而不是确定原因。
 
-输出要求：
-- 先给一句结论，再列关键证据、影响范围、建议动作。
-- 建议动作只能是检查、确认、回滚评估、自愈推荐或升级处理，不直接声称已经执行。""",
-        'allowed_role_codes': [],
-    },
-    {
-        'name': 'K8s 告警排障',
-        'slug': 'sx-k8s-alert-troubleshooting',
-        'category': 'K8s 诊断',
-        'description': '针对 K8s 相关告警组织集群、命名空间、工作负载、Pod、Event 和日志证据。',
-        'source_type': AIOpsSkill.SOURCE_INLINE,
-        'applicable_actions': ['alert.root_cause', 'k8s.diagnose'],
-        'examples': [
-            '分析 app-prod-k8s 集群异常 Pod',
-            'Deployment 副本不可用是什么原因',
-            'CrashLoopBackOff 需要看哪些证据',
-        ],
-        'builtin_tools': ['query_k8s_cluster_summary', 'query_k8s_resources', 'query_logs', 'query_knowledge_graph'],
-        'recommended_tools': ['query_alerts', 'query_recent_changes'],
-        'max_iterations': 5,
-        'risk_level': AIOpsSkill.RISK_READ_ONLY,
-        'output_contract': {
-            'sections': ['异常对象', 'K8s 证据', '可能原因', '处置建议'],
-            'blocks': ['k8s_action', 'evidence_timeline', 'risk_notice'],
-        },
-        'content': """适用场景：
-- K8s 集群、命名空间、工作负载、Pod、容器日志和 Event 相关异常。
-- 只做只读取证和建议，不能直接执行 kubectl 写操作。
+def _mcp_bindings_for_tools(tools):
+    index = _mcp_binding_index()
+    seen = set()
+    result = []
+    for tool in tools or []:
+        tool_name = str(tool or '').strip()
+        for server in index.get(tool_name, []):
+            key = (server['id'], tool_name)
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append({**server, 'tool': tool_name})
+    return result
 
-取证顺序：
-1. 先确认环境对应的集群和命名空间，避免跨环境查询。
-2. 查询集群摘要，获取异常工作负载、Pod 状态、资源使用和事件概览。
-3. 按问题对象查询 workload、pod、event、container log。
-4. 如果问题与发布或镜像相关，追加最近变更和发布记录。
-5. 如果问题与业务错误相关，追加日志和链路证据。
 
-常见判断：
-- Pending 优先看资源不足、调度约束、PVC 和节点状态。
-- CrashLoopBackOff 优先看容器日志、退出码、探针和配置。
-- ImagePullBackOff 优先看镜像地址、凭据、仓库可达性和 tag。
-- Readiness/Liveness 失败优先看探针路径、启动时间、依赖服务和资源压力。
-
-输出要求：
-- 明确异常对象、命名空间、状态、关键事件和推荐排查顺序。
-- 高风险建议必须以“待确认动作”表达，不允许直接执行。""",
-        'allowed_role_codes': [],
-    },
-    {
-        'name': '回答整形器',
-        'slug': 'answer-formatter',
-        'category': '回答规范',
-        'description': '基于工具事实重组最终回答，输出更稳定的结构化结果。',
-        'source_type': AIOpsSkill.SOURCE_INLINE,
-        'applicable_actions': ['alert.root_cause', 'change.correlation', 'log.query_generate', 'k8s.diagnose', 'self_heal.recommend', 'host_task.generate'],
-        'examples': ['把工具结果整理成结论、证据、建议', '将任务草稿说明成待确认动作'],
-        'builtin_tools': [],
-        'recommended_tools': [],
-        'max_iterations': 0,
-        'risk_level': AIOpsSkill.RISK_READ_ONLY,
-        'output_contract': {
-            'sections': ['结论', '依据', '建议操作', '可继续查看'],
-            'blocks': ['tool_trace', 'risk_notice'],
-        },
-        'content': """拿到工具结果后，优先整理为结论、依据、风险与建议。
-
-要求：
-- 不能脱离工具事实自由发挥。
-- 如果工具没有返回证据，要明确说明证据不足。
-- 如果涉及生成任务，要明确当前是任务草稿、待确认创建，还是已经在任务中心创建真实任务。
-- 回答必须包含可执行的下一步，但不能声称未确认动作已经执行。
-- 对告警和故障类问题，要优先保留关键事实：对象、环境、时间窗口、状态、数量、证据来源。""",
-        'allowed_role_codes': [],
-    },
-    {
-        'name': '日志模式分析',
-        'slug': 'sx-log-pattern-analysis',
-        'category': '日志查询',
-        'description': '规范日志聚合、样本解释、错误模式归类和证据表达。',
-        'source_type': AIOpsSkill.SOURCE_INLINE,
-        'applicable_actions': ['alert.root_cause', 'log.query_generate'],
-        'examples': [
-            '查询 order-service 最近 30 分钟 ERROR 日志',
-            '登录失败日志按错误码聚合',
-            '从日志里判断异常是否集中在某个 Pod',
-        ],
-        'builtin_tools': ['query_logs', 'query_knowledge_graph'],
-        'recommended_tools': ['query_traces', 'query_alerts'],
-        'max_iterations': 3,
-        'risk_level': AIOpsSkill.RISK_READ_ONLY,
-        'output_contract': {
-            'sections': ['查询条件', '命中概览', '错误模式', '后续建议'],
-            'blocks': ['query_suggestion', 'tool_trace'],
-        },
-        'content': """适用场景：
-- 日志查询、日志聚合、日志异常模式解释、从日志补充故障证据。
-
-查询规范：
-1. 必须携带环境和时间窗口。
-2. 如果用户给出服务名，优先使用 service/app/workload 字段过滤。
-3. 如果用户描述错误级别，映射到 error、warn、info 等平台可识别 level。
-4. 涉及 Trace 排查时保留 trace_id、span_id、request_id 等关联字段。
-5. 聚合时优先按 level、service、pod、namespace、error_code、message_pattern 分组。
-
-分析要求：
-- 日志样本只能作为证据，不能单独定性根因。
-- 需要说明命中数量、样本范围、主要模式和缺失字段。
-- 查询建议必须可复制，并说明每个过滤项的作用。""",
-        'allowed_role_codes': [],
-    },
-    {
-        'name': '变更影响分析',
-        'slug': 'sx-change-impact-analysis',
-        'category': '变更关联',
-        'description': '规范发布、工单、事件与知识图谱依赖的时间线关联分析。',
-        'source_type': AIOpsSkill.SOURCE_INLINE,
-        'applicable_actions': ['alert.root_cause', 'change.correlation', 'self_heal.recommend'],
-        'examples': [
-            '最近有哪些变更可能影响订单服务',
-            '今天发布和告警时间是否接近',
-            '帮我判断这个故障是否由发布引起',
-        ],
-        'builtin_tools': ['query_recent_changes', 'query_event_wall', 'query_knowledge_graph'],
-        'recommended_tools': ['query_alerts', 'query_logs', 'query_traces'],
-        'max_iterations': 4,
-        'risk_level': AIOpsSkill.RISK_READ_ONLY,
-        'output_contract': {
-            'sections': ['时间线', '候选变更', '影响路径', '验证建议'],
-            'blocks': ['change_candidate', 'evidence_timeline', 'risk_notice'],
-        },
-        'content': """适用场景：
-- 变更关联、发布失败诊断、变更是否导致告警或故障。
-
-分析步骤：
-1. 先确认故障或告警的开始时间，建立前后时间窗口。
-2. 查询发布、工单、事件和操作记录，按时间排序。
-3. 用知识图谱确认变更对象和故障对象是否存在依赖或上下游关系。
-4. 如果时间接近但没有依赖关系，只能标记为弱关联。
-5. 如果时间接近且依赖关系匹配，再结合日志、链路或指标判断置信度。
-
-输出要求：
-- 候选变更必须包含时间、对象、动作、操作者或来源。
-- 需要给出“强关联 / 弱关联 / 暂无关联”的判断。
-- 回滚建议必须说明前置验证和风险，不直接触发回滚。""",
-        'allowed_role_codes': [],
-    },
-    {
-        'name': '日志查询规范',
-        'slug': 'sx-log-query-guide',
-        'category': '日志查询',
-        'description': '将自然语言需求转成可执行、可解释、可复制的日志查询条件。',
-        'source_type': AIOpsSkill.SOURCE_INLINE,
-        'applicable_actions': ['log.query_generate', 'alert.root_cause'],
-        'examples': [
-            '帮我生成订单服务错误日志查询',
-            '查询最近一小时支付失败日志',
-            '按 trace_id 过滤链路相关日志',
-        ],
-        'builtin_tools': ['query_logs', 'query_knowledge_graph'],
-        'recommended_tools': [],
-        'max_iterations': 2,
-        'risk_level': AIOpsSkill.RISK_DRAFT,
-        'output_contract': {
-            'sections': ['查询语句', '过滤条件', '字段说明', '使用建议'],
-            'blocks': ['query_suggestion'],
-        },
-        'content': """适用场景：
-- 用户要求生成日志查询、解释日志字段、给出过滤条件。
-
-生成规则：
-1. 明确环境、服务、级别、时间范围、关键词和字段过滤。
-2. 查询语句必须避免过宽范围；缺少环境或时间窗口时要求补充。
-3. 优先输出平台可执行参数，其次输出通用 LogQL/SQL-like 参考。
-4. 对每个条件说明目的，例如缩小服务、限定错误级别、关联 trace。
-5. 不要把查询生成说成已经完成排障。""",
-        'allowed_role_codes': [],
-    },
-    {
-        'name': '日志字段字典',
-        'slug': 'sx-log-field-dictionary',
-        'category': '日志查询',
-        'description': '沉淀日志字段含义和跨工具关联字段，提升查询生成稳定性。',
-        'source_type': AIOpsSkill.SOURCE_INLINE,
-        'applicable_actions': ['log.query_generate', 'alert.root_cause', 'k8s.diagnose'],
-        'examples': ['service 字段怎么过滤', 'trace_id 和 request_id 怎么关联', 'namespace 和 pod 字段怎么用'],
-        'builtin_tools': ['query_logs'],
-        'recommended_tools': ['query_knowledge_graph'],
-        'max_iterations': 0,
-        'risk_level': AIOpsSkill.RISK_READ_ONLY,
-        'output_contract': {
-            'sections': ['字段说明', '关联方式', '查询建议'],
-            'blocks': ['query_suggestion'],
-        },
-        'content': """常用字段：
-- environment：环境范围，必须从知识图谱或页面上下文确认。
-- service/app/workload：业务服务或工作负载名称，用于限定对象。
-- level/severity：日志级别，常见值为 error、warn、info、debug。
-- trace_id/span_id/request_id：链路与请求关联字段。
-- namespace/pod/container/node：K8s 维度字段。
-- message/error/error_code：错误内容或错误码字段。
-
-使用要求：
-- 字段不存在时要说明需要确认数据源字段映射。
-- 不同数据源字段名可能不同，优先使用平台返回的字段字典或样本字段。
-- 不能凭空假设所有日志都有 trace_id。""",
-        'allowed_role_codes': [],
-    },
-    {
-        'name': 'K8s 排障 SOP',
-        'slug': 'sx-k8s-troubleshooting',
-        'category': 'K8s 诊断',
-        'description': '沉淀 K8s 常见异常的只读排障路径和输出格式。',
-        'source_type': AIOpsSkill.SOURCE_INLINE,
-        'applicable_actions': ['k8s.diagnose', 'alert.root_cause'],
-        'examples': ['Pod Pending 怎么排查', '探针失败如何判断', '节点资源不足会影响哪些服务'],
-        'builtin_tools': ['query_k8s_cluster_summary', 'query_k8s_resources', 'query_logs'],
-        'recommended_tools': ['query_alerts', 'query_knowledge_graph'],
-        'max_iterations': 5,
-        'risk_level': AIOpsSkill.RISK_READ_ONLY,
-        'output_contract': {
-            'sections': ['现象', '证据', '原因判断', '建议'],
-            'blocks': ['k8s_action', 'evidence_timeline'],
-        },
-        'content': """排障路径：
-- Pod Pending：看调度事件、资源请求、节点 taint、亲和性、PVC。
-- CrashLoopBackOff：看退出码、容器日志、启动命令、环境变量、探针。
-- ImagePullBackOff：看镜像地址、tag、仓库凭据、网络连通。
-- OOMKilled：看内存 limit、峰值、重启次数和近期流量。
-- Probe Failed：看探针路径、超时、启动时间、依赖服务状态。
-
-边界：
-- 只读取平台接口返回的集群与日志事实。
-- 不直接执行扩缩容、删除 Pod、重启工作负载、修改配置等写操作。
-- 写操作只能形成建议或待确认动作。""",
-        'allowed_role_codes': [],
-    },
-    {
-        'name': '容器只读取证护栏',
-        'slug': 'sx-container-readonly-guard',
-        'category': '安全护栏',
-        'description': '限定容器和 K8s 场景只能通过平台后端接口取证，写操作必须走确认流。',
-        'source_type': AIOpsSkill.SOURCE_INLINE,
-        'applicable_actions': ['k8s.diagnose', 'self_heal.recommend'],
-        'examples': ['能不能直接重启这个 Pod', '帮我扩容 Deployment', '删除异常 Pod 是否安全'],
-        'builtin_tools': ['query_k8s_cluster_summary', 'query_k8s_resources', 'query_container_assets'],
-        'recommended_tools': ['generate_host_task'],
-        'max_iterations': 0,
-        'risk_level': AIOpsSkill.RISK_DRAFT,
-        'output_contract': {
-            'sections': ['安全边界', '可执行前置条件', '确认项'],
-            'blocks': ['approval_form', 'risk_notice'],
-        },
-        'content': """安全边界：
-- assistant 不能直连集群、Docker daemon 或主机执行命令。
-- 查询类问题只能调用平台后端只读工具。
-- 重启、扩缩容、删除、修改配置、执行脚本都属于高风险动作，必须生成待确认动作。
-
-输出要求：
-- 对用户提出的写操作，先说明风险和需要确认的目标范围。
-- 必须列出目标集群、命名空间、资源类型、资源名、影响范围和回滚方式。
-- 没有 dry-run 或审批信息时，不允许建议直接执行。""",
-        'allowed_role_codes': [],
-    },
-    {
-        'name': '事件时间线关联',
-        'slug': 'sx-event-timeline-correlation',
-        'category': '变更关联',
-        'description': '将事件墙、工单、发布、告警和知识图谱关系组织成可解释时间线。',
-        'source_type': AIOpsSkill.SOURCE_INLINE,
-        'applicable_actions': ['change.correlation', 'alert.root_cause'],
-        'examples': ['今天有哪些事件和告警时间接近', '把故障前后的操作整理成时间线', '找出最近发布相关事件'],
-        'builtin_tools': ['query_event_wall', 'query_recent_changes', 'query_knowledge_graph'],
-        'recommended_tools': ['query_alerts', 'query_logs'],
-        'max_iterations': 3,
-        'risk_level': AIOpsSkill.RISK_READ_ONLY,
-        'output_contract': {
-            'sections': ['时间线', '关键事件', '关联判断'],
-            'blocks': ['evidence_timeline', 'change_candidate'],
-        },
-        'content': """适用场景：
-- 事件、发布、工单、操作记录与告警或故障的时间线关联。
-
-要求：
-- 时间线按发生时间排序，标明来源、动作、对象和结果。
-- 只把事件作为辅助证据，不能仅凭事件存在就断定根因。
-- 与知识图谱无依赖关系的事件要标为弱关联。
-- 如果事件时间晚于故障发生，要优先判断它可能是处置动作而非原因。""",
-        'allowed_role_codes': [],
-    },
-    {
-        'name': '自愈风险护栏',
-        'slug': 'sx-self-heal-risk-guard',
-        'category': '自愈安全',
-        'description': '约束自愈推荐必须先评估风险、生成 dry-run 和待确认动作。',
-        'source_type': AIOpsSkill.SOURCE_INLINE,
-        'applicable_actions': ['self_heal.recommend'],
-        'examples': ['推荐一个自愈方案', '这个故障适合自动恢复吗', '是否可以执行巡检脚本'],
-        'builtin_tools': ['query_alerts', 'query_logs', 'query_traces', 'generate_host_task', 'query_knowledge_graph'],
-        'recommended_tools': ['query_recent_changes'],
-        'max_iterations': 6,
-        'risk_level': AIOpsSkill.RISK_DRAFT,
-        'output_contract': {
-            'sections': ['推荐结论', '适用条件', '风险', '确认项', '回滚'],
-            'blocks': ['self_heal_recommendation', 'approval_form', 'risk_notice'],
-        },
-        'content': """自愈原则：
-- 默认只推荐，不默认执行。
-- 必须基于告警、日志、链路、变更、知识图谱和历史处置证据。
-- 必须输出适用条件、不适用条件、风险等级、影响范围和回滚方案。
-- 必须生成待确认 marker 或任务草稿，不能声称已经执行脚本。
-
-确认前置：
-- 目标环境、服务、资源范围明确。
-- 具备权限和审批人。
-- 有 dry-run 或等价验证结果。
-- 有失败回滚和停止条件。""",
-        'allowed_role_codes': [],
-    },
-    {
-        'name': '任务模板选择',
-        'slug': 'sx-task-template-selection',
-        'category': '任务中心',
-        'description': '约束 assistant 如何根据目标资源、环境和风险选择任务中心模板。',
-        'source_type': AIOpsSkill.SOURCE_INLINE,
-        'applicable_actions': ['self_heal.recommend', 'host_task.generate'],
-        'examples': ['给生产环境生成巡检任务', '选择 Redis 检查模板', '帮我安排基础健康检查', '修改 monitoring 命名空间 kube-prome Service'],
-        'builtin_tools': ['query_task_resources', 'generate_host_task'],
-        'recommended_tools': ['query_alerts'],
-        'max_iterations': 3,
-        'risk_level': AIOpsSkill.RISK_DRAFT,
-        'output_contract': {
-            'sections': ['资源范围', '模板选择', '执行策略', '确认项'],
-            'blocks': ['approval_form', 'risk_notice'],
-        },
-        'content': """任务生成要求：
-- 任务生成类请求以任务中心资源底座为权威资源来源，先查询 query_task_resources，再生成任务草稿。
-- 知识图谱只用于识别环境、系统、服务和辅助元信息，不作为任务目标存在性的硬前置。
-- 任务模板必须匹配资源类型和风险场景，不能为未知资源底座目标生成执行任务。
-- K8s 写操作必须生成 K8s API 类型任务，不能退化成 SSH、主机脚本或空脚本任务。
-- K8s Service 修改、Pod 重启、工作负载伸缩等写操作不需要先查实时 K8s 资源列表；即使 query_k8s_resources 未查到对象，也不能据此拒绝生成任务草稿。
-- K8s 写操作必须明确 namespace；无法从用户输入或参数判断时，先提醒用户补充命名空间，不能默认使用 default。
-- 输出要包含任务名称、目标资源数量、执行方式、执行策略、风险和确认项。
-- 未确认前只能是草稿或待确认动作。""",
-        'allowed_role_codes': [],
-    },
-    {
-        'name': '回滚策略',
-        'slug': 'sx-rollback-strategy',
-        'category': '发布回滚',
-        'description': '规范发布回滚和变更撤销建议的前置验证、影响范围和失败处理。',
-        'source_type': AIOpsSkill.SOURCE_INLINE,
-        'applicable_actions': ['self_heal.recommend', 'change.correlation'],
-        'examples': ['这次发布是否需要回滚', '给出回滚前检查项', '回滚失败怎么处理'],
-        'builtin_tools': ['query_recent_changes', 'query_event_wall', 'query_knowledge_graph'],
-        'recommended_tools': ['query_alerts', 'query_logs', 'query_traces'],
-        'max_iterations': 4,
-        'risk_level': AIOpsSkill.RISK_DRAFT,
-        'output_contract': {
-            'sections': ['回滚依据', '前置检查', '执行步骤', '验证方式', '失败处理'],
-            'blocks': ['rollback_plan', 'approval_form', 'risk_notice'],
-        },
-        'content': """回滚建议要求：
-- 回滚必须基于明确变更候选、故障影响和验证证据。
-- 必须说明回滚目标版本、影响服务、预期影响、验证方式和停止条件。
-- 如果证据不足，只能建议先验证，不能直接建议回滚。
-- 高风险回滚必须走审批、dry-run 或演练确认。""",
-        'allowed_role_codes': [],
-    },
-]
+def _mcp_server_names_for_tools(tools):
+    return list(dict.fromkeys(item['name'] for item in _mcp_bindings_for_tools(tools)))
 
 BUILTIN_ACTION_REGISTRY = [
     {
@@ -858,13 +521,6 @@ BUILTIN_ACTION_REGISTRY = [
             'query_recent_changes',
             'query_knowledge_graph',
         ],
-        'skills': [
-            'sx-alert-evidence-checklist',
-            'sx-k8s-alert-troubleshooting',
-            'sx-log-pattern-analysis',
-            'sx-change-impact-analysis',
-            'answer-formatter',
-        ],
         'preflight_required': False,
         'preflight_fields': [
             {'name': 'environment', 'label': '环境', 'required': True},
@@ -882,8 +538,8 @@ BUILTIN_ACTION_REGISTRY = [
     },
     {
         'code': 'change.correlation',
-        'display_name': '变更关联分析',
-        'category': '变更分析',
+        'display_name': '事件分析',
+        'category': '事件分析',
         'description': '对发布、变更、工单和事件进行时间线关联，找出异常触发点。',
         'risk_level': 'read_only',
         'agent_mode': 'react',
@@ -893,11 +549,6 @@ BUILTIN_ACTION_REGISTRY = [
             'query_workorders',
             'query_event_wall',
             'query_knowledge_graph',
-        ],
-        'skills': [
-            'sx-change-impact-analysis',
-            'sx-event-timeline-correlation',
-            'answer-formatter',
         ],
         'preflight_required': False,
         'preflight_fields': [
@@ -924,11 +575,6 @@ BUILTIN_ACTION_REGISTRY = [
         'allowed_tools': [
             'query_logs',
             'query_knowledge_graph',
-        ],
-        'skills': [
-            'sx-log-query-guide',
-            'sx-log-field-dictionary',
-            'answer-formatter',
         ],
         'preflight_required': False,
         'preflight_fields': [
@@ -960,11 +606,6 @@ BUILTIN_ACTION_REGISTRY = [
             'query_logs',
             'query_knowledge_graph',
         ],
-        'skills': [
-            'sx-k8s-troubleshooting',
-            'sx-container-readonly-guard',
-            'answer-formatter',
-        ],
         'preflight_required': False,
         'preflight_fields': [
             {'name': 'cluster_name', 'label': '集群', 'required': True},
@@ -995,12 +636,6 @@ BUILTIN_ACTION_REGISTRY = [
             'query_knowledge_graph',
             'generate_host_task',
         ],
-        'skills': [
-            'sx-self-heal-risk-guard',
-            'sx-task-template-selection',
-            'sx-rollback-strategy',
-            'answer-formatter',
-        ],
         'preflight_required': True,
         'preflight_fields': [
             {'name': 'environment', 'label': '环境', 'required': True},
@@ -1028,10 +663,6 @@ BUILTIN_ACTION_REGISTRY = [
             'query_task_resources',
             'generate_host_task',
         ],
-        'skills': [
-            'sx-task-template-selection',
-            'answer-formatter',
-        ],
         'preflight_required': False,
         'preflight_fields': [
             {'name': 'environment', 'label': '环境', 'required': True},
@@ -1057,18 +688,13 @@ BUILTIN_ACTION_REGISTRY = [
         'agent_mode': 'react',
         'required_context': ['environment'],
         'allowed_tools': [
-            
+            'query_system_posture',
             'query_alerts',
             'query_alert_metrics',
             'query_grafana_promql',
             'query_dashboard_panel_data',
             'query_traces',
             'query_knowledge_graph',
-        ],
-        'skills': [
-            'sx-alert-evidence-checklist',
-            'sx-log-pattern-analysis',
-            'answer-formatter',
         ],
         'preflight_required': False,
         'preflight_fields': [
@@ -1087,6 +713,50 @@ BUILTIN_ACTION_REGISTRY = [
         ],
     },
 ]
+
+CAPABILITY_CODE_ALIASES = {
+    'incident': 'troubleshoot', 'monitoring': 'troubleshoot',
+    'alert.root_cause': 'troubleshoot', 'k8s.diagnose': 'troubleshoot',
+    'self_heal.recommend': 'troubleshoot',
+    'deployment': 'event.analysis', 'change.correlation': 'event.analysis',
+    'operations': 'host_task.generate', 'cost': 'cmdb',
+}
+
+BUILTIN_CAPABILITY_REGISTRY = [
+    {'code': 'troubleshoot', 'display_name': '故障排查', 'category': '分析诊断',
+     'description': '结合告警、服务和 K8s 证据定位故障，并按需给出处置建议。',
+     'summary': '根因分析 · 处置建议', 'icon': 'FirstAidKit', 'requires_environment': True,
+     'legacy_action_codes': ['alert.root_cause', 'k8s.diagnose', 'self_heal.recommend']},
+    {'code': 'log.query_generate', 'display_name': '日志查询', 'category': '查询分析',
+     'description': '生成日志查询，检索日志并归纳异常模式。',
+     'summary': '查询语句 · 日志检索', 'icon': 'Document', 'requires_environment': True,
+     'legacy_action_codes': ['log.query_generate']},
+    {'code': 'slo.analysis', 'display_name': 'SLO 评估', 'category': '分析诊断',
+     'description': '评估服务可用性、延迟、错误率和 SLO 风险。',
+     'summary': '可用性 · 延迟 · 错误率', 'icon': 'DataAnalysis', 'requires_environment': True,
+     'legacy_action_codes': ['slo.analysis']},
+    {'code': 'event.analysis', 'display_name': '事件分析', 'category': '分析诊断',
+     'description': '关联告警、发布、变更、工单和运维事件，分析时间线与影响。',
+     'summary': '事件关联 · 影响时间线', 'icon': 'Connection', 'requires_environment': True,
+     'legacy_action_codes': ['change.correlation']},
+    {'code': 'host_task.generate', 'display_name': '任务生成', 'category': '运维协作',
+     'description': '生成主机、Playbook 或 K8s 任务草稿，确认后进入任务中心。',
+     'summary': '巡检 · 安装 · 任务草稿', 'icon': 'Operation', 'requires_environment': True,
+     'legacy_action_codes': ['host_task.generate']},
+    {'code': 'cmdb', 'display_name': 'CMDB', 'category': '查询分析',
+     'description': '在 CMDB 授权范围内查询资产、依赖拓扑、成本和数据质量。',
+     'summary': '资产 · 拓扑 · 成本 · 治理', 'icon': 'Coin', 'requires_environment': False,
+     'legacy_action_codes': [], 'risk_level': 'read_only', 'agent_mode': 'direct',
+     'allowed_tools': ['query_cmdb_items', 'query_cmdb_insights', 'query_cost_report', 'query_cmdb_topology', 'query_cmdb_quality'],
+     'output_blocks': ['cmdb_summary', 'evidence_timeline'],
+     'suggested_questions': ['盘点 CMDB 资产和状态分布', '分析本月 CMDB 资源成本和趋势', '查看 CMDB 资产拓扑和上下游关系', '检查 CMDB 资产数据质量']},
+]
+
+
+def normalize_capability_code(code):
+    code = str(code or '').strip()
+    return CAPABILITY_CODE_ALIASES.get(code, code)
+
 
 BUILTIN_MODEL_PROVIDER = {
     'name': '智能助手体验版',
@@ -1146,7 +816,7 @@ MODEL_PROVIDER_PRESETS = [
         'price_currency': AIOpsModelProvider.CURRENCY_CNY,
         'api_key_placeholder': 'MiniMax API Key',
         'docs_url': 'https://platform.minimax.io/docs/api-reference/text-openai-api',
-        'notes': 'MiniMax OpenAI-compatible 入口；temperature 必须大于 0，预设使用官方推荐 1.0。',
+        'notes': 'MiniMax 国际站 OpenAI 兼容入口；API Key 需匹配站点，预设温度为 1.0。',
     },
     {
         'key': 'xiaomi_mimo',
@@ -1161,7 +831,7 @@ MODEL_PROVIDER_PRESETS = [
         'price_currency': AIOpsModelProvider.CURRENCY_CNY,
         'api_key_placeholder': 'MiMo API Key',
         'docs_url': 'https://mimo.mi.com/docs/en-US/quick-start/summary/first-api-call',
-        'notes': '小米 MiMo OpenAI-compatible 入口；保存 API Key 后建议拉取模型列表选择最新可用模型。',
+        'notes': '小米 MiMo OpenAI-compatible 入口；填写 API Key 后获取模型列表，选择账号可用型号。',
     },
     {
         'key': 'volcengine_doubao',
@@ -1176,11 +846,11 @@ MODEL_PROVIDER_PRESETS = [
         'price_currency': AIOpsModelProvider.CURRENCY_CNY,
         'api_key_placeholder': '火山方舟 API Key',
         'docs_url': 'https://www.volcengine.com/docs/82379/1330626',
-        'notes': '火山方舟豆包 OpenAI-compatible 入口；模型 ID 会随版本更新，保存后动态拉取选择。',
+        'notes': '火山方舟豆包 OpenAI-compatible 入口；北京地域通用 API 入口；填写 API Key 后获取模型列表。',
     },
     {
         'key': 'aliyun_qwen',
-        'name': '阿里千问',
+        'name': '阿里 Qwen',
         'provider_type': AIOpsModelProvider.PROVIDER_OPENAI_COMPATIBLE,
         'base_url': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
         'default_model': '',
@@ -1191,7 +861,7 @@ MODEL_PROVIDER_PRESETS = [
         'price_currency': AIOpsModelProvider.CURRENCY_CNY,
         'api_key_placeholder': 'DashScope API Key',
         'docs_url': 'https://help.aliyun.com/zh/model-studio/compatibility-of-openai-with-dashscope',
-        'notes': '阿里云百炼千问 OpenAI-compatible 入口；模型版本持续演进，保存后动态拉取选择。',
+        'notes': '阿里云百炼 Qwen 中国内地（北京）入口；国际地域需使用对应 Base URL 和 API Key。',
     },
     {
         'key': 'moonshot_kimi',
@@ -1206,7 +876,7 @@ MODEL_PROVIDER_PRESETS = [
         'price_currency': AIOpsModelProvider.CURRENCY_CNY,
         'api_key_placeholder': 'Moonshot API Key',
         'docs_url': 'https://platform.moonshot.cn/docs/guide/start-using-kimi-api',
-        'notes': 'Moonshot Kimi OpenAI-compatible 入口；保存后拉取模型列表可跟随最新模型版本。',
+        'notes': 'Moonshot Kimi 中国站入口；国际站使用 api.moonshot.ai/v1，需匹配对应 API Key。',
     },
     {
         'key': 'custom_openai_compatible',
@@ -1300,7 +970,11 @@ def _build_action_registry_item(definition, user=None):
     item['permission_summary'] = _action_registry_permission_summary(item)
     item['required_context'] = [str(value or '').strip() for value in (item.get('required_context') or []) if str(value or '').strip()]
     item['allowed_tools'] = filter_feature_tools([str(value or '').strip() for value in (item.get('allowed_tools') or []) if str(value or '').strip()])
-    item['skills'] = [str(value or '').strip() for value in (item.get('skills') or []) if str(value or '').strip()]
+    item['mcp_bindings'] = _mcp_bindings_for_tools(item['allowed_tools'])
+    item['mcp_server_names'] = list(dict.fromkeys(binding['name'] for binding in item['mcp_bindings']))
+    capability_code = normalize_capability_code(item.get('code'))
+    item['skills'] = [skill.slug for skill in AIOpsSkill.objects.filter(merged_into__isnull=True) if capability_code in {normalize_capability_code(value) for value in skill.applicable_actions or []}]
+    item['capability_code'] = capability_code
     item['output_blocks'] = [str(value or '').strip() for value in (item.get('output_blocks') or []) if str(value or '').strip()]
     item['preflight_fields'] = [
         {
@@ -1318,10 +992,124 @@ def _build_action_registry_item(definition, user=None):
 
 
 def list_action_registry(user=None, include_unavailable=True):
+    config = get_agent_config()
     registry = [_build_action_registry_item(definition, user=user) for definition in BUILTIN_ACTION_REGISTRY]
+    for item in registry:
+        item['is_enabled'] = item['capability_code'] in config.enabled_capability_codes
+        if not item['is_enabled']:
+            item.update(available=False, available_display='已停用', available_reason='该问答类型已在智能体策略中停用')
     if include_unavailable:
         return registry
     return [item for item in registry if item.get('available')]
+
+
+def _capability_skill_items(code, user=None):
+    role_codes = set(user.rbac_roles.values_list('code', flat=True)) if user else None
+    items = []
+    for skill in AIOpsSkill.objects.filter(merged_into__isnull=True).order_by('is_builtin', 'name', 'id'):
+        if code not in {normalize_capability_code(value) for value in skill.applicable_actions or []}:
+            continue
+        role_allowed = not skill.allowed_role_codes or role_codes is None or bool(set(skill.allowed_role_codes) & role_codes)
+        items.append({
+            'id': skill.id, 'slug': skill.slug, 'name': skill.name,
+            'description': skill.description, 'is_enabled': skill.is_enabled,
+            'builtin_tools': skill.builtin_tools or [],
+            'recommended_tools': skill.recommended_tools or [],
+            'mcp_bindings': _mcp_bindings_for_tools([*(skill.builtin_tools or []), *(skill.recommended_tools or [])]),
+            'mcp_server_names': _mcp_server_names_for_tools([*(skill.builtin_tools or []), *(skill.recommended_tools or [])]),
+            'selected': True, 'role_allowed': role_allowed,
+            'available': skill.is_enabled and role_allowed,
+            'available_reason': 'Skill 已停用' if not skill.is_enabled else ('角色限制' if not role_allowed else ''),
+        })
+    return items
+
+
+def list_capabilities(user=None, include_unavailable=True):
+    config = get_agent_config()
+    handler_map = {item['code']: item for item in list_action_registry(user=user, include_unavailable=True)}
+    items = []
+    for definition in BUILTIN_CAPABILITY_REGISTRY:
+        item = copy.deepcopy(definition)
+        handlers = [handler_map[code] for code in item['legacy_action_codes']]
+        base = handlers[0] if handlers else {}
+        for field, default in [
+            ('risk_level', 'read_only'), ('risk_level_display', '只读'),
+            ('agent_mode', 'direct'), ('agent_mode_display', 'Direct'),
+            ('required_context', []), ('preflight_fields', []),
+            ('preflight_required', False), ('output_blocks', []),
+            ('suggested_questions', []), ('rbac_permissions', ['aiops.chat.view', 'aiops.chat.analyze']),
+        ]:
+            item.setdefault(field, copy.deepcopy(base.get(field, default)))
+        item['allowed_tools'] = filter_feature_tools(list(dict.fromkeys(
+            item.get('allowed_tools') or [tool for handler in handlers for tool in handler.get('allowed_tools') or []]
+        )))
+        item['mcp_bindings'] = _mcp_bindings_for_tools(item['allowed_tools'])
+        item['mcp_server_names'] = list(dict.fromkeys(binding['name'] for binding in item['mcp_bindings']))
+        item['available'] = any(handler.get('available') for handler in handlers) if handlers else (not user or user_has_permissions(user, item['rbac_permissions']))
+        if item['code'] == 'cmdb' and user:
+            item['available'] = item['available'] and any(_tool_allowed(user, tool) for tool in item['allowed_tools'])
+        item['is_enabled'] = item['code'] in config.enabled_capability_codes
+        item['available_reason'] = '' if item['available'] else '当前账号缺少该问答类型所需权限'
+        if not item['is_enabled']:
+            item['available'] = False
+            item['available_reason'] = '该问答类型已在智能体策略中停用'
+        item['available_display'] = '已停用' if not item['is_enabled'] else ('可用' if item['available'] else '受限')
+        item['permission_summary'] = '、'.join(item['rbac_permissions'])
+        item['skill_details'] = _capability_skill_items(item['code'], user=user)
+        item['skills'] = [skill['slug'] for skill in item['skill_details']]
+        item['handler_options'] = [{
+            'code': handler['code'], 'display_name': handler['display_name'],
+            'available': handler['available'], 'available_reason': handler['available_reason'],
+            'rbac_permissions': handler['rbac_permissions'],
+        } for handler in handlers]
+        if item['code'] == 'troubleshoot':
+            item['suggested_questions'] = []
+            for handler in handlers:
+                if handler['available']:
+                    item['suggested_questions'].extend({
+                        'alert.root_cause': ['分析当前环境最新严重告警的根因', '排查当前环境最近一小时有哪些服务异常'],
+                        'k8s.diagnose': ['排查当前环境 Pod 重启和资源不足的原因'],
+                        'self_heal.recommend': ['给当前环境最新告警推荐一套恢复方案'],
+                    }.get(handler['code'], []))
+        else:
+            item['suggested_questions'] = {
+                'log.query_generate': ['帮我生成当前环境订单服务最近 30 分钟 ERROR 日志查询', '查询当前环境订单服务最近一小时的超时日志'],
+                'slo.analysis': ['评估当前环境最近一小时的 SLO 风险', '分析当前环境订单服务的延迟和错误率是否达标'],
+                'event.analysis': ['分析当前环境最近发布与告警是否相关', '梳理当前环境今天事件的影响时间线'],
+                'host_task.generate': ['帮我生成当前环境服务器巡检任务', '帮我在当前环境生成安装 Redis 的任务草稿'],
+            }.get(item['code'], item['suggested_questions'])
+        if not item['requires_environment']:
+            item['required_context'] = []
+            item['preflight_fields'] = []
+        if include_unavailable or item['available']:
+            items.append(item)
+    return items
+
+
+def capability_by_code(code, user=None, include_unavailable=True):
+    code = normalize_capability_code(code)
+    return next((item for item in list_capabilities(user=user, include_unavailable=include_unavailable) if item['code'] == code), None)
+
+
+def update_capability_skills(code, skill_slugs, user=None):
+    capability = capability_by_code(code, user=user)
+    if not capability:
+        raise ValueError('问答类型不存在')
+    if not isinstance(skill_slugs, list) or any(not isinstance(slug, str) for slug in skill_slugs):
+        raise ValueError('skills 必须是 Skill 标识列表')
+    skill_slugs = set(skill_slugs)
+    if skill_slugs - set(AIOpsSkill.objects.filter(merged_into__isnull=True, slug__in=skill_slugs).values_list('slug', flat=True)):
+        raise ValueError('包含不存在的 Skill')
+    with transaction.atomic():
+        for skill in AIOpsSkill.objects.select_for_update().filter(merged_into__isnull=True):
+            bindings = list(dict.fromkeys(normalize_capability_code(value) for value in skill.applicable_actions or []))
+            updated = [value for value in bindings if value != capability['code']]
+            if skill.slug in skill_slugs:
+                updated.append(capability['code'])
+            if updated != skill.applicable_actions:
+                skill.applicable_actions = updated
+                skill.save(update_fields=['applicable_actions', 'updated_at'])
+    return capability_by_code(capability['code'], user=user)
 
 
 def build_action_registry_summary(actions=None):
@@ -1339,9 +1127,9 @@ def build_action_registry_summary(actions=None):
 
 def build_skill_marketplace_catalog(user=None):
     get_agent_config()
-    skills = list(AIOpsSkill.objects.all().order_by('is_builtin', 'category', 'name', 'id'))
+    skills = list(AIOpsSkill.objects.filter(merged_into__isnull=True).order_by('is_builtin', 'category', 'name', 'id'))
     installed_slugs = set(
-        AIOpsSkill.objects.filter(is_enabled=True).values_list('slug', flat=True)
+        AIOpsSkill.objects.filter(is_enabled=True, merged_into__isnull=True).values_list('slug', flat=True)
     )
     items = []
     for skill in skills:
@@ -1359,6 +1147,8 @@ def build_skill_marketplace_catalog(user=None):
             'applicable_actions': skill.applicable_actions or [],
             'builtin_tools': skill.builtin_tools or [],
             'recommended_tools': skill.recommended_tools or [],
+            'mcp_bindings': _mcp_bindings_for_tools([*(skill.builtin_tools or []), *(skill.recommended_tools or [])]),
+            'mcp_server_names': _mcp_server_names_for_tools([*(skill.builtin_tools or []), *(skill.recommended_tools or [])]),
             'examples': skill.examples or [],
             'output_contract': skill.output_contract or {},
             'is_enabled': skill.is_enabled,
@@ -1415,11 +1205,11 @@ def build_action_preflight_contract(action_code, payload=None, user=None):
     payload = payload if isinstance(payload, dict) else {}
     question = str(payload.get('question') or '').strip()
     page_context = normalize_page_context(payload.get('page_context'))
-    action = _action_registry_item_by_code(action_code, user=user, include_unavailable=True)
+    action = _external_task_action(action_code, payload, user=user)
     if not action:
-        raise ValueError('Action 不存在')
+        raise ValueError('问答类型不存在')
     if user and not action.get('available'):
-        raise ValueError(action.get('available_reason') or '缺少 Action 权限')
+        raise ValueError(action.get('available_reason') or '缺少问答类型权限')
 
     knowledge_environment = None
     analysis_scope = {}
@@ -1493,7 +1283,7 @@ AGENT_ORCHESTRATION_PROFILES = [
         'code': 'diagnostic_agent',
         'name': '诊断 Agent',
         'mission': '识别故障现象、影响对象和初始假设。',
-        'preferred_tools': ['query_alerts', 'query_alert_root_cause', 'query_alert_metrics', 'query_k8s_cluster_summary'],
+        'preferred_tools': ['query_alerts', 'query_alert_root_cause', 'query_alert_metrics', 'query_system_posture', 'query_k8s_cluster_summary'],
     },
     {
         'code': 'evidence_agent',
@@ -1639,12 +1429,12 @@ def _build_plan_react_trace(action, payload=None, interrupted=False):
 def create_external_task(payload, user):
     payload = payload if isinstance(payload, dict) else {}
     action_code = str(payload.get('action_code') or '').strip()
-    action = _action_registry_item_by_code(action_code, user=user, include_unavailable=True)
-    if not action:
-        raise ValueError('Action 不存在')
-    if not action.get('available'):
-        raise ValueError(action.get('available_reason') or '缺少 Action 权限')
     input_payload = payload.get('input_payload') if isinstance(payload.get('input_payload'), dict) else {}
+    action = _external_task_action(action_code, input_payload, user=user)
+    if not action:
+        raise ValueError('问答类型不存在')
+    if not action.get('available'):
+        raise ValueError(action.get('available_reason') or '缺少问答类型权限')
     task = AIOpsExternalTask.objects.create(
         source_agent=str(payload.get('source_agent') or '').strip(),
         title=str(payload.get('title') or action.get('display_name') or 'AIOps 外部任务')[:128],
@@ -1687,12 +1477,12 @@ def cancel_external_task(task, user=None):
 def run_external_task_orchestration(task, user=None):
     if task.status in {AIOpsExternalTask.STATUS_COMPLETED, AIOpsExternalTask.STATUS_CANCELED}:
         raise ValueError('任务已结束，不能再次运行')
-    action = _action_registry_item_by_code(task.action_code, user=user, include_unavailable=True)
-    if not action:
-        raise ValueError('Action 不存在')
-    if not action.get('available'):
-        raise ValueError(action.get('available_reason') or '缺少 Action 权限')
     payload = task.input_payload if isinstance(task.input_payload, dict) else {}
+    action = _external_task_action(task.action_code, payload, user=user)
+    if not action:
+        raise ValueError('问答类型不存在')
+    if not action.get('available'):
+        raise ValueError(action.get('available_reason') or '缺少问答类型权限')
     now = timezone.now()
     task.status = AIOpsExternalTask.STATUS_COMPLETED
     task.completed_at = now
@@ -1736,8 +1526,8 @@ def run_external_task_orchestration(task, user=None):
 def interrupt_external_task(task, user=None):
     if task.status in {AIOpsExternalTask.STATUS_COMPLETED, AIOpsExternalTask.STATUS_CANCELED}:
         raise ValueError('任务已结束，不能中断')
-    action = _action_registry_item_by_code(task.action_code, user=user, include_unavailable=True) or {}
     payload = task.input_payload if isinstance(task.input_payload, dict) else {}
+    action = _external_task_action(task.action_code, payload, user=user) or {}
     now = timezone.now()
     task.status = AIOpsExternalTask.STATUS_CANCELED
     task.canceled_at = now
@@ -1961,7 +1751,7 @@ def build_runbook_draft_from_payload(payload, user=None, source_task=None, sourc
             '',
             '## 排查步骤',
             '1. 确认告警状态、影响范围和时间窗口。',
-            '2. 查询日志、链路和最近变更。',
+            '2. 查询日志、链路、系统态势和最近变更。',
             '3. 输出处置建议、风险和回滚条件。',
         ])
     evidence = payload.get('evidence') if isinstance(payload.get('evidence'), list) else []
@@ -2000,7 +1790,8 @@ def _action_registry_definition_map(user=None, include_unavailable=False):
 
 
 def _action_registry_item_by_code(code, user=None, include_unavailable=False):
-    return _action_registry_definition_map(user=user, include_unavailable=include_unavailable).get(code)
+    action = _action_registry_definition_map(user=user, include_unavailable=include_unavailable).get(code)
+    return action or capability_by_code(code, user=user, include_unavailable=include_unavailable)
 
 
 def _question_contains_any(question, keywords):
@@ -2124,6 +1915,39 @@ def _select_action_for_question(question, user=None, analysis_scope=None):
     return None
 
 
+def _resolve_question_category_action(category, question, user=None):
+    """Resolve a user-facing scope without changing the selected action's permissions."""
+    if category in {'auto', 'cmdb', 'cost', None, ''}:
+        return None
+    category = {'incident': 'troubleshoot', 'monitoring': 'troubleshoot',
+                'deployment': 'event.analysis', 'operations': 'host_task.generate'}.get(category, category)
+    action_code = category
+    if category == 'event.analysis':
+        action_code = 'change.correlation'
+    if category == 'troubleshoot':
+        recovery_intent = _question_contains_any(question, ['自愈', 'dry-run', 'remediation', 'self-heal']) or (
+            _question_contains_any(question, ['恢复', '修复', '处置', '处理', '解决', 'recovery', 'recover', 'fix'])
+            and _question_contains_any(question, ['推荐', '方案', '建议', '怎么', '如何', '怎么办', 'recommend', 'how to'])
+        )
+        if recovery_intent:
+            action_code = 'self_heal.recommend'
+        elif _question_contains_any(question, [
+            'k8s', 'kubernetes', 'pod', 'namespace', '命名空间', '集群', 'deployment',
+            'statefulset', 'daemonset', 'workload', '工作负载', '容器',
+        ]):
+            action_code = 'k8s.diagnose'
+        else:
+            action_code = 'alert.root_cause'
+    return _action_registry_item_by_code(action_code, user=user, include_unavailable=True)
+
+
+def _external_task_action(code, payload, user=None):
+    question = str(payload.get('question') or payload.get('incident') or payload.get('request_summary') or '')
+    if code == 'troubleshoot':
+        return _resolve_question_category_action(code, question, user=user)
+    return _action_registry_item_by_code(code, user=user, include_unavailable=True)
+
+
 def _build_action_approval_block(action, *, summary, items=None, metrics=None, actions=None, status='preflight', status_display='待补充', block_id_suffix='preflight'):
     block = {
         'id': f"action-{action.get('code')}-{block_id_suffix}",
@@ -2146,6 +1970,7 @@ def _attach_selected_action_metadata(result, action, *, extra_metadata=None, ext
     metadata = dict(result.get('metadata') or {})
     metadata['selected_action'] = {
         'code': action.get('code'),
+        'capability_code': normalize_capability_code(action.get('capability_code') or action.get('code')),
         'display_name': action.get('display_name'),
         'risk_level': action.get('risk_level'),
         'risk_level_display': action.get('risk_level_display'),
@@ -2165,6 +1990,10 @@ def _attach_selected_action_metadata(result, action, *, extra_metadata=None, ext
         route=metadata.get('action_route') or '',
         existing=metadata.get('action_trace') or {},
     )
+    capability = capability_by_code(action.get('capability_code') or action.get('code'))
+    if capability:
+        metadata['selected_capability'] = {key: capability[key] for key in ['code', 'display_name', 'description', 'skills', 'requires_environment']}
+        metadata['capability_trace'] = {**metadata['action_trace'], 'code': capability['code'], 'display_name': capability['display_name'], 'legacy_code': action.get('code')}
     if extra_blocks:
         response_blocks = list(metadata.get('response_blocks') or [])
         for block in extra_blocks:
@@ -2329,6 +2158,8 @@ def _build_action_missing_context_field(context_name, detail='', suggestion=''):
 
 def _missing_action_context_fields(action, question, knowledge_environment=None, analysis_scope=None, page_context=None):
     action_code = action.get('code') if action else ''
+    if action_code == 'cmdb':
+        return []
     missing = []
     page_context = normalize_page_context(page_context)
 
@@ -2381,21 +2212,10 @@ def _action_preflight_suggestions(action, missing_fields, knowledge_environment=
 
 
 def _skills_for_action(active_skills, action):
-    skill_slugs = set(action.get('skills') or [])
-    action_code = action.get('code')
-    selected = []
-    formatter_skill = None
-    for skill in active_skills or []:
-        skill_slug = getattr(skill, 'slug', '')
-        if skill_slug == ANSWER_FORMATTER_SKILL_SLUG:
-            formatter_skill = skill
-            continue
-        applicable_actions = set(getattr(skill, 'applicable_actions', None) or [])
-        if skill_slug in skill_slugs or (action_code and action_code in applicable_actions):
-            selected.append(skill)
-    if formatter_skill:
-        selected.append(formatter_skill)
-    return selected or active_skills
+    capability_code = normalize_capability_code(action.get('capability_code') or action.get('code'))
+    return [skill for skill in active_skills or [] if capability_code in {
+        normalize_capability_code(value) for value in getattr(skill, 'applicable_actions', None) or []
+    }]
 
 
 def _serialize_skill_trace_item(skill, *, status='available', hit_reason='runtime_enabled', action_code='', tool_calls=None):
@@ -2435,17 +2255,16 @@ def _skill_trace_hit_count(items):
 def _build_skill_trace(active_skills=None, *, selected_action=None, formatter_result=None, tool_calls=None):
     active_skills = list(active_skills or [])
     selected_action = selected_action or {}
-    action_code = selected_action.get('code') or ''
-    action_skill_slugs = set(selected_action.get('skills') or [])
+    action_code = normalize_capability_code(selected_action.get('capability_code') or selected_action.get('code'))
     formatter_used = bool((formatter_result or {}).get('used'))
     formatter_fell_back = bool((formatter_result or {}).get('fell_back'))
     items = []
     for skill in active_skills:
         skill_slug = getattr(skill, 'slug', '')
-        applicable_actions = set(getattr(skill, 'applicable_actions', None) or [])
+        applicable_actions = {normalize_capability_code(value) for value in getattr(skill, 'applicable_actions', None) or []}
         status = 'available'
         hit_reason = 'runtime_enabled'
-        if action_code and (skill_slug in action_skill_slugs or action_code in applicable_actions):
+        if action_code and action_code in applicable_actions:
             status = 'matched'
             hit_reason = 'action_router'
         if skill_slug == ANSWER_FORMATTER_SKILL_SLUG:
@@ -2476,16 +2295,12 @@ def _build_skill_trace(active_skills=None, *, selected_action=None, formatter_re
 def _mark_skill_trace_action_hit(trace, action):
     if not isinstance(trace, dict) or not action:
         return trace
-    action_code = action.get('code') or ''
-    action_skill_slugs = set(action.get('skills') or [])
+    action_code = normalize_capability_code(action.get('capability_code') or action.get('code'))
     items = []
     for item in trace.get('items') or []:
         next_item = dict(item or {})
-        applicable_actions = set(next_item.get('applicable_actions') or [])
-        if action_code and (
-            next_item.get('slug') in action_skill_slugs
-            or action_code in applicable_actions
-        ):
+        applicable_actions = {normalize_capability_code(value) for value in next_item.get('applicable_actions') or []}
+        if action_code and action_code in applicable_actions:
             next_item['status'] = 'matched'
             next_item['hit_reason'] = 'action_router'
             next_item['action_code'] = action_code
@@ -2551,6 +2366,13 @@ def _upsert_action_decision_trace(metadata, *, draft=None, pending_action=None, 
         action_trace['status'] = decision.get('status') or action_trace.get('status') or 'matched'
     if action_trace:
         metadata['action_trace'] = action_trace
+        capability_trace = metadata.get('capability_trace') or {}
+        capability_code = normalize_capability_code(action_trace.get('code'))
+        capability_name = next((item['display_name'] for item in BUILTIN_CAPABILITY_REGISTRY if item['code'] == capability_code), '')
+        if capability_name:
+            metadata['capability_trace'] = {**action_trace, 'code': capability_code,
+                                            'display_name': capability_name,
+                                            'legacy_code': capability_trace.get('legacy_code') or action_trace.get('code')}
     return metadata
 
 
@@ -2564,17 +2386,15 @@ def _normalize_json_id_list(values):
     return normalized
 
 
-def _ensure_builtin_runtime_assets(config):
+def _ensure_builtin_runtime_assets(config, initialize_skill_selection=False):
     builtin_mcp_ids = []
     builtin_skill_ids = []
-    configured_mcp_ids = set(_normalize_json_id_list(config.enabled_mcp_server_ids))
     deprecated_builtin_mcp_names = set(DEPRECATED_BUILTIN_MCP_SERVER_NAMES) | {
         item['name']
         for item in BUILTIN_MCP_SERVERS
         if set(item.get('tool_whitelist') or []) & {'query_workorders'}
     }
     builtin_mcp_names = {item['name'] for item in BUILTIN_MCP_SERVERS if item['name'] not in deprecated_builtin_mcp_names}
-    builtin_skill_slugs = {item['slug'] for item in BUILTIN_SKILLS}
 
     for definition in BUILTIN_MCP_SERVERS:
         if definition['name'] in deprecated_builtin_mcp_names:
@@ -2608,9 +2428,6 @@ def _ensure_builtin_runtime_assets(config):
         if server.description != definition['description']:
             server.description = definition['description']
             changed_fields.append('description')
-        if not definition.get('default_enabled', True) and server.is_enabled and server.id not in configured_mcp_ids:
-            server.is_enabled = False
-            changed_fields.append('is_enabled')
         if definition.get('endpoint_or_command') and not server.endpoint_or_command:
             server.endpoint_or_command = definition['endpoint_or_command']
             changed_fields.append('endpoint_or_command')
@@ -2625,74 +2442,31 @@ def _ensure_builtin_runtime_assets(config):
     AIOpsMCPServer.objects.filter(is_builtin=True, name__in=deprecated_builtin_mcp_names).delete()
     AIOpsMCPServer.objects.filter(is_builtin=True).exclude(name__in=builtin_mcp_names).delete()
 
+    consolidate_builtin_skills(AIOpsSkill, AIOpsAgentConfig)
+    refine_consolidated_skills(AIOpsSkill, AIOpsAgentConfig)
+    config.refresh_from_db(fields=['enabled_skill_ids'])
     for definition in BUILTIN_SKILLS:
-        definition = {
-            **definition,
+        defaults = {
+            **copy.deepcopy(definition),
             'builtin_tools': filter_feature_tools(definition.get('builtin_tools') or []),
             'recommended_tools': filter_feature_tools(definition.get('recommended_tools') or []),
+            'is_builtin': True,
+            'is_enabled': True,
+            'builtin_version': CATALOG_VERSION,
         }
-        skill, _ = AIOpsSkill.objects.get_or_create(
-            slug=definition['slug'],
-            defaults={
-                'name': definition['name'],
-                'description': definition['description'],
-                'category': definition.get('category', ''),
-                'applicable_actions': definition.get('applicable_actions', []),
-                'examples': definition.get('examples', []),
-                'builtin_tools': definition.get('builtin_tools', []),
-                'recommended_tools': definition.get('recommended_tools', []),
-                'max_iterations': definition.get('max_iterations', 0),
-                'risk_level': definition.get('risk_level', AIOpsSkill.RISK_READ_ONLY),
-                'output_contract': definition.get('output_contract', {}),
-                'source_type': definition['source_type'],
-                'content': definition['content'],
-                'allowed_role_codes': definition['allowed_role_codes'],
-                'is_builtin': True,
-                'is_enabled': True,
-            },
-        )
-        changed_fields = []
-        if not skill.is_builtin:
-            skill.is_builtin = True
-            changed_fields.append('is_builtin')
-        if skill.name != definition['name']:
-            skill.name = definition['name']
-            changed_fields.append('name')
-        if skill.source_type != definition['source_type']:
-            skill.source_type = definition['source_type']
-            changed_fields.append('source_type')
-        if skill.content != definition['content']:
-            skill.content = definition['content']
-            changed_fields.append('content')
-        if skill.description != definition['description']:
-            skill.description = definition['description']
-            changed_fields.append('description')
-        for field, default_value in [
-            ('category', ''),
-            ('applicable_actions', []),
-            ('examples', []),
-            ('builtin_tools', []),
-            ('recommended_tools', []),
-            ('max_iterations', 0),
-            ('risk_level', AIOpsSkill.RISK_READ_ONLY),
-            ('output_contract', {}),
-        ]:
-            next_value = definition.get(field, default_value)
-            if getattr(skill, field) != next_value:
-                setattr(skill, field, next_value)
-                changed_fields.append(field)
-        if changed_fields:
-            skill.save(update_fields=changed_fields)
-        builtin_skill_ids.append(skill.id)
-
-    AIOpsSkill.objects.filter(is_builtin=True).exclude(slug__in=builtin_skill_slugs).delete()
+        defaults.pop('slug')
+        skill, created = AIOpsSkill.objects.get_or_create(slug=definition['slug'], defaults=defaults)
+        if created and skill.is_enabled:
+            builtin_skill_ids.append(skill.id)
 
     update_fields = []
     valid_mcp_ids = set(AIOpsMCPServer.objects.values_list('id', flat=True))
-    valid_skill_ids = set(AIOpsSkill.objects.values_list('id', flat=True))
+    valid_skill_ids = set(AIOpsSkill.objects.filter(merged_into__isnull=True).values_list('id', flat=True))
     current_mcp_ids = [item for item in _normalize_json_id_list(config.enabled_mcp_server_ids) if item in valid_mcp_ids and item not in builtin_mcp_ids]
     current_skill_ids = [item for item in _normalize_json_id_list(config.enabled_skill_ids) if item in valid_skill_ids and item not in builtin_skill_ids]
     next_mcp_ids = list(dict.fromkeys([*builtin_mcp_ids, *current_mcp_ids]))
+    if initialize_skill_selection and not config.enabled_skill_ids:
+        builtin_skill_ids = sorted(valid_skill_ids)
     next_skill_ids = list(dict.fromkeys([*builtin_skill_ids, *current_skill_ids]))
     if next_mcp_ids != (config.enabled_mcp_server_ids or []):
         config.enabled_mcp_server_ids = next_mcp_ids
@@ -2757,7 +2531,7 @@ def _ensure_builtin_model_provider(config):
 
 
 def get_agent_config():
-    config, _ = AIOpsAgentConfig.objects.get_or_create(
+    config, created = AIOpsAgentConfig.objects.get_or_create(
         name='default',
         defaults={
             'suggested_questions': DEFAULT_SUGGESTED_QUESTIONS,
@@ -2791,7 +2565,7 @@ def get_agent_config():
         update_fields.append('require_confirmation')
     if update_fields:
         config.save(update_fields=update_fields)
-    _ensure_builtin_runtime_assets(config)
+    _ensure_builtin_runtime_assets(config, initialize_skill_selection=created)
     _ensure_builtin_model_provider(config)
     return config
 
@@ -2808,18 +2582,12 @@ def get_active_provider(config=None):
 
 
 def _get_selected_mcp_servers(config):
-    selected_ids = _normalize_json_id_list(config.enabled_mcp_server_ids)
     queryset = AIOpsMCPServer.objects.filter(is_enabled=True).exclude(name__in=DEPRECATED_BUILTIN_MCP_SERVER_NAMES)
-    if selected_ids:
-        queryset = queryset.filter(id__in=selected_ids)
     return list(queryset.order_by('is_builtin', 'id'))
 
 
 def _get_selected_skills(config, user=None):
-    selected_ids = _normalize_json_id_list(config.enabled_skill_ids)
-    queryset = AIOpsSkill.objects.filter(is_enabled=True)
-    if selected_ids:
-        queryset = queryset.filter(id__in=selected_ids)
+    queryset = AIOpsSkill.objects.filter(is_enabled=True, merged_into__isnull=True)
     skills = list(queryset.order_by('is_builtin', 'name', 'id'))
     if not user:
         return skills
@@ -2833,162 +2601,23 @@ def _get_selected_skills(config, user=None):
     return filtered
 
 
-def _get_demo_sync_users():
-    admin_user = User.objects.filter(username=DEMO_SYNC_SOURCE_USERNAME).first()
-    demo_user = User.objects.filter(username=DEMO_SYNC_TARGET_USERNAME).first()
-    if not admin_user or not demo_user or admin_user.id == demo_user.id:
-        return None, None
-    return admin_user, demo_user
-
-
-def _sync_mirror_timestamps(model_cls, object_id, source):
-    model_cls.objects.filter(pk=object_id).update(
-        created_at=source.created_at,
-        updated_at=source.updated_at,
-    )
-
-
-def _sync_chat_session_to_demo(source_session, demo_user):
-    if not source_session or source_session.mirror_source_id or source_session.user_id == demo_user.id:
-        return None
-
-    mirror_session, _ = AIOpsChatSession.objects.get_or_create(
-        user=demo_user,
-        mirror_source=source_session,
-        defaults={
-            'title': source_session.title,
-            'status': source_session.status,
-            'last_message_at': source_session.last_message_at,
-        },
-    )
-    AIOpsChatSession.objects.filter(pk=mirror_session.pk).update(
-        title=source_session.title,
-        status=source_session.status,
-        last_message_at=source_session.last_message_at,
-    )
-    _sync_mirror_timestamps(AIOpsChatSession, mirror_session.pk, source_session)
-    mirror_session.refresh_from_db()
-
-    source_messages = list(source_session.messages.order_by('created_at', 'id'))
-    source_message_ids = [item.id for item in source_messages]
-    AIOpsChatMessage.objects.filter(session=mirror_session, mirror_source__isnull=False).exclude(
-        mirror_source_id__in=source_message_ids
-    ).delete()
-
-    message_id_map = {}
-    for source_message in source_messages:
-        mirror_message, _ = AIOpsChatMessage.objects.get_or_create(
-            session=mirror_session,
-            mirror_source=source_message,
-            defaults={
-                'role': source_message.role,
-                'message_type': source_message.message_type,
-                'content': source_message.content,
-                'citations': source_message.citations,
-                'tool_calls': source_message.tool_calls,
-                'metadata': source_message.metadata,
-            },
-        )
-        AIOpsChatMessage.objects.filter(pk=mirror_message.pk).update(
-            role=source_message.role,
-            message_type=source_message.message_type,
-            content=source_message.content,
-            citations=source_message.citations,
-            tool_calls=source_message.tool_calls,
-            metadata=source_message.metadata,
-            created_at=source_message.created_at,
-        )
-        mirror_message.refresh_from_db(fields=['id'])
-        message_id_map[source_message.id] = mirror_message.id
-
-    source_actions = list(source_session.pending_actions.order_by('created_at', 'id'))
-    source_action_ids = [item.id for item in source_actions]
-    AIOpsPendingAction.objects.filter(session=mirror_session, mirror_source__isnull=False).exclude(
-        mirror_source_id__in=source_action_ids
-    ).delete()
-
-    for source_action in source_actions:
-        mirror_action, _ = AIOpsPendingAction.objects.get_or_create(
-            session=mirror_session,
-            mirror_source=source_action,
-            defaults={
-                'message_id': message_id_map.get(source_action.message_id),
-                'action_type': source_action.action_type,
-                'title': source_action.title,
-                'risk_level': source_action.risk_level,
-                'status': source_action.status,
-                'action_payload': source_action.action_payload,
-                'result_payload': source_action.result_payload,
-                'confirmed_by': source_action.confirmed_by,
-                'confirmed_at': source_action.confirmed_at,
-            },
-        )
-        AIOpsPendingAction.objects.filter(pk=mirror_action.pk).update(
-            message_id=message_id_map.get(source_action.message_id),
-            action_type=source_action.action_type,
-            title=source_action.title,
-            risk_level=source_action.risk_level,
-            status=source_action.status,
-            action_payload=source_action.action_payload,
-            result_payload=source_action.result_payload,
-            confirmed_by=source_action.confirmed_by,
-            confirmed_at=source_action.confirmed_at,
-            created_at=source_action.created_at,
-            updated_at=source_action.updated_at,
-        )
-
-    return mirror_session
-
-
-def sync_admin_sessions_to_demo(source_session=None):
-    admin_user, demo_user = _get_demo_sync_users()
-    if not admin_user or not demo_user:
-        return 0
-
-    queryset = AIOpsChatSession.objects.filter(user=admin_user, mirror_source__isnull=True).order_by('created_at', 'id')
-    if source_session is not None:
-        if source_session.user_id != admin_user.id or source_session.mirror_source_id:
-            return 0
-        queryset = queryset.filter(pk=source_session.pk)
-
-    source_sessions = list(queryset)
-    if source_session is None:
-        source_ids = [item.id for item in source_sessions]
-        AIOpsChatSession.objects.filter(user=demo_user, mirror_source__isnull=False).exclude(
-            mirror_source_id__in=source_ids
-        ).delete()
-
-    for item in source_sessions:
-        _sync_chat_session_to_demo(item, demo_user)
-    return len(source_sessions)
-
-
-def sync_session_to_demo_if_needed(session):
-    if not session or session.mirror_source_id:
-        return None
-    if getattr(session.user, 'username', '') != DEMO_SYNC_SOURCE_USERNAME:
-        return None
-    admin_user, demo_user = _get_demo_sync_users()
-    if not admin_user or not demo_user or session.user_id != admin_user.id:
-        return None
-    return _sync_chat_session_to_demo(session, demo_user)
-
-
 def bootstrap_payload_for_user(user):
-    if is_demo_account(user):
-        sync_admin_sessions_to_demo()
     config = get_agent_config()
     provider = get_active_provider(config)
     selected_mcp_servers = _get_selected_mcp_servers(config)
     selected_skills = _get_selected_skills(config, user=user)
     action_registry = list_action_registry(user=user, include_unavailable=False)
     all_action_registry = list_action_registry(user=user, include_unavailable=True)
+    capabilities = list_capabilities(user=user, include_unavailable=False)
     return {
         'enabled': config.is_enabled and user_has_permissions(user, ['aiops.chat.view']),
         'welcome_message': config.welcome_message,
         'suggested_questions': config.suggested_questions or DEFAULT_SUGGESTED_QUESTIONS,
+        'environment_options': _enabled_knowledge_environment_options() if user_has_permissions(user, ['aiops.chat.view']) else [],
         'action_registry': action_registry,
         'action_registry_summary': build_action_registry_summary(all_action_registry),
+        'capabilities': capabilities,
+        'capability_summary': build_action_registry_summary(capabilities),
         'permissions': {
             'chat': user_has_permissions(user, ['aiops.chat.view']),
             'analyze': user_has_permissions(user, ['aiops.chat.analyze']),
@@ -3000,6 +2629,14 @@ def bootstrap_payload_for_user(user):
         'provider': {
             'name': provider.name if provider else '未配置模型',
             'model': provider.default_model if provider else '',
+            'models': list(dict.fromkeys(
+                item.strip()
+                for item in [
+                    provider.default_model if provider else '',
+                    provider.backup_model if provider else '',
+                ]
+                if item and item.strip()
+            )),
         },
         'runtime': {
             'allow_action_execution': config.allow_action_execution,
@@ -3028,6 +2665,8 @@ def bootstrap_payload_for_user(user):
                 'examples': item.examples,
                 'builtin_tools': item.builtin_tools,
                 'recommended_tools': item.recommended_tools,
+                'mcp_bindings': _mcp_bindings_for_tools([*(item.builtin_tools or []), *(item.recommended_tools or [])]),
+                'mcp_server_names': _mcp_server_names_for_tools([*(item.builtin_tools or []), *(item.recommended_tools or [])]),
                 'max_iterations': item.max_iterations,
                 'risk_level': item.risk_level,
                 'output_contract': item.output_contract,
@@ -3081,11 +2720,13 @@ def _clean_tokens(text):
     return tokens[:8]
 
 
-def _clean_cmdb_query_tokens(text):
+def _clean_cmdb_query_tokens(text, ignored_terms=None):
     cleaned = text or ''
-    for pattern in CMDB_QUERY_NOISE_PATTERNS:
+    patterns = [*CMDB_QUERY_NOISE_PATTERNS, *(ignored_terms or [])]
+    patterns = sorted({str(item).strip() for item in patterns if str(item).strip()}, key=len, reverse=True)
+    for pattern in patterns:
         if pattern:
-            cleaned = cleaned.replace(pattern, ' ')
+            cleaned = re.sub(re.escape(pattern), ' ', cleaned, flags=re.IGNORECASE)
     tokens = _clean_tokens(cleaned)
     deduped = []
     for token in tokens:
@@ -3101,8 +2742,22 @@ def _clean_cmdb_query_tokens(text):
 
 
 def _clean_alert_query_tokens(text):
-    cleaned = text or ''
+    cleaned = re.sub(r'(?:最近|近|过去)?\s*\d{1,4}\s*(?:分钟|小时|minutes?\b|min\b|hours?\b)',
+                     ' ', text or '', flags=re.IGNORECASE)
     for pattern in ALERT_QUERY_NOISE_PATTERNS:
+        if pattern:
+            cleaned = cleaned.replace(pattern, ' ')
+    tokens = _clean_tokens(cleaned)
+    deduped = []
+    for token in tokens:
+        if token not in deduped:
+            deduped.append(token)
+    return deduped[:8]
+
+
+def _clean_posture_query_tokens(text):
+    cleaned = text or ''
+    for pattern in POSTURE_QUERY_NOISE_PATTERNS:
         if pattern:
             cleaned = cleaned.replace(pattern, ' ')
     tokens = _clean_tokens(cleaned)
@@ -3207,6 +2862,21 @@ def _detect_log_duration_minutes(query='', duration_minutes=None):
     if minute_match:
         return max(1, min(int(minute_match.group(1)), 1440))
     return 60
+
+
+def _explicit_query_duration_minutes(query):
+    text = str(query or '').lower()
+    if '半小时' in text or 'half hour' in text:
+        return 30
+    if '一小时' in text:
+        return 60
+    match = re.search(r'(\d{1,4})\s*(分钟|minutes?\b|min\b|小时|hours?\b)', text)
+    if match:
+        duration = int(match.group(1))
+        if match.group(2) in {'小时', 'hour', 'hours'}:
+            duration *= 60
+        return max(1, min(duration, 1440))
+    return None
 
 
 def _normalize_service_name(value):
@@ -3399,6 +3069,7 @@ def _environment_scope_terms(knowledge_environment=None, analysis_scope=None):
             *(knowledge_environment.get('aliases') or []),
             *(knowledge_environment.get('alert_environments') or []),
             *(knowledge_environment.get('event_environments') or []),
+            *((knowledge_environment.get('posture_environments') or []) if is_system_posture_enabled() else []),
         ])
     if analysis_scope:
         terms.append(analysis_scope.get('environment'))
@@ -3427,6 +3098,8 @@ def _filter_service_candidates_for_observability(candidates, knowledge_environme
         if text in environment_terms or normalized in environment_terms:
             continue
         matched = _match_service_from_options(text, service_options)
+        if not matched and normalized in {'slo', 'sla', 'sli', 'p50', 'p90', 'p95', 'p99'}:
+            continue
         candidate_value = matched or text
         if candidate_value and candidate_value not in filtered:
             filtered.append(candidate_value)
@@ -3444,6 +3117,53 @@ def _detect_observability_service(text, analysis_scope=None, knowledge_environme
     if service in {'订单服务', '订单'} and any(candidate in filtered for candidate in ['order-service', 'order']):
         return 'order-service'
     return service
+
+
+def _posture_system_match_score(system, candidates):
+    if not candidates:
+        return 0
+    fields = [
+        system.name,
+        system.summary,
+        system.domain,
+        system.owner,
+        system.keywords,
+    ]
+    for collection_name in ['service_specs', 'dependencies']:
+        collection = getattr(system, collection_name, None)
+        if isinstance(collection, list):
+            for item in collection:
+                if isinstance(item, dict):
+                    fields.extend([item.get('id'), item.get('name'), item.get('kind'), item.get('role')])
+                else:
+                    fields.append(item)
+    haystack = ' '.join(str(item or '') for item in fields).lower().replace('_', '-')
+    score = 0
+    for candidate in candidates:
+        normalized = _normalize_candidate_text(candidate)
+        if not normalized:
+            continue
+        if normalized in haystack:
+            score += 5 if len(normalized) >= 4 else 3
+            continue
+        if re.search(r'[\u4e00-\u9fff]', candidate):
+            compact = str(candidate).replace('服务', '').replace('系统', '').strip()
+            if compact and compact.lower() in haystack:
+                score += 3
+    return score
+
+
+def _fallback_match_posture_systems(queryset, query, limit, analysis_scope=None, knowledge_environment=None):
+    candidates = _service_candidates_from_text(query, analysis_scope=analysis_scope, knowledge_environment=knowledge_environment)
+    if not candidates:
+        return []
+    scored = []
+    for system in queryset[: max(limit * 8, 32)]:
+        score = _posture_system_match_score(system, candidates)
+        if score > 0:
+            scored.append((score, system.sort_order, system.name, system))
+    scored.sort(key=lambda item: (-item[0], item[1], item[2]))
+    return [item[3] for item in scored[:limit]]
 
 
 def _parse_json_object_from_text(text):
@@ -3817,6 +3537,14 @@ def _enabled_knowledge_environment_options():
 
 
 def _resolve_chat_environment(session, question):
+    context = session.context if isinstance(getattr(session, 'context', None), dict) else {}
+    page_context = normalize_page_context(context.get('page_context'))
+    selected_name = page_context_value(page_context, 'selected_environment')
+    if selected_name:
+        resolved = resolve_knowledge_environment(selected_name)
+        if resolved:
+            return {'status': 'resolved', 'environment': resolved, 'source': 'selected_environment', 'candidates': []}
+        return {'status': 'missing', 'environment': None, 'source': 'selected_environment', 'candidates': _enabled_knowledge_environment_options()}
     text = str(question or '').strip()
     matches = resolve_knowledge_environments_from_text(text)
     seen = set()
@@ -3844,19 +3572,19 @@ def _resolve_chat_environment(session, question):
                     *(resolved.get('aliases') or []),
                     *(resolved.get('alert_environments') or []),
                     *(resolved.get('event_environments') or []),
+                    *((resolved.get('posture_environments') or []) if is_system_posture_enabled() else []),
                 ]
                 alert_values = [alert.environment, alert.cluster, alert.namespace]
                 if any(value and value in candidates for value in alert_values):
                     return {'status': 'resolved', 'environment': resolved, 'source': 'alert_fingerprint', 'candidates': []}
 
-    context = session.context if isinstance(getattr(session, 'context', None), dict) else {}
-    page_context = normalize_page_context(context.get('page_context'))
     page_environment = page_context_value(page_context, 'environment')
     resolved = resolve_knowledge_environment(page_environment)
     if resolved:
         return {'status': 'resolved', 'environment': resolved, 'source': 'page_context', 'candidates': []}
 
-    current_name = (context.get('current_environment') or {}).get('name') or context.get('current_environment')
+    current_environment = context.get('current_environment') or {}
+    current_name = current_environment.get('name') if isinstance(current_environment, dict) else current_environment
     resolved = resolve_knowledge_environment(current_name)
     if resolved:
         return {'status': 'resolved', 'environment': resolved, 'source': 'session', 'candidates': []}
@@ -3959,6 +3687,7 @@ def _build_analysis_scope(knowledge_environment):
         'edge_count': len(edges),
         'event_environments': knowledge_environment.get('event_environments') or [],
         'alert_environments': knowledge_environment.get('alert_environments') or [],
+        'posture_environments': (knowledge_environment.get('posture_environments') or []) if is_system_posture_enabled() else [],
         'metric_datasource_ids': knowledge_environment.get('metric_datasource_ids') or [],
         'log_datasource_ids': knowledge_environment.get('log_datasource_ids') or [],
         'tracing_datasource_ids': knowledge_environment.get('tracing_datasource_ids') or [],
@@ -3999,6 +3728,137 @@ def _extract_system_name(text):
     for keyword, normalized in mappings:
         if keyword.lower() in lowered:
             return normalized
+    return ''
+
+
+def _cmdb_environment_name_terms(name):
+    value = str(name or '').strip()
+    if not value:
+        return []
+    terms = [value]
+    if value.endswith('环境') and len(value) > 2:
+        terms.append(value[:-2])
+    return list(dict.fromkeys(terms))
+
+
+def _resolve_cmdb_environment_scope(query='', environment='', business_line='', queryset=None):
+    text = str(query or '').strip()
+    explicit = str(environment or '').strip()
+    candidates = ResourceNode.objects.filter(node_type='env').select_related('parent')
+    if business_line:
+        candidates = candidates.filter(parent__node_type='biz', parent__name=business_line)
+    nodes = list(candidates.order_by('parent__name', 'name', 'id')[:1000])
+
+    knowledge_environment = _resolve_knowledge_environment_for_query(text)
+    if knowledge_environment:
+        names = [knowledge_environment['name'], *(knowledge_environment.get('aliases') or [])]
+        matched_nodes = [node for node in nodes if node.name in names]
+        legacy_match = queryset is not None and queryset.filter(environment__in=names).exists()
+        if not matched_nodes and not legacy_match:
+            return {
+                'label': knowledge_environment['name'], 'node_ids': [], 'legacy_values': [],
+                'terms': names, 'requested': knowledge_environment['name'], 'environment_unmapped': True,
+            }
+        explicit = matched_nodes[0].name if matched_nodes else knowledge_environment['name']
+        nodes = matched_nodes
+
+    explicit_lower = explicit.lower()
+    matched_nodes = []
+    if explicit:
+        matched_nodes = [
+            node for node in nodes
+            if any(term.lower() == explicit_lower for term in _cmdb_environment_name_terms(node.name))
+        ]
+    if not matched_nodes and text:
+        ranked = []
+        lowered = text.lower()
+        for node in nodes:
+            matched_term = next(
+                (term for term in _cmdb_environment_name_terms(node.name) if term.lower() in lowered),
+                '',
+            )
+            if matched_term:
+                ranked.append((len(matched_term), node.name.lower(), node))
+        if ranked:
+            best_length = max(item[0] for item in ranked)
+            best_name = next(item[1] for item in ranked if item[0] == best_length)
+            matched_nodes = [item[2] for item in ranked if item[0] == best_length and item[1] == best_name]
+
+    legacy_values = []
+    if matched_nodes and queryset is not None:
+        legacy_values = list(
+            queryset.filter(environment_node_id__in=[node.id for node in matched_nodes])
+            .exclude(environment='')
+            .values_list('environment', flat=True)
+            .distinct()[:100]
+        )
+    if not matched_nodes and explicit and queryset is not None:
+        legacy_values = [
+            value for value in queryset.exclude(environment='').values_list('environment', flat=True).distinct()[:500]
+            if str(value).strip().lower() == explicit_lower
+        ]
+
+    label = matched_nodes[0].name if matched_nodes else (legacy_values[0] if legacy_values else '')
+    terms = []
+    for value in [label, explicit, *[node.name for node in matched_nodes]]:
+        terms.extend(_cmdb_environment_name_terms(value))
+    return {
+        'label': label,
+        'node_ids': [node.id for node in matched_nodes],
+        'legacy_values': list(dict.fromkeys(legacy_values)),
+        'terms': list(dict.fromkeys(term for term in terms if term)),
+        'requested': explicit,
+    }
+
+
+def _apply_cmdb_environment_scope(queryset, environment_scope):
+    node_ids = environment_scope.get('node_ids') or []
+    legacy_values = environment_scope.get('legacy_values') or []
+    if node_ids:
+        condition = Q(environment_node_id__in=node_ids)
+        if legacy_values:
+            condition |= Q(environment_node__isnull=True, environment__in=legacy_values)
+        return queryset.filter(condition)
+    if legacy_values:
+        return queryset.filter(environment__in=legacy_values)
+    if environment_scope.get('requested'):
+        return queryset.none()
+    return queryset
+
+
+def _extract_cmdb_business_line(text, user):
+    from cmdb.views import _apply_ci_authorization_scope
+
+    lowered = str(text or '').lower()
+    if not lowered:
+        return ''
+    scoped_items = _apply_ci_authorization_scope(ConfigItem.objects.all(), user)
+    business_lines = list(
+        scoped_items.exclude(business_line='')
+        .values_list('business_line', flat=True)
+        .distinct()[:500]
+    )
+    for business_line in sorted(business_lines, key=lambda item: (-len(item), item)):
+        if business_line.lower() in lowered:
+            return business_line
+    explicit_match = re.search(r'([a-zA-Z0-9_.\-\u4e00-\u9fff]{1,50})\s*(?:业务线|业务)', str(text or ''))
+    if explicit_match:
+        candidate = re.sub(r'^(?:分析|查询|查看|盘点|统计|cmdb)+', '', explicit_match.group(1), flags=re.IGNORECASE)
+        if candidate and candidate not in {'本月', '上月', '当前', '全部', '所有', '资产', '资源'}:
+            return candidate
+    return _extract_system_name(text)
+
+
+def _extract_cmdb_cost_month(text):
+    value = str(text or '')
+    match = re.search(r'(?<!\d)(20\d{2})[-年/.](0?[1-9]|1[0-2])(?:月)?', value)
+    if match:
+        return f'{match.group(1)}-{int(match.group(2)):02d}'
+    today = timezone.localdate()
+    if '上月' in value or '上个月' in value:
+        return (today.replace(day=1) - timedelta(days=1)).strftime('%Y-%m')
+    if '本月' in value or '这个月' in value or '当前月' in value:
+        return today.strftime('%Y-%m')
     return ''
 
 
@@ -4052,6 +3912,14 @@ def _query_cmdb_queryset(queryset, tokens):
             'attributes__public_ip',
             'attributes__host_ip',
             'attributes__docker_environment_ip',
+            'attributes__access_address',
+            'attributes__endpoint',
+            'attributes__http_endpoint',
+            'attributes__url',
+            'attributes__address',
+            'attributes__console_url',
+            'attributes__web_url',
+            'attributes__service_url',
             'attributes__description',
             'attributes__specification',
             'attributes__instance_type',
@@ -4071,18 +3939,116 @@ def _serialize_cmdb_item(item):
         or attributes.get('docker_environment_ip')
         or ''
     )
+    access_address = (
+        attributes.get('access_address')
+        or attributes.get('endpoint')
+        or attributes.get('http_endpoint')
+        or attributes.get('url')
+        or attributes.get('address')
+        or attributes.get('console_url')
+        or attributes.get('web_url')
+        or attributes.get('service_url')
+        or ip_address
+        or ''
+    )
     return {
         'id': item.id,
         'name': item.name,
         'ci_type': item.ci_type.name,
         'business_line': item.business_line,
         'environment': item.environment,
+        'environment_name': item.environment_node.name if item.environment_node_id else (item.environment or '未标注环境'),
+        'environment_node_id': item.environment_node_id,
         'admin_user': item.admin_user,
         'status': item.status,
         'status_display': item.get_status_display(),
         'ip_address': ip_address,
-        'attributes': attributes,
+        'access_address': access_address,
+        'attributes': _sanitize_cmdb_attributes(attributes),
     }
+
+
+def _cmdb_context_value(session, key, default=None):
+    context = session.context if isinstance(getattr(session, 'context', None), dict) else {}
+    value = context.get('cmdb_assistant_context')
+    return value.get(key, default) if isinstance(value, dict) else default
+
+
+def _cmdb_attribute_names_from_query(query):
+    text = str(query or '').lower()
+    names = []
+    aliases = {
+        'ip': ['ip', 'ip地址', '地址', 'private_ip', 'public_ip'],
+        '访问地址': ['访问地址', '访问链接', 'access_address', 'endpoint', 'http_endpoint', 'console_url', 'web_url', 'service_url'],
+        '版本': ['版本', '版本号', 'version', 'release_version'],
+        '负责人': ['负责人', '管理员', 'admin_user', 'owner'],
+        '成本': ['成本', '费用', 'monthly_cost', '账单'],
+        '到期': ['到期', '过期', '服务期限', 'service_expiry_date', 'warranty'],
+        '规格': ['规格', '配置', '型号', 'instance_type', 'specification'],
+        '描述': ['描述', '用途', 'description', 'remark'],
+    }
+    for canonical, candidates in aliases.items():
+        if any(candidate in text for candidate in candidates):
+            names.append(canonical)
+    return names
+
+
+def _cmdb_is_followup_question(query):
+    text = str(query or '').strip().lower()
+    if not text:
+        return False
+    if any(token in text for token in ['它', '它们', '这台', '这些', '这个', '上述', '上面', '刚才', '前面', '那台', '那些', '该资产', '该批']):
+        return True
+    scope_tokens = ['环境', '业务线', '生产', '测试', '开发', '预发', 'prod', 'test', 'dev', 'staging']
+    detail_tokens = ['属性', '详情', '参数', '配置', '负责人', '管理员', 'ip', '到期', '规格', '描述', '版本', 'version']
+    return len(text) <= 16 and any(token in text for token in detail_tokens) and not any(token in text for token in scope_tokens)
+
+
+CMDB_SENSITIVE_ATTRIBUTE_FRAGMENTS = {
+    'password', 'passwd', 'secret', 'token', 'credential', 'private_key',
+    'access_key', 'accesskey', 'api_key', 'apikey', 'kubeconfig', 'certificate',
+}
+
+
+def _cmdb_sensitive_query_reason(query):
+    text = str(query or '').strip().lower()
+    sensitive_terms = {
+        '密码': '密码',
+        '口令': '密码',
+        'passwd': '密码',
+        'password': '密码',
+        '密钥': '密钥',
+        'private key': '私钥',
+        'private_key': '私钥',
+        'token': '访问令牌',
+        'access key': '访问密钥',
+        'access_key': '访问密钥',
+        'api key': 'API 密钥',
+        'api_key': 'API 密钥',
+        '凭据': '登录凭据',
+        'credential': '登录凭据',
+        'kubeconfig': '集群凭据',
+        '证书': '证书私密内容',
+    }
+    return next((label for term, label in sensitive_terms.items() if term in text), '')
+
+
+def _sanitize_cmdb_attributes(attributes):
+    sanitized = {}
+    for key, value in (attributes or {}).items():
+        normalized_key = str(key or '').strip().lower().replace('-', '_')
+        if any(fragment in normalized_key for fragment in CMDB_SENSITIVE_ATTRIBUTE_FRAGMENTS):
+            continue
+        if isinstance(value, dict):
+            sanitized[key] = _sanitize_cmdb_attributes(value)
+        elif isinstance(value, list):
+            sanitized[key] = [
+                _sanitize_cmdb_attributes(item) if isinstance(item, dict) else item
+                for item in value[:50]
+            ]
+        else:
+            sanitized[key] = value
+    return sanitized
 
 
 def _dedupe_citations(citations):
@@ -4203,7 +4169,6 @@ def _touch_chat_session(session, question=''):
     if session.title == new_session_title:
         session.title = (question or new_session_title)[:48]
     session.save(update_fields=['last_message_at', 'title', 'updated_at'])
-    sync_session_to_demo_if_needed(session)
 
 
 def _summarize_tool_result(tool_result):
@@ -4266,7 +4231,12 @@ def query_resources(session, user_message, user, query='', environment='', limit
             citations.append({'title': '资源底座', 'path': '/tasks/resources'})
 
     if user_has_permissions(user, ['cmdb.ci.view']):
-        ci_queryset = ConfigItem.objects.select_related('ci_type').all()
+        from cmdb.views import _apply_ci_authorization_scope
+
+        ci_queryset = _apply_ci_authorization_scope(
+            ConfigItem.objects.select_related('ci_type'),
+            user,
+        )
         if environment:
             ci_queryset = ci_queryset.filter(environment=environment)
         ci_queryset = _query_cmdb_queryset(ci_queryset, tokens)
@@ -4281,6 +4251,10 @@ def query_resources(session, user_message, user, query='', environment='', limit
 
     if user_has_permissions(user, ['ops.k8s.view']):
         cluster_queryset = _queryset_search(K8sCluster.objects.all(), ['name', 'api_server', 'description'], tokens)
+        from rbac.k8s_access import get_k8s_grants
+        grants = get_k8s_grants(user)
+        if grants is not None:
+            cluster_queryset = cluster_queryset.filter(pk__in=grants)
         clusters = list(cluster_queryset.order_by('-updated_at')[:5])
         if clusters:
             sections.append({
@@ -4559,6 +4533,10 @@ def query_task_resources(session, user_message, user, query='', environment='', 
         return {'summary': {'count': 0, 'detail': 'missing_permission'}, 'sections': [], 'citations': [{'title': '任务中心资源底座', 'path': '/tasks/resources'}], 'resources': []}
 
     queryset = TaskResource.objects.select_related('environment', 'system', 'cluster').all()
+    from rbac.k8s_access import get_k8s_grants
+    grants = get_k8s_grants(user)
+    if grants is not None:
+        queryset = queryset.filter(~Q(resource_type=TaskResource.RESOURCE_K8S) | Q(cluster_id__in=grants))
     if resource_type:
         queryset = queryset.filter(resource_type=resource_type)
     scoped_env_ids = _dedupe_int_list((knowledge_environment or {}).get('task_resource_environment_ids') or [])
@@ -4614,59 +4592,96 @@ def query_task_resources(session, user_message, user, query='', environment='', 
 
 def query_cost_report(session, user_message, user, query='', environment='', business_line='', month='', limit=5):
     started_at = time.time()
-    environment = environment or _extract_environment(query)
-    system_name = business_line or _extract_system_name(query)
-    month = (month or timezone.localdate().strftime('%Y-%m')).strip()
+    limit = max(1, min(_safe_int(limit, 5), 20))
+    environment = str(environment or '').strip()
+    system_name = business_line or _extract_cmdb_business_line(query, user)
+    month = (month or _extract_cmdb_cost_month(query) or timezone.localdate().strftime('%Y-%m')).strip()
     invocation = _create_tool_invocation(
         session,
         user_message,
         'query_cost_report',
         {'query': query, 'environment': environment, 'system_name': system_name, 'month': month, 'limit': limit},
     )
-    if not user_has_permissions(user, ['cmdb.ci.view']):
+    if not user_has_permissions(user, ['cmdb.cost.view']):
         _finish_tool_invocation(invocation, {'detail': 'missing_permission'}, started_at, success=False)
-        return {'sections': [], 'citations': []}
+        return {'sections': [], 'citations': [], 'error': 'missing_permission'}
 
-    from cmdb.views import _cost_rows_for_month
+    from cmdb.views import _apply_ci_authorization_scope, _build_cost_report, _normalize_month
 
-    rows = _cost_rows_for_month(month)
-    filtered_rows = []
-    for row in rows:
-        ci = row['ci']
-        if environment and ci.environment != environment:
-            continue
-        if system_name and ci.business_line != system_name:
-            continue
-        filtered_rows.append(row)
-
-    total = sum((row['amount'] for row in filtered_rows), Decimal('0'))
-    top_items = sorted(filtered_rows, key=lambda item: (-item['amount'], item['ci'].name))[:limit]
+    month = _normalize_month(month)
+    scoped_items = _apply_ci_authorization_scope(
+        ConfigItem.objects.select_related('ci_type', 'environment_node').all(),
+        user,
+    )
+    if system_name:
+        scoped_items = scoped_items.filter(business_line=system_name)
+    environment_scope = _resolve_cmdb_environment_scope(
+        query=query,
+        environment=environment,
+        business_line=system_name,
+        queryset=scoped_items,
+    )
+    scoped_items = _apply_cmdb_environment_scope(scoped_items, environment_scope)
+    environment_label = environment_scope['label']
+    report = _build_cost_report(month, ci_queryset=scoped_items)
+    total = report['total_monthly_cost']
+    top_items = report['top_cost_items'][:limit]
     sections = [{
         'title': '成本概览',
         'items': [
             f"月份：{month}",
             f"系统：{system_name or '全部系统'}",
-            f"环境：{environment or '全部环境'}",
+            f"环境：{environment_label or '全部环境'}",
             f"月成本合计：{float(total):.2f} 元",
+            f"计费资源：{sum(item['count'] for item in report['by_type'])} 项",
+            f"潜在月节省：{report['total_potential_saving']:.2f} 元（{report['saving_rate']:.2f}%）",
+            f"非生产成本占比：{report['non_prod_cost_ratio']:.2f}%",
         ],
     }]
     if top_items:
         sections.append({
             'title': '高成本资源',
             'items': [
-                f"{item['ci'].name} / {item['ci'].ci_type.name} / {float(item['amount']):.2f} 元"
+                f"{item['name']} / {item['type_name']} / {item['business_line']} / {item['monthly_cost']:.2f} 元"
                 for item in top_items
+            ],
+        })
+    if report['by_business']:
+        sections.append({
+            'title': '业务成本分布',
+            'items': [
+                f"{item['business_line']}：{item['total_cost']:.2f} 元 / {item['count']} 项"
+                for item in report['by_business'][:limit]
+            ],
+        })
+    recommendations = report.get('recommendations_preview') or []
+    if recommendations:
+        sections.append({
+            'title': '成本优化建议',
+            'items': [
+                f"{item.get('title')} / 预计节省 {float(item.get('potential_saving') or 0):.2f} 元"
+                for item in recommendations[:limit]
             ],
         })
     summary = {
         'month': month,
-        'count': len(filtered_rows),
-        'environment': environment,
+        'count': sum(item['count'] for item in report['by_type']),
+        'environment': environment_label,
+        'environment_node_ids': environment_scope['node_ids'],
         'system_name': system_name,
         'total_monthly_cost': float(total),
+        'total_potential_saving': report['total_potential_saving'],
+        'annualized_saving': report['annualized_saving'],
+        'saving_rate': report['saving_rate'],
     }
     _finish_tool_invocation(invocation, summary, started_at, success=True)
-    return {'summary': summary, 'sections': sections, 'citations': [{'title': 'CMDB 成本分析'}], 'items': top_items}
+    return {
+        'summary': summary,
+        'sections': sections,
+        'citations': [{'title': 'CMDB 成本分析', 'path': '/cmdb/cost'}],
+        'items': top_items,
+        'report': report,
+    }
 
 
 def query_alerts(session, user_message, user, query='', level='', only_unacknowledged=False, status='', date_filter='', business_line='', system_name='', limit=8):
@@ -4678,9 +4693,16 @@ def query_alerts(session, user_message, user, query='', level='', only_unacknowl
         status,
         date_filter,
     )
+    duration_minutes = None
+    if date_filter != 'today':
+        duration_minutes = _explicit_query_duration_minutes(query) or _explicit_query_duration_minutes(
+            getattr(user_message, 'content', ''),
+        )
+        if duration_minutes:
+            date_filter = 'last_hour' if duration_minutes == 60 else 'last_minutes'
     environment = _extract_environment(normalized_query)
     system_name = system_name or business_line or _extract_system_name(normalized_query)
-    knowledge_environment = _resolve_knowledge_environment_for_query(normalized_query, environment)
+    knowledge_environment = getattr(session, '_k8s_environment_snapshot', None) or _resolve_knowledge_environment_for_query(normalized_query, environment)
     search_query = _strip_knowledge_environment_name(normalized_query, knowledge_environment)
     service_query = _strip_common_query_phrases(
         search_query,
@@ -4705,6 +4727,7 @@ def query_alerts(session, user_message, user, query='', level='', only_unacknowl
             'only_unacknowledged': only_unacknowledged,
             'status': status,
             'date_filter': date_filter,
+            'duration_minutes': duration_minutes,
             'system_name': system_name,
             'limit': limit,
         },
@@ -4732,8 +4755,8 @@ def query_alerts(session, user_message, user, query='', level='', only_unacknowl
             | Q(starts_at__date=today)
             | Q(last_received_at__date=today)
         )
-    elif date_filter == 'last_hour':
-        cutoff = timezone.now() - timedelta(hours=1)
+    elif duration_minutes or date_filter == 'last_hour':
+        cutoff = timezone.now() - timedelta(minutes=duration_minutes or 60)
         queryset = queryset.filter(
             Q(created_at__gte=cutoff)
             | Q(starts_at__gte=cutoff)
@@ -4777,6 +4800,7 @@ def query_alerts(session, user_message, user, query='', level='', only_unacknowl
         'muted': status_counter.get(Alert.STATUS_MUTED, 0),
         'status': status,
         'date_filter': date_filter,
+        'duration_minutes': duration_minutes,
         'system_name': system_name,
         'environment': knowledge_environment.get('name') if knowledge_environment else environment,
     }
@@ -5241,7 +5265,7 @@ def _select_alert_metric_datasource_id(knowledge_environment, alert, metric_data
     return ''
 
 
-def query_alert_metrics(session, user_message, user, query='', alert_id=None, fingerprint='', latest=False, duration_minutes=60, step=60, budget=ALERT_METRIC_QUERY_BUDGET, metric_datasource_id=''):
+def query_alert_metrics(session, user_message, user, query='', alert_id=None, fingerprint='', latest=False, duration_minutes=60, step=60, budget=ALERT_METRIC_QUERY_BUDGET, metric_datasource_id='', _alert_snapshot=None):
     started_at = time.time()
     knowledge_environment = _resolve_knowledge_environment_for_query(query)
     alert_id = _safe_int(alert_id, 0) or _extract_alert_id(query)
@@ -5271,7 +5295,16 @@ def query_alert_metrics(session, user_message, user, query='', alert_id=None, fi
 
     queryset = _alert_scope_queryset(knowledge_environment)
     alert = None
-    if alert_id:
+    if _alert_snapshot:
+        from django.utils.dateparse import parse_datetime
+
+        fields = ('id', 'fingerprint', 'title', 'level', 'status', 'source', 'source_type', 'environment',
+                  'cluster', 'namespace', 'service', 'resource_type', 'resource', 'metric_name',
+                  'message', 'labels', 'annotations', 'occurrence_count')
+        alert = Alert(**{key: value for key, value in _alert_snapshot.items() if key in fields})
+        for key in ('starts_at', 'last_received_at', 'created_at'):
+            setattr(alert, key, parse_datetime(_alert_snapshot[key]) if _alert_snapshot.get(key) else None)
+    elif alert_id:
         alert = queryset.filter(id=alert_id).order_by('-last_received_at', '-created_at', '-id').first()
         if not alert:
             alert = Alert.objects.filter(id=alert_id).order_by('-last_received_at', '-created_at', '-id').first()
@@ -5368,7 +5401,7 @@ def query_alert_metrics(session, user_message, user, query='', alert_id=None, fi
         'window': {'start': start_time.isoformat(), 'end': end_time.isoformat()},
         'metric_datasource_id': selected_metric_datasource_id or '',
     }
-    _finish_tool_invocation(invocation, summary, started_at, success=True)
+    _finish_tool_invocation(invocation, summary, started_at, success=not bool(failures))
     return {
         'summary': summary,
         'sections': sections,
@@ -5380,8 +5413,8 @@ def query_alert_metrics(session, user_message, user, query='', alert_id=None, fi
 
 
 def _match_k8s_items(alert, items):
-    resource = str(alert.resource or alert.service or '').lower().strip()
-    namespace = str(alert.namespace or '').lower().strip()
+    resource = str(_value_from_record(alert, 'resource') or _value_from_record(alert, 'service') or '').lower().strip()
+    namespace = str(_value_from_record(alert, 'namespace') or '').lower().strip()
     if not items:
         return []
     matched = []
@@ -5399,6 +5432,7 @@ def _match_k8s_items(alert, items):
 def _infer_alert_root_cause(
     alert,
     k8s_result=None,
+    posture_result=None,
     event_result=None,
     log_result=None,
     trace_result=None,
@@ -5407,6 +5441,22 @@ def _infer_alert_root_cause(
     evidence = []
     causes = []
     pending = []
+
+    def usable_result(result, source):
+        if not result:
+            return result
+        error = result.get('error') or (result.get('summary') or {}).get('error')
+        if error:
+            _append_unique(pending, f'{source}查询未完成：{str(error)[:180]}', limit=10)
+            return None
+        return result
+
+    k8s_result = usable_result(k8s_result, 'K8s')
+    posture_result = usable_result(posture_result, '系统态势')
+    event_result = usable_result(event_result, '事件中心')
+    log_result = usable_result(log_result, '日志中心')
+    trace_result = usable_result(trace_result, '链路追踪')
+    metric_result = usable_result(metric_result, '指标')
 
     def add_evidence(source, fact):
         _append_unique(evidence, f'{source}：{fact}', limit=12)
@@ -5453,6 +5503,23 @@ def _infer_alert_root_cause(
             elif resource_type == 'nodes' and str(item.get('status') or '').lower() != 'ready':
                 add_evidence('K8s 资源', f"节点 {name} 状态 {item.get('status') or '-'}")
                 add_cause('K8s 资源', f'节点 {name} 非 Ready，需排查节点压力、网络、kubelet 或运行时状态')
+
+    if posture_result:
+        summary = posture_result.get('summary') or {}
+        critical = _safe_int(summary.get('critical'))
+        warning = _safe_int(summary.get('warning'))
+        systems = posture_result.get('systems') or []
+        if critical or warning:
+            add_evidence('系统态势', f'严重系统 {critical} 个，风险系统 {warning} 个')
+            add_cause('系统态势', '该环境系统态势已出现健康或 SLA 风险，告警可能已影响系统级目标')
+        for system in systems[:3]:
+            system_name = _value_from_record(system, 'name') or '-'
+            raw_core_metric = _value_from_record(system, 'core_metric', {})
+            core_metric = raw_core_metric if isinstance(raw_core_metric, dict) else {}
+            sla = core_metric.get('value')
+            target = core_metric.get('target')
+            if sla is not None or target is not None:
+                add_evidence('系统态势', f"{system_name} SLA {sla if sla is not None else '--'}，目标 {target if target is not None else '--'}")
 
     if event_result:
         events = event_result.get('events') or []
@@ -5503,8 +5570,8 @@ def _infer_alert_root_cause(
             if abnormal_count:
                 add_evidence('指标证据', f'指标证据包发现 {abnormal_count} 项异常趋势，查询窗口 {summary.get("duration_minutes") or "-"} 分钟')
                 add_cause('指标证据', '相关指标在告警窗口内出现异常趋势，应结合日志、Trace 和 K8s 证据确认根因')
-            elif executed_count:
-                add_evidence('指标证据', f'已执行 {executed_count} 项指标查询，未发现明显异常趋势')
+            elif executed_count > failed_count + missing_count:
+                add_evidence('指标证据', f'已返回 {executed_count - failed_count - missing_count} 项有效指标结果，已返回结果中未发现明显异常趋势')
             elif series_count:
                 add_evidence('Grafana/PromQL', f'告警指标查询返回 {series_count} 条时间序列')
                 add_cause('Grafana/PromQL', '告警指标仍可查询到关联时间序列，需结合趋势确认是否持续异常或已恢复')
@@ -5518,12 +5585,57 @@ def _infer_alert_root_cause(
     if not evidence:
         _append_unique(
             pending,
-            '证据不足：当前只能确认告警触发对象和症状，尚未发现关联 K8s、事件、日志、链路或指标证据，不能直接给出根因。',
+            '证据不足：当前只能确认告警触发对象和症状，尚未发现关联 K8s、系统态势、事件、日志、链路或指标证据，不能直接给出根因。',
             limit=10,
         )
     if not causes:
         causes.append('证据不足，不能仅凭告警标题或描述推断根因；需要继续补齐运行态、事件、日志、链路或指标证据。')
     return {'evidence': evidence, 'causes': causes[:5], 'pending': pending[:8]}
+
+
+def _assemble_alert_root_cause(alert, environment='', **evidence):
+    analysis = _infer_alert_root_cause(alert, **evidence)
+    fact = dict(alert) if isinstance(alert, dict) else _alert_to_fact(alert)
+    level = dict(Alert.LEVEL_CHOICES).get(fact.get('level'), fact.get('level') or '-')
+    status = dict(Alert.STATUS_CHOICES).get(fact.get('status'), fact.get('status') or '-')
+    sections = [{
+        'title': '告警事实',
+        'items': [
+            f"{level} / {fact.get('title') or '-'} / {status} / {fact.get('source') or '-'}",
+            f"环境 {fact.get('environment') or '-'} / 集群 {fact.get('cluster') or '-'} / 命名空间 {fact.get('namespace') or '-'} / 服务 {fact.get('service') or '-'} / 资源 {fact.get('resource_type') or '-'}:{fact.get('resource') or '-'}",
+            f"告警ID {fact.get('id')} / 指纹 {fact.get('fingerprint') or '-'} / 最近接收 {fact.get('last_received_at') or '-'} / 出现次数 {fact.get('occurrence_count') or 0}",
+            f"详情：{str(fact.get('message') or '-')[:180]}",
+        ],
+    },
+        {'title': '关联证据', 'items': analysis.get('evidence') or ['未查询到可支撑根因判断的关联证据。']},
+        {'title': '可能原因（基于证据）', 'items': analysis.get('causes') or ['证据不足，不能直接给出根因。']},
+        {'title': '证据不足/待确认项', 'items': analysis.get('pending') or ['当前关联证据已列出，仍需结合现场处置结果最终确认。']},
+    ]
+    citations = [{'title': '告警中心', 'path': '/alerts'}]
+    for payload in evidence.values():
+        if payload:
+            sections.extend((payload.get('sections') or [])[:2])
+            citations.extend(payload.get('citations') or [])
+    sections.append({
+        'title': '建议下一步',
+        'items': [
+            '先按关联证据处理已确认的异常，不要只根据告警标题定性根因。',
+            '如果证据不足，补查同环境的 K8s 事件、应用日志、链路 Trace 和告警指标趋势。',
+            '处置前确认资源名、namespace、集群、系统态势环境映射是否与本告警一致。',
+        ],
+    })
+    return {
+        'summary': {
+            'count': 1, 'fingerprint': fact.get('fingerprint') or '', 'alert_id': fact.get('id'),
+            'environment': environment or fact.get('environment') or '',
+            'level': fact.get('level'), 'status': fact.get('status'),
+            'evidence_count': len(analysis.get('evidence') or []), 'cause_count': len(analysis.get('causes') or []),
+        },
+        'sections': sections, 'citations': _dedupe_citations(citations), 'alert': fact,
+        'k8s': evidence.get('k8s_result'), 'posture': evidence.get('posture_result'),
+        'events': evidence.get('event_result'), 'logs': evidence.get('log_result'),
+        'traces': evidence.get('trace_result'), 'metrics': evidence.get('metric_result'), 'analysis': analysis,
+    }
 
 
 def query_alert_root_cause(session, user_message, user, query='', fingerprint='', alert_id=None, latest=False, limit=6):
@@ -5595,6 +5707,7 @@ def query_alert_root_cause(session, user_message, user, query='', fingerprint=''
         except Exception as exc:
             k8s_result = {'summary': {'error': str(exc)[:200]}, 'sections': [{'title': 'K8s 关联快照', 'items': [str(exc)[:200]]}]}
 
+    posture_result = query_system_posture(session, user_message, user, query=scoped_query, limit=3) if is_system_posture_enabled() else None
     event_result = query_events(session, user_message, user, query=scoped_query, date_filter='', limit=5)
     log_result = None
     trace_result = None
@@ -5633,71 +5746,105 @@ def query_alert_root_cause(session, user_message, user, query='', fingerprint=''
         )
     except Exception as exc:
         metric_result = {'summary': {'error': str(exc)[:200]}, 'sections': [{'title': '指标查询状态', 'items': [f"指标查询未完成：{str(exc)[:200]}"]}]}
-    analysis = _infer_alert_root_cause(
+    result = _assemble_alert_root_cause(
         alert,
+        environment=knowledge_environment.get('name') if knowledge_environment else alert.environment,
         k8s_result=k8s_result,
+        posture_result=posture_result,
         event_result=event_result,
         log_result=log_result,
         trace_result=trace_result,
         metric_result=metric_result,
     )
-    alert_fact = _alert_to_fact(alert)
-    sections = [
+    _finish_tool_invocation(invocation, result['summary'], started_at, success=True)
+    return result
+
+def query_system_posture(session, user_message, user, query='', limit=6, analysis_scope=None):
+    started_at = time.time()
+    if not is_system_posture_enabled():
+        return {'sections': [], 'citations': [], 'summary': {'disabled': True}, 'systems': []}
+    knowledge_environment = getattr(session, '_k8s_environment_snapshot', None) or _resolve_knowledge_environment_for_query(query)
+    invocation = _create_tool_invocation(
+        session,
+        user_message,
+        'query_system_posture',
         {
-            'title': '告警事实',
-            'items': [
-                f"{alert.get_level_display()} / {alert.title} / {alert.get_status_display()} / {alert.source}",
-                f"环境 {alert.environment or '-'} / 集群 {alert.cluster or '-'} / 命名空间 {alert.namespace or '-'} / 服务 {alert.service or '-'} / 资源 {alert.resource_type or '-'}:{alert.resource or '-'}",
-                f"告警ID {alert.id} / 指纹 {alert.fingerprint or '-'} / 最近接收 {_alert_display_time(alert)} / 出现次数 {alert.occurrence_count}",
-                f"详情：{(alert.message or '-')[:180]}",
-            ],
+            'query': query,
+            'knowledge_environment': knowledge_environment.get('name') if knowledge_environment else '',
+            'limit': limit,
         },
-        {'title': '关联证据', 'items': analysis.get('evidence') or ['未查询到可支撑根因判断的关联证据。']},
-        {'title': '可能原因（基于证据）', 'items': analysis.get('causes') or ['证据不足，不能直接给出根因。']},
-        {'title': '证据不足/待确认项', 'items': analysis.get('pending') or ['当前关联证据已列出，仍需结合现场处置结果最终确认。']},
-    ]
-    for payload in [k8s_result, event_result, log_result, trace_result, metric_result]:
-        if payload and payload.get('sections'):
-            sections.extend(payload.get('sections')[:2])
-    sections.append({
-        'title': '建议下一步',
-        'items': [
-            '先按关联证据处理已确认的异常，不要只根据告警标题定性根因。',
-            '如果证据不足，补查同环境的 K8s 事件、应用日志、链路 Trace 和告警指标趋势。',
-            '处置前确认资源名、namespace、集群和关联环境是否与本告警一致。',
-        ],
-    })
-    citations = _dedupe_citations(
-        [{'title': '告警中心', 'path': '/alerts'}]
-        + (k8s_result.get('citations', []) if k8s_result else [])
-        + event_result.get('citations', [])
-        + (log_result.get('citations', []) if log_result else [])
-        + (trace_result.get('citations', []) if trace_result else [])
-        + (metric_result.get('citations', []) if metric_result else [])
     )
+    if not user_has_permissions(user, ['ops.observability.system_posture.view']):
+        _finish_tool_invocation(invocation, {'detail': 'missing_permission'}, started_at, success=False)
+        return {'sections': [], 'citations': []}
+
+    queryset = SystemPostureSystem.objects.filter(is_enabled=True).order_by('sort_order', 'name')
+    source_environments = []
+    if knowledge_environment:
+        configured_posture_environments = knowledge_environment.get('posture_environments') or []
+        source_environments = list(dict.fromkeys(
+            configured_posture_environments or [
+                knowledge_environment.get('name'),
+                *(knowledge_environment.get('alert_environments') or []),
+                *(knowledge_environment.get('event_environments') or []),
+            ]
+        ))
+        source_environments = [item for item in source_environments if item]
+        queryset = queryset.filter(environment__in=source_environments) if source_environments else SystemPostureSystem.objects.none()
+    base_queryset = queryset
+    tokens = _clean_posture_query_tokens(_strip_knowledge_environment_name(query, knowledge_environment))
+    if tokens:
+        queryset = _queryset_search(queryset, ['name', 'summary', 'domain', 'owner', 'keywords'], tokens)
+    systems = list(queryset[:limit])
+    if not systems and tokens:
+        systems = _fallback_match_posture_systems(
+            base_queryset,
+            query,
+            limit,
+            analysis_scope=analysis_scope,
+            knowledge_environment=knowledge_environment,
+        )
+    system_names = [item.name for item in systems]
+    histories = list(
+        SystemPostureSLAHistory.objects
+        .filter(system_name__in=system_names)
+        .order_by('system_name', '-day')[: max(limit * 2, 8)]
+    ) if system_names else []
+    latest_history = {}
+    for history in histories:
+        latest_history.setdefault(history.system_name, history)
+
+    items = []
+    for system in systems:
+        history = latest_history.get(system.name)
+        core_metric = system.core_metric if isinstance(system.core_metric, dict) else {}
+        sla_value = history.sla_value if history else core_metric.get('value')
+        sla_target = history.sla_target if history else core_metric.get('target')
+        health_score = history.health_score if history else system.health_score
+        metric_label = history.metric_label if history else (core_metric.get('label') or 'SLA')
+        metric_unit = history.metric_unit if history else (core_metric.get('unit') or '%')
+        items.append(
+            f"{system.name} / {system.environment} / {system.get_base_status_display()} / 健康度 {health_score if health_score is not None else '--'} / {metric_label} {sla_value if sla_value is not None else '--'}{metric_unit} / 目标 {sla_target if sla_target is not None else '--'}{metric_unit}"
+        )
+
+    sections = [{
+        'title': '系统态势与 SLA',
+        'items': items or ['当前环境未匹配到系统态势数据。'],
+    }]
     summary = {
-        'count': 1,
-        'fingerprint': alert.fingerprint,
-        'alert_id': alert.id,
-        'environment': knowledge_environment.get('name') if knowledge_environment else alert.environment,
-        'level': alert.level,
-        'status': alert.status,
-        'evidence_count': len(analysis.get('evidence') or []),
-        'cause_count': len(analysis.get('causes') or []),
+        'count': len(systems),
+        'critical': sum(1 for item in systems if item.base_status in {SystemPostureSystem.STATUS_CRITICAL, SystemPostureSystem.STATUS_OFFLINE}),
+        'warning': sum(1 for item in systems if item.base_status == SystemPostureSystem.STATUS_WARNING),
+        'environments': source_environments,
     }
     _finish_tool_invocation(invocation, summary, started_at, success=True)
     return {
         'summary': summary,
         'sections': sections,
-        'citations': citations,
-        'alert': alert_fact,
-        'k8s': k8s_result,
-        'events': event_result,
-        'logs': log_result,
-        'traces': trace_result,
-        'metrics': metric_result,
-        'analysis': analysis,
+        'citations': [{'title': '系统态势', 'path': '/observability/system-posture'}],
+        'systems': systems,
     }
+
 
 def query_dashboard_metadata(session, user_message, user, query='', limit=6):
     started_at = time.time()
@@ -5742,6 +5889,49 @@ def query_dashboard_metadata(session, user_message, user, query='', limit=6):
     }]
     _finish_tool_invocation(invocation, {'count': len(dashboards)}, started_at, success=True)
     return {'summary': {'count': len(dashboards)}, 'sections': sections, 'citations': [{'title': '监控看板', 'path': '/observability/grafana'}], 'dashboards': dashboards}
+
+
+def _analysis_dashboard_candidates(knowledge_environment):
+    environment = knowledge_environment or {}
+    folders = [str(item).strip() for item in environment.get('grafana_folder_keys') or [] if item]
+    linked_keys = set(ObservabilityDataSourceLink.objects.filter(
+        id__in=environment.get('observability_link_ids') or [], is_enabled=True,
+    ).values_list('grafana_dashboard_key', flat=True))
+    candidates = {}
+    for setting in GrafanaSetting.objects.filter(enabled=True).order_by('name'):
+        for dashboard in setting.dashboards if isinstance(setting.dashboards, list) else []:
+            if not isinstance(dashboard, dict):
+                continue
+            key = str(dashboard.get('key') or dashboard.get('uid') or dashboard.get('slug') or '').strip()
+            folder = str(dashboard.get('folder') or '').strip()
+            in_folder = any(folder == item or folder.startswith(f'{item}/') for item in folders)
+            if not key or (not in_folder if folders else key not in linked_keys):
+                continue
+            candidates.setdefault(key, {
+                'key': key, 'title': dashboard.get('title') or dashboard.get('name') or key,
+                'tags': dashboard.get('tags') or [], 'linked': key in linked_keys,
+            })
+    return list(candidates.values())
+
+
+def _select_dashboard_key_for_analysis(knowledge_environment=None, query=''):
+    candidates = _analysis_dashboard_candidates(knowledge_environment)
+    query_text = str(query or '').lower()
+    query_tokens = set(re.findall(r'[a-z][a-z0-9_-]{2,}', query_text)) - {'prod', 'test', 'service'}
+    slo_question = any(item in query_text for item in ('slo', 'sla', 'sli', '成功率', '可用性', '延迟', 'p95', 'p99'))
+
+    def score(candidate):
+        text = f"{candidate['key']} {candidate['title']} {' '.join(str(item) for item in candidate['tags'])}".lower()
+        value = 4 if candidate['linked'] else 0
+        value += sum(4 for token in query_tokens if token in text)
+        if slo_question and any(item in text for item in ('slo', 'sla', 'sli', 'success', 'latency', '成功率', '可用性', '延迟')):
+            value += 30
+        return value
+
+    candidates.sort(key=lambda item: (-score(item), item['key']))
+    if not candidates or (len(candidates) > 1 and score(candidates[0]) == score(candidates[1])):
+        return ''
+    return candidates[0]['key']
 
 
 def _promql_items_from_results(results):
@@ -5826,6 +6016,7 @@ def query_grafana_promql(session, user_message, user, query='', promql='', range
 def query_dashboard_panel_data(session, user_message, user, query='', dashboard_key='', panel_title='', panel_id='', variables=None, duration_minutes=30, step=60, limit=3):
     started_at = time.time()
     knowledge_environment = _resolve_knowledge_environment_for_query(query)
+    dashboard_key = str(dashboard_key or '').strip()
     invocation = _create_tool_invocation(
         session,
         user_message,
@@ -5844,21 +6035,24 @@ def query_dashboard_panel_data(session, user_message, user, query='', dashboard_
     if not user_has_permissions(user, ['ops.grafana.view']):
         _finish_tool_invocation(invocation, {'detail': 'missing_permission'}, started_at, success=False)
         return {'sections': [], 'citations': []}
-    selected_folders = set(knowledge_environment.get('grafana_folder_keys') or []) if knowledge_environment else set()
-    if selected_folders and dashboard_key:
-        matched = False
-        for setting in GrafanaSetting.objects.filter(enabled=True).order_by('name'):
-            for dashboard in (setting.dashboards if isinstance(setting.dashboards, list) else []):
-                key = str(dashboard.get('key') or dashboard.get('uid') or dashboard.get('slug') or '').strip()
-                folder = str(dashboard.get('folder') or '').strip()
-                if key == str(dashboard_key).strip() and (folder in selected_folders or any(folder.startswith(f'{item}/') for item in selected_folders)):
-                    matched = True
-                    break
-            if matched:
-                break
-        if not matched:
-            _finish_tool_invocation(invocation, {'detail': 'dashboard_out_of_scope'}, started_at, success=False)
-            return {'sections': [{'title': 'Grafana 面板数据', 'items': ['该看板不在当前知识图谱环境关联范围内。']}], 'citations': [{'title': '监控看板', 'path': '/observability/grafana'}]}
+    if not dashboard_key:
+        dashboard_key = _select_dashboard_key_for_analysis(knowledge_environment, query=query)
+        invocation.request_payload['dashboard_key'] = dashboard_key
+        invocation.save(update_fields=['request_payload'])
+    if not dashboard_key:
+        _finish_tool_invocation(invocation, {'detail': 'dashboard_selection_required'}, started_at, success=False)
+        return {
+            'summary': {'selection_required': True},
+            'sections': [{'title': 'Grafana 面板查询状态', 'items': ['当前环境没有可唯一选择的关联看板，请关联 Grafana 目录或指定范围内的 dashboard key。']}],
+            'citations': [{'title': '监控看板', 'path': '/observability/grafana'}],
+        }
+    if knowledge_environment and dashboard_key not in {item['key'] for item in _analysis_dashboard_candidates(knowledge_environment)}:
+        _finish_tool_invocation(invocation, {'detail': 'dashboard_out_of_scope'}, started_at, success=False)
+        return {
+            'summary': {'error': '该看板不在当前知识图谱环境关联范围内。'},
+            'sections': [{'title': 'Grafana 面板查询状态', 'items': ['该看板不在当前知识图谱环境关联范围内。']}],
+            'citations': [{'title': '监控看板', 'path': '/observability/grafana'}],
+        }
     end_time = timezone.now()
     duration = max(5, min(int(duration_minutes or 30), 1440))
     start_time = end_time - timedelta(minutes=duration)
@@ -5867,6 +6061,7 @@ def query_dashboard_panel_data(session, user_message, user, query='', dashboard_
             dashboard_key,
             panel_id=panel_id,
             panel_title=panel_title,
+            panel_keywords=['success', '成功率', 'availability', '可用性', 'slo', 'latency', '延迟'] if _action_question_matches('slo.analysis', query) else None,
             variables=variables or {},
             start_time=start_time,
             end_time=end_time,
@@ -5943,7 +6138,7 @@ def query_observability_links(session, user_message, user, query='', limit=6):
 
 def query_events(session, user_message, user, query='', date_filter='', limit=8):
     started_at = time.time()
-    knowledge_environment = _resolve_knowledge_environment_for_query(query)
+    knowledge_environment = getattr(session, '_k8s_environment_snapshot', None) or _resolve_knowledge_environment_for_query(query)
     search_query = _strip_common_query_phrases(
         _strip_knowledge_environment_name(query, knowledge_environment),
         ['今天', '今日', '当天', '这个', '环境', '有哪些', '有什么', '事件', '变更', '发布', '当前', '最近', '列表', '多少', '看下', '看一下'],
@@ -6040,6 +6235,17 @@ def query_logs(session, user_message, user, query='', service='', level='', leve
         duration_minutes=resolved_duration,
         limit=limit,
     )
+    if not live_result.get('datasources') and not live_result.get('logs') and (
+        live_result.get('errors') or (knowledge_environment or {}).get('log_datasource_ids')
+    ):
+        errors = live_result.get('errors') or ['当前环境关联的日志数据源未启用或不可用。']
+        summary = {'count': 0, 'source': 'unavailable', 'service': resolved_service,
+                   'level': resolved_level, 'levels': resolved_levels, 'duration_minutes': resolved_duration,
+                   'datasource_count': 0, 'evidence_unavailable': True, 'errors': errors}
+        _finish_tool_invocation(invocation, summary, started_at, success=not bool(live_result.get('errors')))
+        return {'summary': summary, 'logs': [], 'datasources': [],
+                'sections': [{'title': '日志证据不可用', 'items': [*errors, '未获得实时日志证据，不能据此判断服务无异常。']}],
+                'citations': [{'title': '日志中心', 'path': '/logs/query'}]}
     if live_result.get('datasources') or live_result.get('logs'):
         logs = live_result.get('logs') or []
         datasource_lines = [
@@ -6387,7 +6593,7 @@ def _query_live_traces(query='', errors_only=False, limit=6, duration_minutes=60
 
 def _is_trace_focused_question(question):
     lowered = str(question or '').lower()
-    return any(keyword in lowered for keyword in ['链路追踪', '调用链', 'trace', 'tracing'])
+    return any(keyword in lowered for keyword in ['链路', '调用链', 'trace', 'tracing'])
 
 
 def _extract_alert_fingerprint(text):
@@ -6479,9 +6685,31 @@ def _is_analysis_or_action_question(question):
     ])
 
 
+def _is_direct_knowledge_graph_question(question):
+    text = str(question or '')
+    if _is_analysis_or_action_question(text):
+        return False
+    if '知识图谱' in text:
+        return True
+    if any(keyword in text.lower() for keyword in ['cmdb', '配置项', '资产']):
+        return False
+    return any(keyword in text for keyword in ['依赖关系', '上下游', '服务依赖', '资源关联']) and bool(
+        _resolve_knowledge_environment_for_query(text)
+    )
+
+
+def _is_direct_posture_question(question):
+    lowered = str(question or '').lower()
+    if _is_analysis_or_action_question(question):
+        return False
+    return any(keyword in lowered for keyword in [
+        '系统态势', '态势', 'sla', 'slo', '健康度', '健康', '可用性', '错误率', '延迟',
+    ])
+
+
 def _is_direct_log_question(question):
     lowered = str(question or '').lower()
-    if any(keyword in lowered for keyword in ['链路追踪', '调用链', 'trace', 'tracing']):
+    if _is_trace_focused_question(question):
         return False
     if '日志' in lowered:
         return True
@@ -6633,6 +6861,8 @@ def _build_direct_log_result(log_result, question, knowledge_environment, analys
             )
             if formatter_result.get('used') and not formatter_result.get('fell_back'):
                 content = formatter_result.get('content') or content
+        except ChatJobLeaseLost:
+            raise
         except Exception as exc:
             formatter_error = str(exc)[:300]
     content = _ensure_followup_line(_normalize_formatter_output(content), citations)
@@ -6677,6 +6907,8 @@ def _build_direct_log_result(log_result, question, knowledge_environment, analys
 
 def _is_direct_container_question(question):
     lowered = str(question or '').lower()
+    if _is_direct_log_question(question) or _is_trace_focused_question(question) or _is_direct_promql_question(question):
+        return False
     if _is_analysis_or_action_question(question):
         return False
     if (
@@ -6702,6 +6934,8 @@ def _is_direct_container_question(question):
 
 def _is_direct_k8s_resource_lookup_question(question):
     lowered = str(question or '').lower()
+    if _is_direct_log_question(question) or _is_trace_focused_question(question) or _is_direct_promql_question(question):
+        return False
     if _looks_like_k8s_task_request(question, {}):
         return False
     if any(keyword in lowered for keyword in [
@@ -6734,8 +6968,9 @@ def _extract_promql_from_question(question):
         r'`([^`]+)`',
         r'(?:promql|PromQL)\s*[:：]\s*(.+)$',
         r'(?:执行|查询|跑|看)\s*(?:promql|PromQL)\s+(.+)$',
+        r'\bpromql\s+(.+)$',
     ]:
-        match = re.search(pattern, text)
+        match = re.search(pattern, text, flags=re.IGNORECASE)
         if match:
             expr = match.group(1).strip().strip('`').strip()
             expr = re.sub(r'[。；;，,]\s*$', '', expr).strip()
@@ -6816,6 +7051,8 @@ def _build_direct_tool_result(
             )
             if formatter_result.get('used') and not formatter_result.get('fell_back'):
                 final_content = formatter_result.get('content') or final_content
+        except ChatJobLeaseLost:
+            raise
         except Exception as exc:
             formatter_error = str(exc)[:300]
     final_content = _ensure_followup_line(_normalize_formatter_output(final_content), citations)
@@ -6875,7 +7112,7 @@ def _is_service_anomaly_question(question):
         any(keyword in text for keyword in ['服务', 'service', '应用', 'order', '订单', 'gateway', '网关'])
         or bool(re.search(r'[A-Za-z][A-Za-z0-9_.@-]{2,}', text))
     )
-    return has_analysis and has_service and not _is_direct_log_question(question) and not _is_k8s_analysis_question(question)
+    return has_analysis and has_service and not _is_direct_log_question(question) and not _is_trace_focused_question(question) and not _is_k8s_analysis_question(question)
 
 
 def _is_task_generation_question(question):
@@ -7666,7 +7903,7 @@ def _direct_tool_fastpath(
         text=step_text,
     )
     sections, citations, tool_names, collected = [], [], [], []
-    _run_scoped_tool(
+    tool_result = _run_scoped_tool(
         session,
         user_message,
         user,
@@ -7678,6 +7915,31 @@ def _direct_tool_fastpath(
         arguments,
         emit=emit,
     )
+    tool_output = tool_result.get('tool_output') or {}
+    fallback_arguments = arguments.get('rule_fallback_arguments') if isinstance(arguments, dict) else None
+    if (
+        tool_name == 'query_cmdb_items'
+        and isinstance(tool_output, dict)
+        and (tool_output.get('summary') or {}).get('count') == 0
+        and isinstance(fallback_arguments, dict)
+        and _cmdb_question_has_catalog_reference(question, user)
+    ):
+        sections.clear()
+        citations.clear()
+        collected.clear()
+        tool_names.clear()
+        tool_result = _run_scoped_tool(
+            session,
+            user_message,
+            user,
+            collected,
+            sections,
+            citations,
+            tool_names,
+            tool_name,
+            fallback_arguments,
+            emit=emit,
+        )
     result = _build_evidence_bundle_result(
         question=question,
         scoped_question=scoped_question,
@@ -7690,11 +7952,442 @@ def _direct_tool_fastpath(
         tool_names=tool_names,
         collected_tool_outputs=collected,
         execution_mode=execution_mode,
+        message_type=tool_result.get('message_type') or AIOpsChatMessage.TYPE_ANALYSIS,
+        pending_action_draft=tool_result.get('pending_action_draft'),
         extra_metadata=extra_metadata,
     )
     if selected_action:
         return _attach_selected_action_metadata(result, selected_action, extra_metadata={'action_route': execution_mode})
     return result
+
+
+def _cmdb_tool_for_question(question, page_context=None, question_category='auto'):
+    text = str(question or '').strip()
+    lowered = text.lower()
+    page_code = str((page_context or {}).get('page') or '').strip().lower()
+    category = str(question_category or 'auto').strip().lower()
+    on_cmdb_page = category == 'auto' and (page_code.startswith('cmdb.') or page_code == 'cmdb')
+    if category == 'cost':
+        return 'query_cost_report'
+    category_is_cmdb = category == 'cmdb'
+    has_explicit_cmdb_scope = any(keyword in lowered for keyword in ['cmdb', '配置项', '资产台账', '资产'])
+    has_cmdb_scope = category_is_cmdb or on_cmdb_page or has_explicit_cmdb_scope
+    create_phrases = [
+        '帮我新增', '帮我添加', '帮我创建', '帮忙新增', '帮忙添加', '帮忙创建',
+        '请新增', '请添加', '请创建', '我要新增', '我要添加', '我要创建',
+        '新增一个', '新增一台', '添加一个', '添加一台', '创建一个', '创建一台',
+        '录入一个', '录入一台', '新建一个', '新建一台',
+    ]
+    has_create_intent = (
+        any(phrase in lowered for phrase in create_phrases)
+        or (
+            any(keyword in lowered for keyword in ['新增', '添加', '创建', '录入', '新建'])
+            and any(keyword in lowered for keyword in ['资产', '配置项', ' ci', 'ci '])
+        )
+    )
+    if has_cmdb_scope and has_create_intent:
+        return 'create_cmdb_asset_draft'
+    if any(keyword in lowered for keyword in ['成本', '费用', '账单', '降本', '节省', 'cost']) and (
+        has_cmdb_scope or any(keyword in lowered for keyword in ['月成本', '云成本', '资源成本', '成本分析'])
+    ):
+        return 'query_cost_report'
+    if any(keyword in lowered for keyword in ['数据质量', '完整度', '孤岛', '治理风险', '待治理', '来源缺失']) and has_cmdb_scope:
+        return 'query_cmdb_quality'
+    if any(keyword in lowered for keyword in ['拓扑', '依赖', '上下游', '关联资产', '部署在哪', '影响范围']) and has_cmdb_scope:
+        return 'query_cmdb_topology'
+    insight_topics = {
+        'expiry': ['到期', '过期', '续期', '保修期限', '服务期限'],
+        'models': ['资产模型', '模型字段', '分类字段', '模型分类'],
+        'ipam': ['ipam', '子网', '地址池', 'ip 使用率'],
+        'sync': ['资产采集', '同步任务', '采集任务', '来源映射'],
+        'requests': ['资源申请', '申请单', '申请状态'],
+        'thresholds': ['水位策略', '阈值策略', '水位阈值'],
+        'audit': ['操作审计', '变更记录', '审计记录'],
+        'overview': ['cmdb 总览', 'cmdb 概览', '资产总览'],
+    }
+    if has_cmdb_scope and any(keyword in lowered for keywords in insight_topics.values() for keyword in keywords):
+        return 'query_cmdb_insights'
+    if has_cmdb_scope and any(keyword in lowered for keyword in [
+        '查', '看', '多少', '哪些', '列表', '明细', '盘点', '负责人', 'ip', '状态', '配置', '统计', '分布',
+    ]):
+        return 'query_cmdb_items'
+    if category_is_cmdb or has_explicit_cmdb_scope:
+        return 'query_cmdb_items'
+    return ''
+
+
+def _cmdb_direct_tool_arguments(tool_name, question, page_context=None):
+    text = str(question or '').strip()
+    hints = (page_context or {}).get('hints') if isinstance((page_context or {}).get('hints'), dict) else {}
+    arguments = {
+        'query': text,
+        'environment': str(hints.get('environment') or '').strip(),
+        'business_line': str(hints.get('business_line') or '').strip(),
+        'limit': 10 if tool_name == 'query_cmdb_items' else 8,
+    }
+    if tool_name == 'query_cmdb_items':
+        arguments.update({
+            'ci_type': str(hints.get('ci_type') or '').strip(),
+            'status': str(hints.get('status') or '').strip(),
+            'admin_user': str(hints.get('admin_user') or '').strip(),
+        })
+    elif tool_name == 'query_cost_report':
+        arguments['month'] = str(hints.get('month') or '').strip() or _extract_cmdb_cost_month(text)
+    elif tool_name == 'query_cmdb_insights':
+        page_topics = {
+            'cmdb.overview': 'overview', 'cmdb.models': 'models', 'cmdb.ipam': 'ipam',
+            'cmdb.sync': 'sync', 'cmdb.requests': 'requests', 'cmdb.thresholds': 'thresholds',
+            'cmdb.audit': 'audit', 'cmdb.governance': 'expiry', 'cmdb.views': 'overview',
+        }
+        explicit_topics = {
+            'expiry': ['到期', '过期', '续期'], 'models': ['模型', '分类字段'],
+            'ipam': ['ipam', '子网', '地址池'], 'sync': ['采集', '同步任务', '来源映射'],
+            'requests': ['资源申请', '申请单'], 'thresholds': ['阈值', '水位'],
+            'audit': ['审计', '变更记录'], 'overview': ['总览', '概览'],
+        }
+        arguments['topic'] = next(
+            (topic for topic, keywords in explicit_topics.items() if any(keyword in text.lower() for keyword in keywords)),
+            page_topics.get(str((page_context or {}).get('page') or '').lower(), ''),
+        )
+        days_match = re.search(r'(\d{1,3})\s*天', text)
+        if days_match:
+            arguments['days'] = int(days_match.group(1))
+    elif tool_name == 'create_cmdb_asset_draft':
+        arguments = {
+            'question': text,
+            'request_payload': {
+                'ci_type': str(hints.get('ci_type') or '').strip(),
+                'environment': str(hints.get('environment') or '').strip(),
+                'business_line': str(hints.get('business_line') or '').strip(),
+            },
+        }
+    return arguments
+
+
+def _cmdb_catalog_match(value, candidates, *, allow_code=False):
+    text = str(value or '').strip().lower()
+    if not text:
+        return ''
+    for candidate in candidates or []:
+        if isinstance(candidate, dict):
+            names = [candidate.get('name')]
+            if allow_code:
+                names.append(candidate.get('code'))
+            if any(str(name or '').strip().lower() == text for name in names):
+                return str(candidate.get('name') or candidate.get('code') or '').strip()
+        elif str(candidate or '').strip().lower() == text:
+            return str(candidate).strip()
+    return ''
+
+
+def _cmdb_grounded_query_arguments(question, user, session=None):
+    text = str(question or '').strip().lower()
+    if not text or not user:
+        return {}
+    from cmdb.views import _apply_ci_authorization_scope
+
+    authorized = _apply_ci_authorization_scope(
+        ConfigItem.objects.select_related('ci_type', 'environment_node'),
+        user,
+    )
+
+    def match_value(values, suffixes=()):
+        ranked = []
+        for value in values:
+            original = str(value or '').strip()
+            normalized = original.lower()
+            variants = [normalized]
+            for suffix in suffixes:
+                if normalized.endswith(suffix) and len(normalized) > len(suffix) + 1:
+                    variants.append(normalized[:-len(suffix)])
+            matched = max((len(item) for item in variants if len(item) > 1 and item in text), default=0)
+            if matched:
+                ranked.append((matched, len(normalized), original))
+        return max(ranked, default=(0, 0, ''))[2]
+
+    business_lines = list(
+        authorized.exclude(business_line='').values_list('business_line', flat=True).distinct()[:500]
+    )
+    environment_names = list(
+        authorized.filter(environment_node__isnull=False)
+        .values_list('environment_node__name', flat=True).distinct()[:500]
+    )
+    type_names = list(authorized.values_list('ci_type__name', flat=True).distinct()[:500])
+    type_codes = list(authorized.values_list('ci_type__code', flat=True).distinct()[:500])
+    asset_names = list(authorized.values_list('name', flat=True).order_by('-updated_at')[:2000])
+    business_line = match_value(business_lines, suffixes=('业务线', '业务', '平台', '系统'))
+    environment = match_value(environment_names, suffixes=('环境',))
+    ci_type = match_value(type_names) or match_value(type_codes)
+    asset_name = match_value(asset_names)
+    attribute_names = _cmdb_attribute_names_from_query(question)
+    access_patterns = [
+        r'(?:怎么|咋|如何|从哪(?:里|儿)?|哪(?:里|儿)).{0,8}(?:进|进入|访问|打开|登录|登陆)',
+        r'(?:入口|控制台|访问链接|登录地址|登陆地址|网址|url|endpoint)',
+    ]
+    if '访问地址' not in attribute_names and any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in access_patterns):
+        attribute_names.append('访问地址')
+    previous_ids = (_cmdb_context_value(session, 'last_item_ids', []) or []) if session else []
+    use_previous_context = bool(previous_ids and attribute_names and not any([
+        business_line, environment, ci_type, asset_name,
+    ]))
+    return {
+        'business_line': business_line,
+        'environment': environment,
+        'ci_type': ci_type,
+        'attribute_names': list(dict.fromkeys(attribute_names)),
+        'search_terms': [asset_name] if asset_name else [],
+        'use_previous_context': use_previous_context,
+        'asset_ids': previous_ids[:20] if use_previous_context else [],
+        'has_catalog_scope': bool(business_line or environment or ci_type or asset_name),
+    }
+
+
+def _llm_extract_cmdb_query_arguments(provider, question, user, session=None, user_message=None):
+    if not provider or not user:
+        return {}
+    from cmdb.views import _apply_ci_authorization_scope
+
+    authorized = _apply_ci_authorization_scope(
+        ConfigItem.objects.select_related('ci_type', 'environment_node'),
+        user,
+    )
+    business_lines = list(
+        authorized.exclude(business_line='')
+        .values_list('business_line', flat=True)
+        .distinct().order_by('business_line')[:300]
+    )
+    admin_users = list(
+        authorized.exclude(admin_user='')
+        .values_list('admin_user', flat=True)
+        .distinct().order_by('admin_user')[:300]
+    )
+    type_ids = list(authorized.values_list('ci_type_id', flat=True).distinct()[:500])
+    ci_types = list(
+        CIType.objects.filter(id__in=type_ids, is_active=True)
+        .values('name', 'code').order_by('name')[:300]
+    )
+    environment_nodes = list(
+        ResourceNode.objects.filter(node_type='env', parent__node_type='biz')
+        .filter(Q(parent__name__in=business_lines) | Q(environment_config_items__in=authorized))
+        .values('name', 'parent__name').distinct().order_by('parent__name', 'name')[:500]
+    )
+    previous_ids = _cmdb_context_value(session, 'last_item_ids', []) if session else []
+    previous_filters = _cmdb_context_value(session, 'last_filters', {}) if session else {}
+    prompt = '\n'.join([
+        '你是 CMDB 查询理解器。请理解用户口语、简称、倒装和连续追问，只返回一个 JSON object。',
+        'intent 只能是 asset_query 或 not_cmdb；只有用户在查 CMDB 资产或追问上一轮 CMDB 资产时才选 asset_query。',
+        '所有筛选值必须从候选数据中选择，不能编造；用户没有表达的字段必须留空。',
+        'search_terms 只保留真正用于识别资产名称或实例的词，不要包含“帮我、看看、是啥、哪里、入口、地址”等问句词。',
+        'attribute_names 只允许：ip、访问地址、版本、负责人、成本、到期、规格、描述。',
+        '“从哪进、入口在哪、怎么访问、控制台链接”都表示查询“访问地址”；“啥版本、版本呢”表示查询“版本”。',
+        '例如“某平台联调那套 Nacos 从哪进”应选择对应平台、联调环境、Nacos 分类和“访问地址”，search_terms 可以为空。',
+        'status 只允许：active、idle、stopped、offline 或空字符串。',
+        '如果是在追问上一轮资产（即使没有使用“它、上面”等固定说法），use_previous_context=true。',
+        f'业务线候选：{json.dumps(business_lines, ensure_ascii=False)}',
+        f'环境候选：{json.dumps(environment_nodes, ensure_ascii=False)}',
+        f'资产分类候选：{json.dumps(ci_types, ensure_ascii=False)}',
+        f'负责人候选：{json.dumps(admin_users, ensure_ascii=False)}',
+        f'上一轮是否有资产：{bool(previous_ids)}；上一轮筛选：{json.dumps(previous_filters, ensure_ascii=False)}',
+        f'用户问题：{question}',
+        '返回格式：{"intent":"asset_query","business_line":"","environment":"","ci_type":"","status":"","admin_user":"","attribute_names":[],"search_terms":[],"use_previous_context":false,"confidence":0.0}',
+    ])
+    try:
+        completion = _request_model_completion(
+            provider,
+            {
+                'model': provider.default_model,
+                'temperature': 0,
+                'max_tokens': 512,
+                'messages': [
+                    {'role': 'system', 'content': '调用 extract_cmdb_query 工具返回结构化理解，不要直接回答用户。'},
+                    {'role': 'user', 'content': prompt},
+                ],
+                'tools': [{
+                    'type': 'function',
+                    'function': {
+                        'name': 'extract_cmdb_query',
+                        'description': '返回 CMDB 资产查询的结构化语义参数。',
+                        'parameters': {
+                            'type': 'object',
+                            'properties': {
+                                'intent': {'type': 'string', 'enum': ['asset_query', 'not_cmdb']},
+                                'business_line': {'type': 'string'},
+                                'environment': {'type': 'string'},
+                                'ci_type': {'type': 'string'},
+                                'status': {'type': 'string', 'enum': ['active', 'idle', 'stopped', 'offline', '']},
+                                'admin_user': {'type': 'string'},
+                                'attribute_names': {
+                                    'type': 'array',
+                                    'items': {'type': 'string', 'enum': ['ip', '访问地址', '版本', '负责人', '成本', '到期', '规格', '描述']},
+                                },
+                                'search_terms': {'type': 'array', 'items': {'type': 'string'}},
+                                'use_previous_context': {'type': 'boolean'},
+                                'confidence': {'type': 'number', 'minimum': 0, 'maximum': 1},
+                            },
+                            'required': [
+                                'intent', 'business_line', 'environment', 'ci_type', 'status', 'admin_user',
+                                'attribute_names', 'search_terms', 'use_previous_context', 'confidence',
+                            ],
+                        },
+                    },
+                }],
+                'tool_choice': 'auto',
+            },
+            session=session,
+            message=user_message,
+            user=user,
+            purpose=AIOpsModelInvocation.PURPOSE_PARAMETER_EXTRACTION,
+        )
+    except Exception:
+        return {}
+    message = (((completion or {}).get('choices') or [{}])[0]).get('message') or {}
+    parsed = {}
+    for tool_call in message.get('tool_calls') or []:
+        function = tool_call.get('function') if isinstance(tool_call, dict) else {}
+        if (function or {}).get('name') == 'extract_cmdb_query':
+            parsed = _parse_json_object_from_text((function or {}).get('arguments'))
+            break
+    if not parsed:
+        parsed = _parse_json_object_from_text(_extract_message_content(message))
+    try:
+        confidence = float(parsed.get('confidence') or 0)
+    except (TypeError, ValueError):
+        confidence = 0
+    if confidence < 0.55:
+        return {}
+    intent = str(parsed.get('intent') or 'asset_query').strip().lower()
+    allowed_attributes = {'ip', '访问地址', '版本', '负责人', '成本', '到期', '规格', '描述'}
+    attribute_names = [
+        str(item).strip() for item in parsed.get('attribute_names') or []
+        if str(item).strip() in allowed_attributes
+    ][:4]
+    search_terms = []
+    for item in parsed.get('search_terms') or []:
+        term = str(item or '').strip()
+        if 1 < len(term) <= 80 and term.lower() not in {value.lower() for value in search_terms}:
+            search_terms.append(term)
+    status = str(parsed.get('status') or '').strip().lower()
+    if status not in {'active', 'idle', 'stopped', 'offline'}:
+        status = ''
+    return {
+        'is_cmdb_query': intent == 'asset_query',
+        'business_line': _cmdb_catalog_match(parsed.get('business_line'), business_lines),
+        'environment': _cmdb_catalog_match(parsed.get('environment'), environment_nodes),
+        'ci_type': _cmdb_catalog_match(parsed.get('ci_type'), ci_types, allow_code=True),
+        'status': status,
+        'admin_user': _cmdb_catalog_match(parsed.get('admin_user'), admin_users),
+        'attribute_names': list(dict.fromkeys(attribute_names)),
+        'search_terms': search_terms[:4],
+        'use_previous_context': bool(parsed.get('use_previous_context')) and bool(previous_ids),
+        'confidence': confidence,
+    }
+
+
+def _enrich_cmdb_query_arguments(
+    arguments,
+    provider,
+    question,
+    user,
+    session=None,
+    user_message=None,
+    extracted=None,
+):
+    enriched = dict(arguments or {})
+    grounded = _cmdb_grounded_query_arguments(question, user, session=session)
+    grounded_fields = []
+    for key in ['business_line', 'environment', 'ci_type']:
+        if not str(enriched.get(key) or '').strip() and grounded.get(key):
+            enriched[key] = grounded[key]
+            grounded_fields.append(key)
+    if grounded.get('attribute_names'):
+        enriched['attribute_names'] = grounded['attribute_names']
+        grounded_fields.append('attribute_names')
+    if grounded.get('asset_ids'):
+        enriched['asset_ids'] = grounded['asset_ids']
+        grounded_fields.append('asset_ids')
+    if grounded.get('has_catalog_scope') or grounded.get('use_previous_context'):
+        enriched['search_terms'] = grounded.get('search_terms') or []
+        grounded_fields.append('search_terms')
+    if grounded.get('use_previous_context') or (
+        grounded.get('has_catalog_scope') and grounded.get('attribute_names')
+    ):
+        enriched['understanding_source'] = 'catalog'
+        enriched['understanding_fields'] = grounded_fields
+        return enriched
+    if not provider or not _provider_is_ready(provider):
+        return enriched
+    extracted = extracted or _llm_extract_cmdb_query_arguments(
+        provider, question, user, session=session, user_message=user_message,
+    )
+    if not extracted or not extracted.get('is_cmdb_query'):
+        return enriched
+    fallback_arguments = dict(enriched)
+    enriched_fields = []
+    for key in ['business_line', 'environment', 'ci_type', 'status', 'admin_user']:
+        if not str(enriched.get(key) or '').strip() and extracted.get(key):
+            enriched[key] = extracted[key]
+            enriched_fields.append(key)
+    if extracted.get('attribute_names'):
+        enriched['attribute_names'] = extracted['attribute_names']
+        enriched_fields.append('attribute_names')
+    has_structured_scope = any(extracted.get(key) for key in [
+        'business_line', 'environment', 'ci_type', 'status', 'admin_user',
+        'attribute_names', 'use_previous_context',
+    ])
+    if extracted.get('search_terms') or has_structured_scope:
+        enriched['search_terms'] = extracted.get('search_terms') or []
+        enriched_fields.append('search_terms')
+    if extracted.get('use_previous_context'):
+        enriched['asset_ids'] = (_cmdb_context_value(session, 'last_item_ids', []) or [])[:20]
+        enriched_fields.append('asset_ids')
+    enriched['understanding_source'] = 'llm'
+    enriched['understanding_confidence'] = extracted.get('confidence')
+    enriched['understanding_fields'] = enriched_fields
+    enriched['rule_fallback_arguments'] = fallback_arguments
+    return enriched
+
+
+def _cmdb_question_has_catalog_reference(question, user):
+    text = str(question or '').strip().lower()
+    if not text or not user:
+        return False
+    from cmdb.views import _apply_ci_authorization_scope
+
+    authorized = _apply_ci_authorization_scope(ConfigItem.objects.select_related('ci_type', 'environment_node'), user)
+    business_lines = list(authorized.exclude(business_line='').values_list('business_line', flat=True).distinct()[:300])
+    type_names = list(
+        authorized.values_list('ci_type__name', flat=True).distinct()[:300]
+    ) + list(authorized.values_list('ci_type__code', flat=True).distinct()[:300])
+    environment_names = list(
+        authorized.filter(environment_node__isnull=False)
+        .values_list('environment_node__name', flat=True).distinct()[:300]
+    )
+    asset_names = list(authorized.values_list('name', flat=True).order_by('-updated_at')[:1000])
+
+    def references(values, suffixes=()):
+        for value in values:
+            normalized = str(value or '').strip().lower()
+            variants = [normalized]
+            for suffix in suffixes:
+                if normalized.endswith(suffix) and len(normalized) > len(suffix) + 1:
+                    variants.append(normalized[:-len(suffix)])
+            if any(len(item) > 1 and item in text for item in variants):
+                return True
+        return False
+
+    has_type = references(type_names)
+    has_business = references(business_lines, suffixes=('业务线', '业务', '平台', '系统'))
+    has_environment = references(environment_names, suffixes=('环境',))
+    has_asset = references(asset_names)
+    return has_asset or has_type or (has_business and has_environment)
+
+
+def _runtime_tool_is_available(active_mcp_servers, user, tool_name):
+    return _tool_allowed(user, tool_name) and any(
+        server.server_type == AIOpsMCPServer.SERVER_PLATFORM_BUILTIN
+        and tool_name in filter_feature_tools(server.tool_whitelist or [])
+        for server in active_mcp_servers
+    )
 
 
 def _build_evidence_bundle_result(
@@ -7757,6 +8450,8 @@ def _build_evidence_bundle_result(
             )
             if formatter_result.get('used') and not formatter_result.get('fell_back'):
                 final_content = formatter_result.get('content') or final_content
+        except ChatJobLeaseLost:
+            raise
         except Exception as exc:
             formatter_error = str(exc)[:300]
     final_content = _ensure_followup_line(_normalize_formatter_output(final_content), citations)
@@ -7841,7 +8536,7 @@ def _direct_alert_list_fastpath(session, user_message, user, question, scoped_qu
 
 def _run_k8s_analysis_evidence(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, emit):
     emit(
-        step={'title': 'K8s 异常证据收集', 'detail': '同时收集工作负载、集群摘要、告警和事件。', 'status': PROCESSING_STATUS_COMPLETED},
+        step={'title': 'K8s 异常证据收集', 'detail': '同时收集工作负载、集群摘要、告警、事件和系统态势。', 'status': PROCESSING_STATUS_COMPLETED},
         text='正在收集 K8s 异常证据',
     )
     sections, citations, tool_names, collected = [], [], [], []
@@ -7851,6 +8546,8 @@ def _run_k8s_analysis_evidence(session, user_message, user, question, scoped_que
     environment_query = knowledge_environment.get('name') or scoped_question
     _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_alerts', {'query': environment_query, 'status': Alert.STATUS_ACTIVE, 'limit': 8}, emit=emit)
     _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_events', {'query': environment_query, 'date_filter': 'last_hour' if '一小时' in question else '', 'limit': 8}, emit=emit)
+    if is_system_posture_enabled():
+        _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_system_posture', {'query': scoped_question, 'limit': 4, 'analysis_scope': analysis_scope}, emit=emit)
     return _build_evidence_bundle_result(
         question=question,
         scoped_question=scoped_question,
@@ -7869,7 +8566,7 @@ def _run_k8s_analysis_evidence(session, user_message, user, question, scoped_que
 
 def _run_slo_analysis_evidence(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, action, emit):
     emit(
-        step={'title': 'SLO 证据收集', 'detail': '读取告警、指标面板、链路和知识图谱范围。', 'status': PROCESSING_STATUS_COMPLETED},
+        step={'title': 'SLO 证据收集', 'detail': '读取系统态势、告警、指标面板、链路和知识图谱范围。', 'status': PROCESSING_STATUS_COMPLETED},
         text='正在分析 SLO 与服务健康',
     )
     sections, citations, tool_names, collected = [], [], [], []
@@ -7882,6 +8579,8 @@ def _run_slo_analysis_evidence(session, user_message, user, question, scoped_que
         service,
         scoped_question,
     ] if item).strip()
+    if is_system_posture_enabled():
+        _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_system_posture', {'query': scoped_question, 'limit': 8, 'analysis_scope': analysis_scope}, emit=emit)
     _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_alerts', {'query': health_query or scoped_question, 'status': '', 'date_filter': 'last_hour' if duration_minutes <= 60 else '', 'limit': 8}, emit=emit)
     _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_dashboard_panel_data', {'query': health_query or scoped_question, 'duration_minutes': duration_minutes, 'limit': 3}, emit=emit)
     if service:
@@ -7928,9 +8627,15 @@ def _run_slo_analysis_evidence(session, user_message, user, question, scoped_que
     return _attach_selected_action_metadata(result, action, extra_metadata={'action_route': 'deterministic_slo_analysis'})
 
 
-def _run_service_anomaly_evidence(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, emit):
+def _run_service_anomaly_evidence(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, emit, graph_runtime=False, action=None):
+    if graph_runtime:
+        from .langgraph_analysis import build_analysis_context
+        return {'_analysis_context': build_analysis_context(
+            kind='service', question=question, scoped_question=scoped_question, environment=knowledge_environment,
+            scope=analysis_scope, provider=provider, skills=active_skills, action=action,
+        )}
     emit(
-        step={'title': '服务异常证据收集', 'detail': '同时收集告警、日志、链路、事件和相关 K8s 工作负载。', 'status': PROCESSING_STATUS_COMPLETED},
+        step={'title': '服务异常证据收集', 'detail': '同时收集告警、系统态势、日志、链路、事件和相关 K8s 工作负载。', 'status': PROCESSING_STATUS_COMPLETED},
         text='正在收集服务异常证据',
     )
     sections, citations, tool_names, collected = [], [], [], []
@@ -7946,6 +8651,8 @@ def _run_service_anomaly_evidence(session, user_message, user, question, scoped_
         'limit': 8,
     }
     _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_alerts', alert_args, emit=emit)
+    if is_system_posture_enabled():
+        _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_system_posture', {'query': scoped_question, 'limit': 6, 'analysis_scope': analysis_scope}, emit=emit)
     if service:
         _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_logs', {'query': evidence_query, 'service': service, 'levels': log_levels, 'duration_minutes': duration_minutes, 'limit': 8}, emit=emit)
         _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_traces', {'query': service, 'errors_only': True, 'duration_minutes': duration_minutes, 'limit': 8}, emit=emit)
@@ -7998,7 +8705,13 @@ def _select_alert_for_metric_evidence(alert_result):
     )[0]
 
 
-def _run_alert_environment_analysis_evidence(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, action, emit):
+def _run_alert_environment_analysis_evidence(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, action, emit, graph_runtime=False):
+    if graph_runtime:
+        from .langgraph_analysis import build_analysis_context
+        return {'_analysis_context': build_analysis_context(
+            kind='alerts', question=question, scoped_question=scoped_question, environment=knowledge_environment,
+            scope=analysis_scope, provider=provider, skills=active_skills, action=action,
+        )}
     emit(
         step={'title': '告警分析证据收集', 'detail': '先查询环境告警，再补充态势、事件和告警指标证据；未识别服务时跳过日志与链路。', 'status': PROCESSING_STATUS_COMPLETED},
         text='正在分析环境告警',
@@ -8053,6 +8766,8 @@ def _run_alert_environment_analysis_evidence(session, user_message, user, questi
             'title': '指标查询结果',
             'items': ['未查询到可用于指标分析的告警。'],
         })
+    if is_system_posture_enabled():
+        _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_system_posture', {'query': scoped_question, 'limit': 6, 'analysis_scope': analysis_scope}, emit=emit)
     _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_events', {'query': alert_query, 'date_filter': 'last_hour' if duration_minutes <= 60 else '', 'limit': 8}, emit=emit)
     if service:
         log_levels = _detect_log_levels_filter(question) or ['error', 'warning']
@@ -8130,29 +8845,17 @@ def _run_latest_alert_rca_evidence(session, user_message, user, question, scoped
     )
 
 
-def _run_task_generation_evidence(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, emit):
+def _task_generation_resource_arguments(question, scoped_question, knowledge_environment):
+    is_k8s_task = _looks_like_k8s_task_request(question, {})
+    resource_type = TaskResource.RESOURCE_K8S if is_k8s_task else TaskResource.RESOURCE_HOST
+    return {'query': scoped_question, 'environment': knowledge_environment.get('name'),
+            'resource_type': resource_type, 'status': 'active', 'limit': 50}
+
+
+def _task_generation_draft_arguments(question, scoped_question, knowledge_environment, resource_ids):
     is_k8s_task = _looks_like_k8s_task_request(question, {})
     resource_type = TaskResource.RESOURCE_K8S if is_k8s_task else TaskResource.RESOURCE_HOST
     shell_command = '' if is_k8s_task else _extract_shell_command_from_question(question)
-    emit(
-        step={'title': '任务生成证据收集', 'detail': '先查询资源底座，再生成待确认任务草稿。', 'status': PROCESSING_STATUS_COMPLETED},
-        text='正在查询任务资源并生成任务草稿',
-    )
-    sections, citations, tool_names, collected = [], [], [], []
-    resources_result = _run_scoped_tool(
-        session,
-        user_message,
-        user,
-        collected,
-        sections,
-        citations,
-        tool_names,
-        'query_task_resources',
-        {'query': scoped_question, 'environment': knowledge_environment.get('name'), 'resource_type': resource_type, 'status': 'active', 'limit': 50},
-        emit=emit,
-    )
-    resource_output = resources_result.get('tool_output') or {}
-    resource_ids = resource_output.get('resource_ids') or (resource_output.get('summary') or {}).get('resource_ids') or []
     is_install_request = _looks_like_install_task_request(question, {})
     is_k8s_install_request = _looks_like_k8s_install_task_request(question, {})
     is_playbook_generation_request = _looks_like_playbook_generation_request(question, {})
@@ -8204,6 +8907,34 @@ def _run_task_generation_evidence(session, user_message, user, question, scoped_
             '      command: free -m\n'
             '      changed_when: false\n'
         )
+    return draft_args
+
+
+def _run_task_generation_evidence(
+    session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope,
+    provider, active_skills, emit, graph_runtime=False, action=None, action_route='deterministic_task_generation',
+):
+    if graph_runtime:
+        from .langgraph_tasks import build_task_context
+
+        return {'_task_context': build_task_context(
+            question=question, scoped_question=scoped_question, knowledge_environment=knowledge_environment,
+            analysis_scope=analysis_scope, provider=provider, active_skills=active_skills,
+            action=action, action_route=action_route,
+        )}
+    emit(
+        step={'title': '任务生成证据收集', 'detail': '先查询资源底座，再生成待确认任务草稿。', 'status': PROCESSING_STATUS_COMPLETED},
+        text='正在查询任务资源并生成任务草稿',
+    )
+    sections, citations, tool_names, collected = [], [], [], []
+    resources_result = _run_scoped_tool(
+        session, user_message, user, collected, sections, citations, tool_names,
+        'query_task_resources', _task_generation_resource_arguments(question, scoped_question, knowledge_environment),
+        emit=emit,
+    )
+    resource_output = resources_result.get('tool_output') or {}
+    resource_ids = resource_output.get('resource_ids') or (resource_output.get('summary') or {}).get('resource_ids') or []
+    draft_args = _task_generation_draft_arguments(question, scoped_question, knowledge_environment, resource_ids)
     task_result = _run_scoped_tool(
         session,
         user_message,
@@ -8237,8 +8968,8 @@ def _run_task_generation_evidence(session, user_message, user, question, scoped_
 
 def _run_change_correlation_evidence(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, action, emit):
     emit(
-        step={'title': '变更关联分析', 'detail': '先读取变更、工单、事件和知识图谱关系，再判断时间线是否对齐。', 'status': PROCESSING_STATUS_COMPLETED},
-        text='正在收集变更关联证据',
+        step={'title': '事件分析', 'detail': '先读取变更、工单、事件和知识图谱关系，再判断时间线是否对齐。', 'status': PROCESSING_STATUS_COMPLETED},
+        text='正在收集事件关联证据',
     )
     sections, citations, tool_names, collected = [], [], [], []
     service = _detect_observability_service(scoped_question, analysis_scope=analysis_scope, knowledge_environment=knowledge_environment)
@@ -8267,7 +8998,8 @@ def _run_change_correlation_evidence(session, user_message, user, question, scop
         },
         emit=emit,
     )
-    _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_recent_changes', {'limit': 6}, emit=emit)
+    _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_recent_changes',
+                     {'query': correlation_query, 'system_name': system_name, 'service': service, 'limit': 6}, emit=emit)
     _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_workorders', {'query': correlation_query, 'status': 'all', 'limit': 6}, emit=emit)
     _run_scoped_tool(
         session,
@@ -8284,7 +9016,7 @@ def _run_change_correlation_evidence(session, user_message, user, question, scop
     _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_alerts', {'query': correlation_query, 'status': Alert.STATUS_ACTIVE, 'limit': 6}, emit=emit)
     if correlation_query:
         sections.insert(0, {
-            'title': '变更关联',
+            'title': '事件分析',
             'items': [
                 f'环境：{knowledge_environment.get("name") or "-"}',
                 f'系统：{system_name or "-"}',
@@ -8350,7 +9082,8 @@ def _run_self_heal_recommendation_evidence(session, user_message, user, question
         },
         emit=emit,
     )
-    _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_recent_changes', {'limit': 6}, emit=emit)
+    _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_recent_changes',
+                     {'query': recommendation_scope, 'system_name': system_name, 'service': service, 'limit': 6}, emit=emit)
     if service:
         _run_scoped_tool(
             session,
@@ -8380,7 +9113,7 @@ def _run_self_heal_recommendation_evidence(session, user_message, user, question
             tool_names,
             'query_traces',
             {
-                'query': service,
+                'query': f"{knowledge_environment.get('name')} {service}",
                 'errors_only': True,
                 'duration_minutes': 60,
                 'limit': 8,
@@ -8446,7 +9179,7 @@ def _run_self_heal_recommendation_evidence(session, user_message, user, question
     return _attach_selected_action_metadata(result, action, extra_blocks=[approval_block])
 
 
-def _run_action_root_cause(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, action, emit):
+def _run_action_root_cause(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, action, emit, graph_runtime=False):
     if _is_direct_alert_analysis_question(question):
         emit(
             step={
@@ -8507,8 +9240,11 @@ def _run_action_root_cause(session, user_message, user, question, scoped_questio
             active_skills,
             action,
             emit,
+            graph_runtime=graph_runtime,
         )
-    result = _run_service_anomaly_evidence(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, emit)
+    result = _run_service_anomaly_evidence(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, emit, graph_runtime=graph_runtime, action=action)
+    if graph_runtime:
+        return result
     return _attach_selected_action_metadata(result, action, extra_metadata={'action_route': 'service_anomaly_evidence'})
 
 
@@ -8663,21 +9399,50 @@ def query_traces(session, user_message, user, query='', errors_only=False, limit
     return {'sections': sections, 'citations': [{'title': '链路追踪', 'path': '/observability/tracing'}], 'traces': traces}
 
 
-def query_recent_changes(session, user_message, user, limit=5):
+def query_recent_changes(session, user_message, user, limit=5, query='', system_name='', service=''):
     started_at = time.time()
-    invocation = _create_tool_invocation(session, user_message, 'query_recent_changes', {'limit': limit})
+    environment_name = ((session.context or {}).get('current_environment') or {}).get('name')
+    knowledge_environment = _resolve_knowledge_environment_for_query(query) or _resolve_knowledge_environment_for_query('', environment_name)
+    invocation = _create_tool_invocation(session, user_message, 'query_recent_changes', {
+        'limit': limit, 'query': query, 'system_name': system_name, 'service': service,
+        'knowledge_environment': (knowledge_environment or {}).get('name') or '',
+    })
     sections = []
     citations = []
+    deployments = []
     if user_has_permissions(user, ['ops.deployment.view']):
-        deployments = list(Deployment.objects.order_by('-deployed_at', '-executed_at', '-id')[:limit])
+        queryset = Deployment.objects.all()
+        if knowledge_environment:
+            environment_terms = [knowledge_environment.get('name'), *(knowledge_environment.get('aliases') or []),
+                                 *(knowledge_environment.get('alert_environments') or []),
+                                 *(knowledge_environment.get('event_environments') or [])]
+            conditions = Q(environment__in=environment_terms)
+            for cluster_id in knowledge_environment.get('k8s_cluster_ids') or []:
+                cluster_condition = Q(cluster_id=cluster_id)
+                namespaces = (knowledge_environment.get('k8s_namespaces') or {}).get(str(cluster_id)) or []
+                if namespaces:
+                    cluster_condition &= Q(namespace__in=namespaces)
+                conditions |= cluster_condition
+            if knowledge_environment.get('docker_host_ids'):
+                conditions |= Q(docker_host_id__in=knowledge_environment['docker_host_ids'])
+            queryset = queryset.filter(conditions)
+        if system_name:
+            queryset = queryset.filter(business_line__iexact=system_name)
+        if service:
+            queryset = queryset.filter(Q(app_name__iexact=service) | Q(app_name__iexact=f'{service}-service'))
+        deployments = list(queryset.order_by('-deployed_at', '-executed_at', '-id')[:limit])
         if deployments:
             sections.append({
                 'title': '最近发布',
-                'items': [f'{item.app_name} / {item.version} / {item.get_status_display()}' for item in deployments],
+                'items': [f'{item.app_name} / {item.version} / {item.get_status_display()} / 环境 {item.environment} / 时间 {item.deployed_at or item.executed_at or "未记录"}' for item in deployments],
             })
             citations.append({'title': '应用发布', 'path': '/deployments'})
-    _finish_tool_invocation(invocation, {'section_count': len(sections)}, started_at, success=True)
-    return {'sections': sections, 'citations': citations}
+        elif knowledge_environment:
+            sections.append({'title': '变更证据缺口', 'items': ['当前环境与服务范围内没有匹配的发布记录，不能推断变更与故障的关联。']})
+    summary = {'section_count': len(sections), 'count': len(deployments),
+               'environment': (knowledge_environment or {}).get('name') or '', 'system_name': system_name, 'service': service}
+    _finish_tool_invocation(invocation, summary, started_at, success=True)
+    return {'summary': summary, 'sections': sections, 'citations': citations}
 
 
 def query_host_tasks(session, user_message, user, query='', status='', limit=6):
@@ -8828,41 +9593,825 @@ def query_knowledge_graph(session, user_message, user, query='', environment='',
     return result
 
 
-def query_cmdb_items(session, user_message, user, query='', environment='', limit=6):
+def query_cmdb_items(
+    session,
+    user_message,
+    user,
+    query='',
+    environment='',
+    business_line='',
+    ci_type='',
+    status='',
+    admin_user='',
+    asset_ids=None,
+    attribute_names=None,
+    search_terms=None,
+    limit=6,
+):
     started_at = time.time()
-    tokens = _clean_cmdb_query_tokens(query)
-    environment = environment or _extract_environment(query)
-    invocation = _create_tool_invocation(session, user_message, 'query_cmdb_items', {'query': query, 'environment': environment, 'limit': limit})
+    limit = max(1, min(_safe_int(limit, 6), 20))
+    previous_ids = _cmdb_context_value(session, 'last_item_ids', []) or []
+    using_previous_context = False
+    normalized_asset_ids = []
+    for value in asset_ids or []:
+        try:
+            normalized_asset_ids.append(int(value))
+        except (TypeError, ValueError):
+            continue
+    if not normalized_asset_ids and _cmdb_is_followup_question(query) and previous_ids:
+        normalized_asset_ids = previous_ids[:20]
+        using_previous_context = True
+    environment = str(environment or '').strip()
+    business_line = business_line or _extract_cmdb_business_line(query, user)
+    normalized_status = (status or '').strip().lower()
+    if not normalized_status:
+        status_aliases = {
+            '闲置': 'idle', '停机': 'stopped', '离线': 'offline', '下线': 'offline',
+            '使用中': 'active', '运行中': 'active',
+        }
+        normalized_status = next((value for key, value in status_aliases.items() if key in (query or '')), '')
+    requested_attributes = [str(item).strip() for item in (attribute_names or []) if str(item).strip()]
+    if not requested_attributes:
+        requested_attributes = _cmdb_attribute_names_from_query(query)
+    request_payload = {
+        'query': query,
+        'environment': environment,
+        'business_line': business_line,
+        'ci_type': ci_type,
+        'status': normalized_status,
+        'admin_user': admin_user,
+        'asset_ids': normalized_asset_ids,
+        'attribute_names': requested_attributes,
+        'search_terms': search_terms or [],
+        'limit': limit,
+    }
+    invocation = _create_tool_invocation(session, user_message, 'query_cmdb_items', request_payload)
     if not user_has_permissions(user, ['cmdb.ci.view']):
         _finish_tool_invocation(invocation, {'detail': 'missing_permission'}, started_at, success=False)
-        return {'sections': [], 'citations': []}
-    queryset = ConfigItem.objects.select_related('ci_type').all()
-    if environment:
-        queryset = queryset.filter(environment=environment)
+        return {'sections': [], 'citations': [], 'error': 'missing_permission'}
+
+    sensitive_field = _cmdb_sensitive_query_reason(query)
+    if sensitive_field:
+        summary = {
+            'count': 0,
+            'returned_count': 0,
+            'restricted_field': sensitive_field,
+            'reason': 'sensitive_attribute_protected',
+        }
+        _finish_tool_invocation(invocation, summary, started_at, success=True)
+        return {
+            'summary': summary,
+            'sections': [{
+                'title': '安全说明',
+                'items': [
+                    f'未返回{ sensitive_field }：CMDB 助手不会读取或展示密码、密钥、令牌、凭据等敏感信息。',
+                    '如需访问该资产，请在资产详情中通过已授权的“登录凭据”入口按权限获取，或联系资产负责人。',
+                ],
+            }],
+            'citations': [{'title': 'CMDB 资产台账', 'path': '/cmdb/ledger'}],
+            'items': [],
+        }
+
+    from cmdb.views import _apply_ci_authorization_scope
+
+    queryset = _apply_ci_authorization_scope(
+        ConfigItem.objects.select_related('ci_type', 'environment_node').prefetch_related('tags'),
+        user,
+    )
+    if business_line:
+        queryset = queryset.filter(business_line=business_line)
+    environment_scope = _resolve_cmdb_environment_scope(
+        query=query,
+        environment=environment,
+        business_line=business_line,
+        queryset=queryset,
+    )
+    queryset = _apply_cmdb_environment_scope(queryset, environment_scope)
+    environment_label = environment_scope['label']
+    tokens = [str(item).strip() for item in (search_terms or []) if str(item).strip()]
+    if search_terms is None:
+        tokens = _clean_cmdb_query_tokens(query, ignored_terms=[business_line, *environment_scope['terms']])
+    if ci_type:
+        queryset = queryset.filter(Q(ci_type__name__icontains=ci_type) | Q(ci_type__code__iexact=ci_type))
+    if normalized_status in {'active', 'idle', 'stopped', 'offline'}:
+        queryset = queryset.filter(status=normalized_status)
+    if admin_user:
+        queryset = queryset.filter(admin_user__icontains=admin_user)
+    if normalized_asset_ids:
+        queryset = queryset.filter(id__in=normalized_asset_ids)
+    if not ci_type:
+        from cmdb.models import CIType
+        type_matches = list(CIType.objects.filter(is_active=True).filter(Q(name__icontains=query) | Q(code__icontains=query))[:2])
+        if len(type_matches) == 1:
+            ci_type = type_matches[0].name
+            queryset = queryset.filter(ci_type_id=type_matches[0].id)
+            type_terms = {type_matches[0].name.lower(), type_matches[0].code.lower()}
+            tokens = [
+                token for token in tokens
+                if not any(token.lower() in term or term in token.lower() for term in type_terms if term)
+            ]
+    if normalized_asset_ids:
+        tokens = []
     queryset = _query_cmdb_queryset(queryset, tokens)
-    items = list(queryset.order_by('-updated_at')[:limit])
+    total = queryset.count()
+    by_type = list(queryset.values('ci_type__name').annotate(count=Count('id')).order_by('-count', 'ci_type__name')[:8])
+    by_status = list(queryset.values('status').annotate(count=Count('id')).order_by('-count', 'status'))
+    by_environment = list(queryset.values('environment').annotate(count=Count('id')).order_by('-count', 'environment'))
+    items = list(queryset.order_by('-updated_at', '-id')[:limit])
     serialized_items = [_serialize_cmdb_item(item) for item in items]
+    if requested_attributes:
+        wanted = {item.lower() for item in requested_attributes}
+        alias_map = {
+            'ip': {'ip_address', 'ip', 'private_ip', 'public_ip', 'host_ip', 'access_address', 'endpoint', 'http_endpoint', 'url', 'address', 'console_url', 'web_url', 'service_url'},
+            '访问地址': {'access_address', 'endpoint', 'http_endpoint', 'url', 'address', 'console_url', 'web_url', 'service_url', 'ip_address', 'private_ip', 'public_ip', 'host_ip'},
+            '版本': {'version', 'release_version'},
+            '负责人': {'admin_user', 'owner'},
+            '成本': {'monthly_cost', 'cost', 'monthly_fee'},
+            '到期': {'service_expiry_date', 'warranty_expiry_date', 'expiry_date', 'contract_expiry_date'},
+            '规格': {'instance_type', 'specification', 'cpu', 'memory_gb', 'disk_gb'},
+            '描述': {'description', 'remark', 'purpose'},
+        }
+        for item in serialized_items:
+            attrs = item.get('attributes') or {}
+            filtered = {
+                key: value for key, value in attrs.items()
+                if key.lower() in wanted or any(key.lower() in alias_map.get(name, set()) for name in wanted)
+            }
+            if 'ip' in wanted and item.get('ip_address'):
+                filtered['ip_address'] = item['ip_address']
+            if '访问地址' in wanted and item.get('access_address'):
+                filtered['access_address'] = item['access_address']
+            item['attributes'] = filtered
+
+    def display_value(item):
+        attributes = item.get('attributes') or {}
+        if '版本' in requested_attributes:
+            return attributes.get('version') or attributes.get('release_version') or '未记录版本'
+        if '访问地址' in requested_attributes:
+            return item.get('access_address') or '未记录访问地址'
+        return item.get('access_address') or item.get('status_display')
+
     sections = [{
+        'title': '资产盘点',
+        'items': [
+            f'匹配资产：{total} 项',
+            '类型分布：' + ('、'.join(f"{item['ci_type__name']} {item['count']}" for item in by_type) or '暂无'),
+            '状态分布：' + ('、'.join(f"{item['status']} {item['count']}" for item in by_status) or '暂无'),
+            '环境分布：' + ('、'.join(f"{item['environment']} {item['count']}" for item in by_environment) or '暂无'),
+        ],
+    }, {
         'title': 'CMDB 配置项',
-        'items': [f"{item['name']} / {item['ci_type']} / {item['ip_address'] or item['status_display']}" for item in serialized_items],
-    }] if items else []
-    _finish_tool_invocation(invocation, {'count': len(items)}, started_at, success=True)
+        'items': [
+            f"{item['name']} / {item['ci_type']} / {item['business_line'] or '未归类'} / "
+            f"{item['environment_name'] or '未指定环境'} / {display_value(item)}"
+            for item in serialized_items
+        ],
+    }]
+    summary = {
+        'count': total,
+        'returned_count': len(serialized_items),
+        'tokens': tokens,
+        'environment': environment_label,
+        'environment_node_ids': environment_scope['node_ids'],
+        'business_line': business_line,
+        'ci_type': ci_type,
+        'status': normalized_status,
+        'by_type': by_type,
+        'by_status': by_status,
+        'by_environment': by_environment,
+    }
+    if environment_scope.get('environment_unmapped'):
+        summary['environment_unmapped'] = True
+        sections.insert(0, {
+            'title': 'CMDB 环境证据缺口',
+            'items': [f'知识图谱环境“{environment_label}”尚未维护对应 CMDB 环境，无法核对其资产。',
+                      '本轮没有该环境的资产证据，不能据此判断环境健康。'],
+        })
+    _finish_tool_invocation(invocation, summary, started_at, success=True)
+    if serialized_items:
+        _persist_session_context(
+            session,
+            cmdb_assistant_context={
+                'last_item_ids': [item['id'] for item in serialized_items],
+                'last_filters': {
+                    'query': query,
+                    'environment': environment_label,
+                    'environment_node_ids': environment_scope['node_ids'],
+                    'business_line': business_line,
+                    'ci_type': ci_type,
+                    'status': normalized_status,
+                },
+                'last_attribute_names': requested_attributes,
+                'selected_asset_id': serialized_items[0]['id'] if len(serialized_items) == 1 else None,
+            },
+        )
     return {
-        'summary': {'count': len(serialized_items), 'tokens': tokens, 'environment': environment},
+        'summary': summary,
         'sections': sections,
-        'citations': [{'title': 'CMDB'}],
+        'citations': [{'title': 'CMDB 资产台账', 'path': '/cmdb/ledger'}],
         'items': serialized_items,
+    }
+
+
+def query_cmdb_topology(session, user_message, user, query='', environment='', business_line='', limit=8):
+    started_at = time.time()
+    limit = max(1, min(_safe_int(limit, 8), 20))
+    environment = str(environment or '').strip()
+    business_line = business_line or _extract_cmdb_business_line(query, user)
+    invocation = _create_tool_invocation(
+        session,
+        user_message,
+        'query_cmdb_topology',
+        {'query': query, 'environment': environment, 'business_line': business_line, 'limit': limit},
+    )
+    if not user_has_permissions(user, ['cmdb.topology.view']):
+        _finish_tool_invocation(invocation, {'detail': 'missing_permission'}, started_at, success=False)
+        return {'sections': [], 'citations': [], 'error': 'missing_permission'}
+
+    from cmdb.views import _apply_ci_authorization_scope
+
+    authorized = _apply_ci_authorization_scope(ConfigItem.objects.select_related('ci_type'), user)
+    matched = authorized
+    if business_line:
+        matched = matched.filter(business_line=business_line)
+    environment_scope = _resolve_cmdb_environment_scope(
+        query=query,
+        environment=environment,
+        business_line=business_line,
+        queryset=matched,
+    )
+    matched = _apply_cmdb_environment_scope(matched, environment_scope)
+    tokens = _clean_cmdb_query_tokens(query, ignored_terms=[business_line, *environment_scope['terms']])
+    matched = _query_cmdb_queryset(matched, tokens)
+    matched_count = matched.count()
+    matched_ids = set(matched.values_list('id', flat=True)[:100])
+    authorized_ids = set(authorized.values_list('id', flat=True))
+    relations = list(
+        CIRelation.objects.filter(Q(source_id__in=matched_ids) | Q(target_id__in=matched_ids))
+        .filter(source_id__in=authorized_ids, target_id__in=authorized_ids)
+        .select_related('source', 'source__ci_type', 'target', 'target__ci_type')
+        .order_by('-confidence', '-id')[:limit]
+    )
+    node_ids = set(matched_ids)
+    for relation in relations:
+        node_ids.update([relation.source_id, relation.target_id])
+    nodes = list(authorized.filter(id__in=node_ids).order_by('name')[:100])
+    serialized_nodes = [_serialize_cmdb_item(item) for item in nodes]
+    serialized_relations = [
+        {
+            'id': relation.id,
+            'source_id': relation.source_id,
+            'source_name': relation.source.name,
+            'target_id': relation.target_id,
+            'target_name': relation.target.name,
+            'relation_type': relation.relation_type,
+            'relation_display': relation.get_relation_type_display(),
+            'confidence': relation.confidence,
+            'description': relation.description,
+        }
+        for relation in relations
+    ]
+    sections = [{
+        'title': '拓扑关系概览',
+        'items': [f'匹配资产：{matched_count} 项', f'关联节点：{len(nodes)} 项', f'关系：{len(relations)} 条'],
+    }]
+    if relations:
+        sections.append({
+            'title': '关键关系',
+            'items': [
+                f'{item["source_name"]} --{item["relation_display"]}--> {item["target_name"]}'
+                for item in serialized_relations
+            ],
+        })
+    summary = {
+        'matched_count': matched_count,
+        'node_count': len(nodes),
+        'relation_count': len(relations),
+        'environment': environment_scope['label'],
+        'environment_node_ids': environment_scope['node_ids'],
+        'business_line': business_line,
+    }
+    _finish_tool_invocation(invocation, summary, started_at, success=True)
+    return {
+        'summary': summary,
+        'sections': sections,
+        'citations': [{'title': 'CMDB 拓扑', 'path': '/cmdb/model/topology'}],
+        'nodes': serialized_nodes,
+        'relations': serialized_relations,
+    }
+
+
+def query_cmdb_quality(session, user_message, user, query='', environment='', business_line='', limit=8):
+    started_at = time.time()
+    limit = max(1, min(_safe_int(limit, 8), 20))
+    environment = str(environment or '').strip()
+    business_line = business_line or _extract_cmdb_business_line(query, user)
+    invocation = _create_tool_invocation(
+        session,
+        user_message,
+        'query_cmdb_quality',
+        {'query': query, 'environment': environment, 'business_line': business_line, 'limit': limit},
+    )
+    if not user_has_permissions(user, ['cmdb.ci.view']):
+        _finish_tool_invocation(invocation, {'detail': 'missing_permission'}, started_at, success=False)
+        return {'sections': [], 'citations': [], 'error': 'missing_permission'}
+
+    from cmdb.views import _apply_ci_authorization_scope, _build_data_quality_summary
+
+    scoped_items = _apply_ci_authorization_scope(ConfigItem.objects.all(), user)
+    if business_line:
+        scoped_items = scoped_items.filter(business_line=business_line)
+    environment_scope = _resolve_cmdb_environment_scope(
+        query=query,
+        environment=environment,
+        business_line=business_line,
+        queryset=scoped_items,
+    )
+    scoped_items = _apply_cmdb_environment_scope(scoped_items, environment_scope)
+    scoped_ids = scoped_items.values('id')
+    quality = _build_data_quality_summary(scoped_items, scoped_ids, user=user)
+    sections = [{
+        'title': 'CMDB 数据质量',
+        'items': [
+            f"综合得分：{quality['score']} 分",
+            f"资产总量：{quality['total']} 项",
+            f"健康：{quality['healthy']} / 风险：{quality['warning']} / 严重：{quality['critical']}",
+            '问题分布：' + ('、'.join(f'{key} {value}' for key, value in quality['issue_counts'].items() if value) or '暂无'),
+        ],
+    }]
+    risks = quality.get('top_risks') or []
+    if risks:
+        sections.append({
+            'title': '优先治理资产',
+            'items': [
+                f"{item['ci_name']} / {item['ci_type_name']} / {item['score']} 分 / "
+                + '、'.join(issue['label'] for issue in item['issues'])
+                for item in risks[:limit]
+            ],
+        })
+    summary = {
+        'score': quality['score'],
+        'total': quality['total'],
+        'healthy': quality['healthy'],
+        'warning': quality['warning'],
+        'critical': quality['critical'],
+        'environment': environment_scope['label'],
+        'environment_node_ids': environment_scope['node_ids'],
+        'business_line': business_line,
+    }
+    _finish_tool_invocation(invocation, summary, started_at, success=True)
+    return {
+        'summary': summary,
+        'sections': sections,
+        'citations': [{'title': 'CMDB 资产治理', 'path': '/cmdb/governance'}],
+        'quality': quality,
+    }
+
+
+def _cmdb_insight_permission(topic, user):
+    permissions = {
+        'overview': ['cmdb.dashboard.view'],
+        'models': ['cmdb.model.view'],
+        'ipam': ['cmdb.ipam.view'],
+        'sync': ['cmdb.sync.view'],
+        'requests': ['cmdb.ci.view', 'cmdb.request.submit', 'cmdb.request.approve'],
+        'thresholds': ['cmdb.ci.view'],
+        'audit': ['cmdb.audit.view'],
+        'expiry': ['cmdb.ci.view'],
+    }
+    required = permissions.get(topic, ['cmdb.ci.view'])
+    if topic == 'requests':
+        return any(user_has_permissions(user, [item]) for item in required)
+    return user_has_permissions(user, required)
+
+
+def query_cmdb_insights(session, user_message, user, query='', topic='', environment='', business_line='', days=30, limit=8):
+    """Read-only facade for CMDB pages that do not fit the asset ledger query."""
+    started_at = time.time()
+    text = str(query or '').strip()
+    topic = str(topic or '').strip().lower()
+    topic_aliases = {
+        '总览': 'overview', '概览': 'overview', 'dashboard': 'overview',
+        '模型': 'models', '分类': 'models', '字段': 'models',
+        'ip': 'ipam', 'ipam': 'ipam', '地址': 'ipam',
+        '采集': 'sync', '同步': 'sync',
+        '申请': 'requests', '工单': 'requests',
+        '阈值': 'thresholds', '水位': 'thresholds',
+        '审计': 'audit', '变更记录': 'audit',
+        '到期': 'expiry', '过期': 'expiry', '提醒': 'expiry',
+    }
+    topic = topic_aliases.get(topic, topic)
+    if not topic:
+        if any(item in text.lower() for item in ['到期', '过期', '提醒', '服务期限']):
+            topic = 'expiry'
+        elif any(item in text.lower() for item in ['模型', '分类', '字段']):
+            topic = 'models'
+        elif any(item in text.lower() for item in ['ipam', '子网', 'ip 地址']):
+            topic = 'ipam'
+        elif any(item in text.lower() for item in ['采集', '同步任务', '来源映射']):
+            topic = 'sync'
+        elif any(item in text.lower() for item in ['申请单', '资源申请']):
+            topic = 'requests'
+        elif any(item in text.lower() for item in ['阈值', '水位策略']):
+            topic = 'thresholds'
+        elif any(item in text.lower() for item in ['审计', '变更记录']):
+            topic = 'audit'
+        else:
+            topic = 'overview'
+    topic = topic if topic in {'overview', 'models', 'ipam', 'sync', 'requests', 'thresholds', 'audit', 'expiry'} else 'overview'
+    environment = str(environment or '').strip()
+    business_line = business_line or _extract_cmdb_business_line(text, user)
+    limit = max(1, min(_safe_int(limit, 8), 20))
+    invocation = _create_tool_invocation(session, user_message, 'query_cmdb_insights', {
+        'query': text, 'topic': topic, 'environment': environment, 'business_line': business_line, 'days': days, 'limit': limit,
+    })
+    if not _cmdb_insight_permission(topic, user):
+        _finish_tool_invocation(invocation, {'detail': 'missing_permission', 'topic': topic}, started_at, success=False)
+        return {'summary': {'topic': topic, 'count': 0}, 'sections': [], 'citations': [], 'error': 'missing_permission'}
+
+    from cmdb.models import CIChangeLog, CIField, CIType, CISyncJob, CIThresholdPolicy, IPAddress, IPSubnet, ResourceRequest
+    from cmdb.views import (
+        _apply_ci_authorization_scope,
+        _asset_service_expiry_risks_for_ci,
+        _sync_record_queryset_for_user,
+        _third_party_expiry_risks_for_ci,
+    )
+
+    sections = []
+    summary = {'topic': topic, 'environment': '', 'business_line': business_line}
+    citations = []
+    authorized = _apply_ci_authorization_scope(ConfigItem.objects.select_related('ci_type', 'environment_node'), user)
+    if business_line:
+        authorized = authorized.filter(business_line=business_line)
+    environment_scope = _resolve_cmdb_environment_scope(
+        query=text,
+        environment=environment,
+        business_line=business_line,
+        queryset=authorized,
+    )
+    authorized = _apply_cmdb_environment_scope(authorized, environment_scope)
+    summary.update({
+        'environment': environment_scope['label'],
+        'environment_node_ids': environment_scope['node_ids'],
+    })
+
+    if topic == 'overview':
+        total = authorized.count()
+        summary.update({'count': total, 'type_count': authorized.values('ci_type').distinct().count()})
+        by_type = list(authorized.values('ci_type__name').annotate(count=Count('id')).order_by('-count', 'ci_type__name')[:8])
+        by_status = list(authorized.values('status').annotate(count=Count('id')).order_by('-count'))
+        sections.append({'title': 'CMDB 总览', 'items': [f'资产总量：{total}', f"分类数量：{summary['type_count']}", '类型分布：' + ('、'.join(f"{row['ci_type__name']} {row['count']}" for row in by_type) or '暂无'), '状态分布：' + ('、'.join(f"{row['status']} {row['count']}" for row in by_status) or '暂无')]})
+        citations.append({'title': 'CMDB 总览', 'path': '/cmdb/overview'})
+    elif topic == 'models':
+        types = list(CIType.objects.filter(is_active=True).annotate(ci_count=Count('instances')).order_by('name')[:limit])
+        fields = CIField.objects.filter(ci_type_id__in=[item.id for item in types], is_active=True).count()
+        summary.update({'count': len(types), 'field_count': fields})
+        sections.append({'title': '资产模型', 'items': [f"{item.name}：{item.ci_count} 个实例" for item in types] or ['暂无启用模型']})
+        sections.append({'title': '字段覆盖', 'items': [f'当前模型字段：{fields} 个', '可继续追问：必填字段、枚举选项、同步来源和关系规则']})
+        citations.append({'title': 'CMDB 分类视图', 'path': '/cmdb/model'})
+    elif topic == 'ipam':
+        scoped_ids = authorized.values('id')
+        addresses = IPAddress.objects.filter(Q(ci_id__in=scoped_ids) | Q(ci__isnull=True))
+        subnets = IPSubnet.objects.all()
+        status_rows = list(addresses.values('status').annotate(count=Count('id')).order_by('-count'))
+        summary.update({'subnets': subnets.count(), 'addresses': addresses.count()})
+        sections.append({'title': 'IP 地址管理', 'items': [f"子网：{subnets.count()} 个", f"地址：{addresses.count()} 个", '状态分布：' + ('、'.join(f"{row['status']} {row['count']}" for row in status_rows) or '暂无')]})
+        citations.append({'title': 'CMDB IP 管理', 'path': '/cmdb/ipam'})
+    elif topic == 'sync':
+        visible_record_ids = _sync_record_queryset_for_user(user, permission='view', include_global=True).values('id')
+        job_qs = CISyncJob.objects.filter(records__id__in=visible_record_ids).distinct()
+        jobs = job_qs.order_by('-updated_at', '-id')[:limit]
+        status_rows = list(job_qs.values('status').annotate(count=Count('id')).order_by('-count'))
+        summary.update({'count': job_qs.count()})
+        sections.append({'title': '资产采集', 'items': [f"{job.name} / {job.source_type} / {job.status} / {job.updated_at:%Y-%m-%d %H:%M}" for job in jobs] or ['暂无采集任务']})
+        sections.append({'title': '采集状态', 'items': ['、'.join(f"{row['status']} {row['count']}" for row in status_rows) or '暂无']})
+        citations.append({'title': 'CMDB 资产采集中心', 'path': '/cmdb/sync'})
+    elif topic == 'requests':
+        request_qs = ResourceRequest.objects.all()
+        if not user_has_permissions(user, ['cmdb.ci.view']) and not user_has_permissions(user, ['cmdb.request.approve']):
+            request_qs = request_qs.filter(applicant=user.username)
+        rows = list(request_qs.order_by('-created_at', '-id')[:limit])
+        status_rows = list(request_qs.values('status').annotate(count=Count('id')).order_by('-count'))
+        summary.update({'count': request_qs.count()})
+        sections.append({'title': '资源申请', 'items': [f"{row.title} / {row.resource_type} / {row.environment or '未指定'} / {row.status}" for row in rows] or ['暂无资源申请']})
+        sections.append({'title': '申请状态', 'items': ['、'.join(f"{row['status']} {row['count']}" for row in status_rows) or '暂无']})
+        citations.append({'title': 'CMDB 资源运营', 'path': '/cmdb/requests'})
+    elif topic == 'thresholds':
+        policies = list(CIThresholdPolicy.objects.select_related('resource_type').filter(enabled=True).order_by('resource_type__name', 'metric')[:limit])
+        summary.update({'count': len(policies)})
+        sections.append({'title': '水位策略', 'items': [f"{row.resource_type.name if row.resource_type_id else '全局'} / {row.metric}：预警 {row.warning_threshold}，严重 {row.critical_threshold}" for row in policies] or ['暂无启用水位策略']})
+        citations.append({'title': 'CMDB 水位策略', 'path': '/cmdb/thresholds'})
+    elif topic == 'audit':
+        logs = list(CIChangeLog.objects.filter(Q(ci_id__in=authorized.values('id')) | Q(ci__isnull=True)).order_by('-created_at', '-id')[:limit])
+        summary.update({'count': len(logs)})
+        sections.append({'title': 'CMDB 操作审计', 'items': [f"{row.created_at:%Y-%m-%d %H:%M} / {row.action} / {row.operator or '系统'} / {row.ci.name if row.ci_id else '平台'}" for row in logs] or ['暂无审计记录']})
+        citations.append({'title': 'CMDB 操作审计', 'path': '/cmdb/audit'})
+    else:
+        try:
+            window_days = max(1, min(int(days or 30), 365))
+        except (TypeError, ValueError):
+            window_days = 30
+        today = timezone.localdate()
+        risks = []
+        for item in authorized[:2000]:
+            risks.extend(_third_party_expiry_risks_for_ci(item, today=today))
+            risks.extend(_asset_service_expiry_risks_for_ci(item, today=today))
+        risks = [risk for risk in risks if risk.get('days_left') is not None and risk.get('days_left') <= window_days]
+        risks.sort(key=lambda row: (row.get('days_left', 99999), row.get('ci_name', '')))
+        summary.update({'count': len(risks), 'window_days': window_days, 'expired': sum(1 for row in risks if row.get('days_left', 0) < 0), 'urgent': sum(1 for row in risks if 0 <= row.get('days_left', 99999) <= 7)})
+        sections.append({'title': f'未来 {window_days} 天到期提醒', 'items': [f"{row.get('ci_name')} / {row.get('attribute_label') or row.get('type_label') or '服务'} / {row.get('expire_date')} / 剩余 {row.get('days_left')} 天" for row in risks[:limit]] or ['当前窗口内没有到期风险']})
+        citations.append({'title': 'CMDB 到期提醒', 'path': '/cmdb/governance'})
+    _finish_tool_invocation(invocation, summary, started_at, success=True)
+    return {'summary': summary, 'sections': sections, 'citations': citations, 'topic': topic}
+
+
+def _cmdb_form_field(code, label, field_type='string', required=False, options=None, value=None, group='基础信息'):
+    return {
+        'code': code,
+        'name': code,
+        'label': label,
+        'field_type': field_type,
+        'required': bool(required),
+        'options': options or [],
+        'group': group,
+        'value': value if value is not None else '',
+    }
+
+
+def _normalize_cmdb_form_options(options):
+    normalized = []
+    for item in options or []:
+        if isinstance(item, dict):
+            value = item.get('value', item.get('code', item.get('name', item.get('label'))))
+            label = item.get('label', item.get('name', value))
+        else:
+            value = item
+            label = item
+        if value is None:
+            continue
+        normalized.append({'value': value, 'label': str(label if label is not None else value)})
+    return normalized
+
+
+CMDB_ASSET_TYPE_REPLACEMENTS = {
+    'NAT 网关': 'NAT_GATEWAY',
+}
+
+CMDB_ASSET_TYPE_ALIASES = {
+    'POSTGRESQL': ['pgsql', 'pgssql', 'postgres', 'postgre sql', 'postgres sql', 'pg 数据库', 'postgres 数据库'],
+}
+
+
+def _active_cmdb_asset_types():
+    queryset = CIType.objects.filter(is_active=True)
+    active_codes = set(queryset.values_list('code', flat=True))
+    replaced_names = [
+        name
+        for name, target_code in CMDB_ASSET_TYPE_REPLACEMENTS.items()
+        if target_code in active_codes
+    ]
+    if replaced_names:
+        queryset = queryset.exclude(name__in=replaced_names)
+    return list(queryset.order_by('name')[:100])
+
+
+def _cmdb_ci_type_from_reference(types, reference):
+    value = str(reference or '').strip()
+    if not value:
+        return None
+    lowered = value.lower()
+    return next((
+        item for item in types
+        if str(item.id) == value
+        or str(item.code or '').lower() == lowered
+        or str(item.name or '').lower() == lowered
+    ), None)
+
+
+def _exact_cmdb_ci_type_match(types, question):
+    lowered = str(question or '').lower()
+    return next((
+        item for item in types
+        if (item.name and item.name.lower() in lowered)
+        or (item.code and item.code.lower() in lowered)
+    ), None)
+
+
+def _alias_cmdb_ci_type_match(types, question):
+    normalized = re.sub(r'[^a-z0-9\u4e00-\u9fff]+', ' ', str(question or '').lower()).strip()
+    for target_code, aliases in CMDB_ASSET_TYPE_ALIASES.items():
+        for alias in aliases:
+            normalized_alias = re.sub(r'\s+', ' ', alias.lower()).strip()
+            if not normalized_alias:
+                continue
+            pattern = rf'(?<![a-z0-9]){re.escape(normalized_alias)}(?![a-z0-9])'
+            if re.search(pattern, normalized):
+                return _cmdb_ci_type_from_reference(types, target_code)
+    return None
+
+
+def _llm_cmdb_ci_type_match(provider, types, question, session=None, user_message=None, user=None):
+    if not provider or not types:
+        return None
+    candidates = [
+        {'id': item.id, 'name': item.name, 'code': item.code}
+        for item in types
+    ]
+    prompt = '\n'.join([
+        '你是 CMDB 资产分类识别器，只返回 JSON object，不要解释。',
+        '根据用户明确提到的产品、组件、数据库或技术名称，从候选分类中选择唯一最匹配项。',
+        '允许识别缩写、英文别名、常见拼写错误，例如 pgsql 或 pgssql 应映射到 PostgreSQL。',
+        '不得根据环境名、业务线或泛化的“资产”一词猜测分类；无法确定时 ci_type_id 返回空字符串。',
+        f'候选分类：{json.dumps(candidates, ensure_ascii=False)}',
+        f'用户问题：{question}',
+        '返回格式：{"ci_type_id":"","confidence":0.0}',
+    ])
+    try:
+        completion = _request_model_completion(
+            provider,
+            {
+                'model': provider.default_model,
+                'temperature': 0,
+                'max_tokens': 128,
+                'messages': [
+                    {'role': 'system', 'content': '只输出一个 JSON object。'},
+                    {'role': 'user', 'content': prompt},
+                ],
+            },
+            session=session,
+            message=user_message,
+            user=user,
+            purpose=AIOpsModelInvocation.PURPOSE_PARAMETER_EXTRACTION,
+        )
+    except Exception:
+        return None
+    message = (((completion or {}).get('choices') or [{}])[0]).get('message') or {}
+    parsed = _parse_json_object_from_text(_extract_message_content(message))
+    try:
+        confidence = float(parsed.get('confidence') or 0)
+    except (TypeError, ValueError):
+        confidence = 0
+    if confidence and confidence < 0.6:
+        return None
+    return _cmdb_ci_type_from_reference(
+        types,
+        parsed.get('ci_type_id') or parsed.get('ci_type_code') or parsed.get('ci_type_name'),
+    )
+
+
+def _resolve_cmdb_asset_type(types, question, session=None, user_message=None, user=None):
+    exact_match = _exact_cmdb_ci_type_match(types, question)
+    if exact_match:
+        return exact_match, 'exact'
+    provider = get_active_provider(get_agent_config())
+    if _provider_is_ready(provider):
+        llm_match = _llm_cmdb_ci_type_match(
+            provider,
+            types,
+            question,
+            session=session,
+            user_message=user_message,
+            user=user,
+        )
+        if llm_match:
+            return llm_match, 'llm'
+    alias_match = _alias_cmdb_ci_type_match(types, question)
+    if alias_match:
+        return alias_match, 'alias'
+    return None, ''
+
+
+def build_cmdb_asset_draft(session, user_message, user, question='', request_payload=None):
+    started_at = time.time()
+    payload = dict(request_payload or {})
+    if not user_has_permissions(user, ['cmdb.ci.manage']):
+        return {'error': '当前账号没有创建 CMDB 资产的权限', 'sections': [], 'citations': []}
+    from cmdb.models import CIField, CIType
+    text = str(question or payload.get('request_summary') or '').strip()
+    types = _active_cmdb_asset_types()
+    business_nodes = list(ResourceNode.objects.filter(node_type='biz', parent__isnull=True).order_by('sort_order', 'name', 'id')[:500])
+    environment_nodes = list(ResourceNode.objects.filter(node_type='env', parent__node_type='biz').select_related('parent').order_by('parent__sort_order', 'parent__name', 'sort_order', 'name', 'id')[:2000])
+    type_name = str(payload.get('ci_type') or '').strip()
+    selected_type = _cmdb_ci_type_from_reference(types, type_name)
+    classification_source = 'payload' if selected_type else ''
+    if not selected_type:
+        selected_type, classification_source = _resolve_cmdb_asset_type(
+            types,
+            text,
+            session=session,
+            user_message=user_message,
+            user=user,
+        )
+    if selected_type:
+        type_value = selected_type.id
+    else:
+        type_value = ''
+    business_hint = str(payload.get('business_node') or payload.get('business_line') or '').strip()
+    detected_business_line = _extract_cmdb_business_line(text, user)
+    selected_business = next(
+        (
+            node for node in business_nodes
+            if str(node.id) == business_hint or node.name == business_hint or node.name == detected_business_line
+        ),
+        None,
+    )
+    environment_hint = str(payload.get('environment_node') or payload.get('environment') or '').strip()
+    environment_scope = _resolve_cmdb_environment_scope(
+        query=text,
+        environment=environment_hint,
+        business_line=selected_business.name if selected_business else '',
+    )
+    selected_environment = next(
+        (node for node in environment_nodes if node.id in environment_scope['node_ids']),
+        None,
+    )
+    if selected_environment and not selected_business:
+        selected_business = selected_environment.parent
+    base_fields = [
+        _cmdb_form_field('name', '资产名称', required=True, value=payload.get('name') or ''),
+        _cmdb_form_field('ci_type', '资产分类', 'select', required=True, value=type_value, options=[{'value': item.id, 'label': item.name} for item in types]),
+        _cmdb_form_field('business_node', '业务线', 'select', required=True, value=selected_business.id if selected_business else '', options=[{'value': node.id, 'label': node.name} for node in business_nodes]),
+        {
+            **_cmdb_form_field('environment_node', '环境', 'select', required=True, value=selected_environment.id if selected_environment else ''),
+            'depends_on': 'business_node',
+            'placeholder': '请先选择业务线',
+            'options': [
+                {'value': node.id, 'label': node.name, 'parent_value': node.parent_id}
+                for node in environment_nodes
+            ],
+        },
+        _cmdb_form_field('admin_user', '负责人', value=payload.get('admin_user') or ''),
+        _cmdb_form_field('status', '状态', 'select', value=payload.get('status') or 'active', options=[{'value': value, 'label': label} for value, label in ConfigItem._meta.get_field('status').choices]),
+    ]
+    model_fields = {}
+    for item in types:
+        rows = []
+        for field in CIField.objects.filter(ci_type=item, is_active=True).order_by('sort_order', 'id')[:80]:
+            if field.is_sensitive:
+                continue
+            rows.append(_cmdb_form_field(
+                field.code,
+                field.name,
+                field.field_type,
+                field.required,
+                _normalize_cmdb_form_options(field.options),
+                field.default,
+                field.field_group or '模型属性',
+            ))
+        model_fields[str(item.id)] = rows
+    form_values = {
+        'name': payload.get('name') or '', 'ci_type': type_value,
+        'business_node': selected_business.id if selected_business else '',
+        'environment_node': selected_environment.id if selected_environment else '',
+        'admin_user': payload.get('admin_user') or '', 'status': payload.get('status') or 'active',
+        'attributes': dict(payload.get('attributes') or {}),
+    }
+    draft = {
+        'action_type': AIOpsPendingAction.ACTION_CREATE_CMDB_ASSET,
+        'name': form_values['name'] or '新增 CMDB 资产',
+        'title': '新增 CMDB 资产',
+        'risk_level': AIOpsPendingAction.RISK_MEDIUM,
+        'requires_confirmation': True,
+        'form_schema': {'base_fields': base_fields, 'model_fields': model_fields},
+        'form_values': form_values,
+        'request_summary': text[:300],
+        'classification': {
+            'ci_type_id': selected_type.id if selected_type else '',
+            'ci_type_name': selected_type.name if selected_type else '',
+            'source': classification_source,
+        },
+    }
+    invocation = _create_tool_invocation(session, user_message, 'create_cmdb_asset_draft', {
+        'question': text,
+        'ci_type': type_value,
+        'business_node': form_values['business_node'],
+        'environment_node': form_values['environment_node'],
+    })
+    _finish_tool_invocation(invocation, {'requires_confirmation': True, 'action_type': draft['action_type']}, started_at, success=True)
+    return {
+        'tool_output': {'draft': {'action_type': draft['action_type'], 'title': draft['title'], 'risk_level': draft['risk_level']}, 'requires_confirmation': True},
+        'sections': [{
+            'title': '新增资产表单',
+            'items': [
+                *([f'已自动识别资产分类：{selected_type.name}。'] if selected_type and classification_source != 'payload' else []),
+                '请补充资产名称、分类、环境和模型必填属性，确认后才会写入 CMDB。',
+            ],
+        }],
+        'citations': [{'title': 'CMDB 资产台账', 'path': '/cmdb/ledger'}],
+        'message_type': AIOpsChatMessage.TYPE_ACTION,
+        'pending_action_draft': draft,
     }
 
 
 def query_observability(session, user_message, user, query='', limit=6):
     alert_payload = query_alerts(session, user_message, user, query=query, limit=limit)
+    posture_payload = query_system_posture(session, user_message, user, query=query, limit=limit) if is_system_posture_enabled() else {'sections': [], 'citations': []}
     link_payload = query_observability_links(session, user_message, user, query=query, limit=limit)
     log_payload = query_logs(session, user_message, user, query=query, limit=limit)
     trace_payload = query_traces(session, user_message, user, query=query, errors_only='异常' in (query or '') or '错误' in (query or ''), limit=limit)
     sections = []
     citations = []
-    for payload in [alert_payload, link_payload, log_payload, trace_payload]:
+    for payload in [alert_payload, posture_payload, link_payload, log_payload, trace_payload]:
         sections.extend(payload.get('sections', []))
         citations.extend(payload.get('citations', []))
     return {'sections': sections, 'citations': _dedupe_citations(citations)}
@@ -9128,7 +10677,7 @@ def _k8s_resource_title(resource_type):
 
 def query_k8s_resources(session, user_message, user, query='', resource_type='', cluster_name='', limit=8):
     started_at = time.time()
-    knowledge_environment = _resolve_knowledge_environment_for_query(query)
+    knowledge_environment = getattr(session, '_k8s_environment_snapshot', None) or _resolve_knowledge_environment_for_query(query)
     resource_type = (resource_type or _detect_k8s_resource_type(query) or 'deployments').strip().lower()
     if resource_type == 'pod':
         resource_type = 'pods'
@@ -9146,12 +10695,20 @@ def query_k8s_resources(session, user_message, user, query='', resource_type='',
 
     if resource_type == 'pods':
         result = query_k8s_cluster_summary(session, user_message, user, query=query, cluster_name=cluster_name, limit=limit)
-        _finish_tool_invocation(invocation, {'delegated': 'query_k8s_cluster_summary'}, started_at, success=True)
+        summary = result.get('summary') or {}
+        _finish_tool_invocation(invocation, {'delegated': 'query_k8s_cluster_summary', **summary}, started_at,
+                                success=not bool(result.get('error') or summary.get('error')))
         return result
 
+    from rbac.k8s_access import get_k8s_grants, k8s_scope
+    grants = get_k8s_grants(user)
     queryset = K8sCluster.objects.all()
-    if knowledge_environment and knowledge_environment.get('k8s_cluster_ids'):
+    if grants is not None:
+        queryset = queryset.filter(pk__in=grants)
+    if knowledge_environment:
         queryset = queryset.filter(id__in=knowledge_environment.get('k8s_cluster_ids') or [])
+    if hasattr(session, '_k8s_cluster_id'):
+        queryset = queryset.filter(id=session._k8s_cluster_id)
     if cluster_name:
         queryset = queryset.filter(name__icontains=cluster_name)
     cluster = queryset.order_by('-updated_at', '-id').first()
@@ -9160,6 +10717,18 @@ def query_k8s_resources(session, user_message, user, query='', resource_type='',
         return {'summary': {'count': 0, 'resource_type': resource_type}, 'sections': [], 'citations': [{'title': 'K8s 集群', 'path': '/containers/k8s'}], 'items': []}
 
     namespaces = _k8s_namespaces_for_query(knowledge_environment, cluster, query)
+    scope = k8s_scope(user, cluster.pk)
+    allowed = scope['namespaces'] if scope else []
+    if allowed:
+        requested = [namespace for namespace in namespaces if namespace != '_all']
+        namespaces = [namespace for namespace in requested if namespace in allowed] if requested else allowed
+        if not namespaces:
+            _finish_tool_invocation(invocation, {'detail': 'namespace_not_authorized'}, started_at, success=False)
+            return {'sections': [], 'citations': [], 'items': []}
+        if resource_type == 'nodes':
+            _finish_tool_invocation(invocation, {'detail': 'cluster_scope_required'}, started_at, success=False)
+            return {'sections': [], 'citations': [], 'items': []}
+
     error = ''
     try:
         if resource_type == 'nodes':
@@ -9225,6 +10794,10 @@ def query_container_assets(session, user_message, user, query='', limit=6):
     citations = []
     if user_has_permissions(user, ['ops.k8s.view']):
         cluster_queryset = K8sCluster.objects.all()
+        from rbac.k8s_access import get_k8s_grants
+        grants = get_k8s_grants(user)
+        if grants is not None:
+            cluster_queryset = cluster_queryset.filter(pk__in=grants)
         if knowledge_environment and knowledge_environment.get('k8s_cluster_ids'):
             cluster_queryset = cluster_queryset.filter(id__in=knowledge_environment.get('k8s_cluster_ids') or [])
         clusters = list(_queryset_search(cluster_queryset, ['name', 'api_server', 'description'], tokens).order_by('-updated_at')[:limit])
@@ -9245,13 +10818,15 @@ def query_container_assets(session, user_message, user, query='', limit=6):
 
 def query_k8s_cluster_summary(session, user_message, user, query='', cluster_name='', limit=1):
     started_at = time.time()
-    knowledge_environment = _resolve_knowledge_environment_for_query(query)
+    knowledge_environment = getattr(session, '_k8s_environment_snapshot', None) or _resolve_knowledge_environment_for_query(query)
     scoped_query = _strip_knowledge_environment_name(query, knowledge_environment)
     cluster_query = cluster_name or _strip_common_query_phrases(
         scoped_query,
         ['有没有', '是否', '异常', 'pod', 'Pod', '集群', 'k8s', 'K8s', 'Kubernetes', '的', '吗', '情况', '这个', '环境', '今天', '当前'],
     )
     tokens = _clean_tokens(cluster_query)
+    if hasattr(session, '_k8s_cluster_id'):
+        tokens = []
     if knowledge_environment and knowledge_environment.get('k8s_cluster_ids') and not cluster_name and _is_direct_container_question(query):
         tokens = []
     invocation = _create_tool_invocation(
@@ -9264,9 +10839,15 @@ def query_k8s_cluster_summary(session, user_message, user, query='', cluster_nam
         _finish_tool_invocation(invocation, {'detail': 'missing_permission'}, started_at, success=False)
         return {'sections': [], 'citations': []}
 
+    from rbac.k8s_access import get_k8s_grants, k8s_scope
+    grants = get_k8s_grants(user)
     queryset = K8sCluster.objects.all()
-    if knowledge_environment and knowledge_environment.get('k8s_cluster_ids'):
+    if grants is not None:
+        queryset = queryset.filter(pk__in=grants)
+    if knowledge_environment:
         queryset = queryset.filter(id__in=knowledge_environment.get('k8s_cluster_ids') or [])
+    if hasattr(session, '_k8s_cluster_id'):
+        queryset = queryset.filter(id=session._k8s_cluster_id)
     if cluster_name:
         queryset = queryset.filter(name__icontains=cluster_name)
     elif tokens:
@@ -9278,8 +10859,17 @@ def query_k8s_cluster_summary(session, user_message, user, query='', cluster_nam
 
     from ops.k8s_views import _build_summary_alerts, get_k8s_summary_snapshot
 
-    summary_payload = get_k8s_summary_snapshot(cluster)
     namespaces = _k8s_namespaces_for_query(knowledge_environment, cluster, query)
+    scope = k8s_scope(user, cluster.pk)
+    allowed = scope['namespaces'] if scope else []
+    if allowed:
+        requested = [namespace for namespace in namespaces if namespace != '_all']
+        namespaces = [namespace for namespace in requested if namespace in allowed] if requested else allowed
+        if not namespaces:
+            _finish_tool_invocation(invocation, {'detail': 'namespace_not_authorized'}, started_at, success=False)
+            return {'sections': [], 'citations': [], 'items': []}
+    summary_payload = {'status': cluster.status} if allowed else get_k8s_summary_snapshot(cluster)
+
     pods = []
     pod_error = ''
     try:
@@ -9343,14 +10933,104 @@ def query_k8s_cluster_summary(session, user_message, user, query='', cluster_nam
         'pods_restarting': summary_payload.get('pods_restarting', 0),
         'total_restarts': summary_payload.get('total_restarts', 0),
         'workloads_degraded': summary_payload.get('workloads_degraded', 0),
+        'error': pod_error,
     }
-    _finish_tool_invocation(invocation, tool_summary, started_at, success=True)
+    _finish_tool_invocation(invocation, tool_summary, started_at, success=not bool(pod_error))
     return {'summary': tool_summary, 'sections': sections, 'citations': [{'title': 'K8s 集群', 'path': '/containers/k8s'}], 'cluster': summary_payload, 'pods': pods}
 
 
 PLATFORM_MCP_RATE_LIMIT_PER_MINUTE = 60
 
 PLATFORM_MCP_TOOL_DEFINITIONS = [
+    {
+        'name': 'sxdevops.query_cmdb_items',
+        'title': '查询 CMDB 资产',
+        'description': '按授权范围查询 CMDB 资产明细与类型、状态、环境分布，敏感扩展属性不会返回。',
+        'permission': 'cmdb.ci.view',
+        'handler': 'query_cmdb_items',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'query': {'type': 'string'},
+                'environment': {'type': 'string', 'description': '可选的 CMDB 环境节点名称；不要使用 AIOps 知识环境代替'},
+                'business_line': {'type': 'string'},
+                'ci_type': {'type': 'string'},
+                'status': {'type': 'string', 'enum': ['active', 'idle', 'stopped', 'offline', '']},
+                'admin_user': {'type': 'string'},
+                'asset_ids': {'type': 'array', 'items': {'type': 'integer'}},
+                'attribute_names': {'type': 'array', 'items': {'type': 'string'}},
+                'search_terms': {'type': 'array', 'items': {'type': 'string'}},
+                'limit': {'type': 'integer', 'minimum': 1, 'maximum': 20},
+            },
+        },
+    },
+    {
+        'name': 'sxdevops.query_cmdb_insights',
+        'title': '查询 CMDB 页面洞察',
+        'description': '按主题和授权范围查询 CMDB 总览、模型、IPAM、采集、申请、阈值、审计与到期提醒。',
+        'permission': '',
+        'handler': 'query_cmdb_insights',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'query': {'type': 'string'},
+                'topic': {'type': 'string', 'enum': ['overview', 'models', 'ipam', 'sync', 'requests', 'thresholds', 'audit', 'expiry', '']},
+                'environment': {'type': 'string', 'description': '可选的 CMDB 环境节点名称；留空表示全部授权环境'},
+                'business_line': {'type': 'string'},
+                'days': {'type': 'integer', 'minimum': 1, 'maximum': 365},
+                'limit': {'type': 'integer', 'minimum': 1, 'maximum': 20},
+            },
+        },
+    },
+    {
+        'name': 'sxdevops.query_cost_report',
+        'title': '分析 CMDB 成本',
+        'description': '按授权范围分析月度成本、趋势、业务分布、高成本资源和潜在优化空间。',
+        'permission': 'cmdb.cost.view',
+        'handler': 'query_cost_report',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'query': {'type': 'string'},
+                'environment': {'type': 'string', 'description': '可选的 CMDB 环境节点名称；留空表示全部授权环境'},
+                'business_line': {'type': 'string'},
+                'month': {'type': 'string', 'description': 'YYYY-MM'},
+                'limit': {'type': 'integer', 'minimum': 1, 'maximum': 20},
+            },
+        },
+    },
+    {
+        'name': 'sxdevops.query_cmdb_topology',
+        'title': '查询 CMDB 拓扑',
+        'description': '按授权范围查询配置项的上下游、部署和连接关系。',
+        'permission': 'cmdb.topology.view',
+        'handler': 'query_cmdb_topology',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'query': {'type': 'string'},
+                'environment': {'type': 'string', 'description': '可选的 CMDB 环境节点名称；留空表示全部授权环境'},
+                'business_line': {'type': 'string'},
+                'limit': {'type': 'integer', 'minimum': 1, 'maximum': 20},
+            },
+        },
+    },
+    {
+        'name': 'sxdevops.query_cmdb_quality',
+        'title': '分析 CMDB 数据质量',
+        'description': '按授权范围分析资产完整度、孤立关系、来源缺失和治理风险。',
+        'permission': 'cmdb.ci.view',
+        'handler': 'query_cmdb_quality',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'query': {'type': 'string'},
+                'environment': {'type': 'string', 'description': '可选的 CMDB 环境节点名称；留空表示全部授权环境'},
+                'business_line': {'type': 'string'},
+                'limit': {'type': 'integer', 'minimum': 1, 'maximum': 20},
+            },
+        },
+    },
     {
         'name': 'sxdevops.query_knowledge_graph',
         'title': '查询 AIOps 知识图谱',
@@ -9454,6 +11134,20 @@ PLATFORM_MCP_TOOL_DEFINITIONS = [
         },
     },
     {
+        'name': 'sxdevops.query_system_posture',
+        'title': '查询系统态势',
+        'description': '查询业务系统健康态势和 SLA 快照。',
+        'permission': 'ops.observability.system_posture.view',
+        'handler': 'query_system_posture',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'query': {'type': 'string'},
+                'limit': {'type': 'integer', 'minimum': 1, 'maximum': 20},
+            },
+        },
+    },
+    {
         'name': 'sxdevops.query_recent_changes',
         'title': '查询最近变更',
         'description': '查询最近发布、工单和事件候选变更。',
@@ -9462,6 +11156,9 @@ PLATFORM_MCP_TOOL_DEFINITIONS = [
         'input_schema': {
             'type': 'object',
             'properties': {
+                'query': {'type': 'string'},
+                'system_name': {'type': 'string'},
+                'service': {'type': 'string'},
                 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 20},
             },
         },
@@ -9536,6 +11233,65 @@ def _invoke_platform_mcp_handler(handler_name, session, user, arguments):
     arguments = arguments if isinstance(arguments, dict) else {}
     query = str(arguments.get('query') or '').strip()
     limit = _clamped_mcp_limit(arguments)
+    if handler_name == 'query_cmdb_items':
+        return query_cmdb_items(
+            session,
+            None,
+            user,
+            query=query,
+            environment=str(arguments.get('environment') or '').strip(),
+            business_line=str(arguments.get('business_line') or '').strip(),
+            ci_type=str(arguments.get('ci_type') or '').strip(),
+            status=str(arguments.get('status') or '').strip(),
+            admin_user=str(arguments.get('admin_user') or '').strip(),
+            asset_ids=arguments.get('asset_ids') or [],
+            attribute_names=arguments.get('attribute_names') or [],
+            search_terms=arguments.get('search_terms') if 'search_terms' in arguments else None,
+            limit=limit,
+        )
+    if handler_name == 'query_cmdb_insights':
+        return query_cmdb_insights(
+            session,
+            None,
+            user,
+            query=query,
+            topic=str(arguments.get('topic') or '').strip(),
+            environment=str(arguments.get('environment') or '').strip(),
+            business_line=str(arguments.get('business_line') or '').strip(),
+            days=arguments.get('days') or 30,
+            limit=limit,
+        )
+    if handler_name == 'query_cost_report':
+        return query_cost_report(
+            session,
+            None,
+            user,
+            query=query,
+            environment=str(arguments.get('environment') or '').strip(),
+            business_line=str(arguments.get('business_line') or '').strip(),
+            month=str(arguments.get('month') or '').strip(),
+            limit=limit,
+        )
+    if handler_name == 'query_cmdb_topology':
+        return query_cmdb_topology(
+            session,
+            None,
+            user,
+            query=query,
+            environment=str(arguments.get('environment') or '').strip(),
+            business_line=str(arguments.get('business_line') or '').strip(),
+            limit=limit,
+        )
+    if handler_name == 'query_cmdb_quality':
+        return query_cmdb_quality(
+            session,
+            None,
+            user,
+            query=query,
+            environment=str(arguments.get('environment') or '').strip(),
+            business_line=str(arguments.get('business_line') or '').strip(),
+            limit=limit,
+        )
     if handler_name == 'query_knowledge_graph':
         return query_knowledge_graph(
             session,
@@ -9571,6 +11327,7 @@ def _invoke_platform_mcp_handler(handler_name, session, user, arguments):
             step=arguments.get('step') or ALERT_METRIC_DEFAULT_STEP_SECONDS,
             budget=arguments.get('budget') or ALERT_METRIC_QUERY_BUDGET,
             metric_datasource_id=arguments.get('metric_datasource_id') or '',
+            _alert_snapshot=getattr(session, '_incident_alert_snapshot', None),
         )
     if handler_name == 'query_logs':
         return query_logs(
@@ -9602,8 +11359,11 @@ def _invoke_platform_mcp_handler(handler_name, session, user, arguments):
             cluster_name=str(arguments.get('cluster_name') or '').strip(),
             limit=limit,
         )
+    if handler_name == 'query_system_posture':
+        return query_system_posture(session, None, user, query=query, limit=limit)
     if handler_name == 'query_recent_changes':
-        return query_recent_changes(session, None, user, limit=limit)
+        return query_recent_changes(session, None, user, limit=limit, query=query,
+                                    system_name=arguments.get('system_name') or '', service=arguments.get('service') or '')
     raise ValueError('MCP 工具处理器不存在')
 
 
@@ -9966,12 +11726,34 @@ def _build_tool_trace_response_block(tool_names, collected_tool_outputs):
 def _build_pending_action_response_block(draft, pending_action=None, disabled=False, disabled_reason='policy'):
     if not draft:
         return None
-    if not draft.get('error'):
+    is_cmdb_asset = draft.get('action_type') == AIOpsPendingAction.ACTION_CREATE_CMDB_ASSET
+    if not draft.get('error') and not is_cmdb_asset:
         draft = _ensure_task_draft_title(draft)
     disabled_by_analysis_only = disabled and disabled_reason == 'analysis_only'
     status = pending_action.status if pending_action else ('disabled' if disabled else 'draft')
     status_display = pending_action.get_status_display() if pending_action else ('只分析' if disabled_by_analysis_only else ('已关闭' if disabled else '待确认'))
     disabled_summary = '当前仅分析，不会生成待执行动作。' if disabled_by_analysis_only else '管理员已关闭动作执行，当前只保留分析和任务草稿能力。'
+    if is_cmdb_asset:
+        actions = []
+        if pending_action and pending_action.status == AIOpsPendingAction.STATUS_PENDING:
+            actions = [
+                {'type': 'confirm', 'label': '确认创建', 'pending_action_id': pending_action.id},
+                {'type': 'cancel', 'label': '取消', 'pending_action_id': pending_action.id},
+            ]
+        elif pending_action and (pending_action.result_payload or {}).get('asset_id'):
+            actions = [{'type': 'open_asset_ledger', 'label': '查看资产台账'}]
+        return {
+            'id': 'pending-cmdb-asset',
+            'type': 'asset_form',
+            'title': pending_action.title if pending_action else draft.get('title') or '新增 CMDB 资产',
+            'summary': '填写资产基础信息和模型属性，确认后写入 CMDB。' if not disabled else disabled_summary,
+            'status': status,
+            'status_display': status_display,
+            'risk_level': pending_action.risk_level if pending_action else draft.get('risk_level') or AIOpsPendingAction.RISK_MEDIUM,
+            'form_schema': draft.get('form_schema') or {},
+            'form_values': draft.get('form_values') or {},
+            'actions': actions,
+        }
     is_k8s_task = draft.get('target_type') == HostTask.TARGET_K8S or str(draft.get('task_type') or '').startswith('k8s_')
     target_label = 'K8s 目标' if is_k8s_task else '目标主机'
     target_unit = '个' if is_k8s_task else '台'
@@ -10519,6 +12301,8 @@ def _detect_formatter_profile(question, pending_action_draft, message_type, coll
     alert_context = _collect_alert_context(collected_tool_outputs or [], [])
     if pending_action_draft or message_type == AIOpsChatMessage.TYPE_ACTION:
         return 'task'
+    if _action_question_matches('slo.analysis', text):
+        return 'slo'
     if alert_context.get('entries'):
         if any(keyword in text for keyword in ['异常', '分析', '排查', '根因']):
             return 'incident'
@@ -10530,6 +12314,19 @@ def _detect_formatter_profile(question, pending_action_draft, message_type, coll
 
 def _formatter_template_for_profile(profile):
     templates = {
+        'slo': '\n'.join([
+            '必须按以下结构输出：',
+            '结论：',
+            '说明已观测到的服务指标与风险；没有明确 SLO 目标时，不判断是否达标。',
+            '依据：',
+            '分开列出指标面板、告警、系统态势、工作负载和证据缺口。数量必须对应各自对象。',
+            '指标的最新值不是时间窗口内的平均值；不得自设目标、错误预算或烧速。',
+            '没有告警不能证明业务健康；未查询、数据源不可用和查询为空必须分别说明。',
+            '建议操作：',
+            '围绕已观测指标给出复核建议；需要 SLO 判定时请补充目标与统计口径。',
+            '可继续查看：',
+            '列出实际返回的相关平台入口。',
+        ]),
         'alerts': '\n'.join([
             '必须按以下结构输出：',
             '结论：',
@@ -10580,6 +12377,17 @@ def _formatter_template_for_profile(profile):
 
 def _formatter_example_for_profile(profile):
     examples = {
+        'slo': '\n'.join([
+            '示例输出（对象和数值仅作格式示范，不能作为本轮事实）：',
+            '结论：已取得服务成功率指标，当前没有明确 SLO 目标，暂不能判定是否达标。',
+            '依据：',
+            '- 指标面板：按工具返回的名称、查询口径、最新值和采样范围填写。',
+            '- 告警：单独说明本轮告警数量，不使用指标序列或工作负载数量。',
+            '- 证据缺口：列出未查询或不可用的数据源，不能据此确认没有异常。',
+            '建议操作：',
+            '- 核对指标统计口径，并补充 SLO 目标与评估周期。',
+            '可继续查看：监控看板、告警中心',
+        ]),
         'alerts': '\n'.join([
             '示例输出：',
             '结论：当前未确认的严重告警共 3 条，风险主要集中在 K8s Deployment 可用性与核心服务依赖超时。',
@@ -10632,6 +12440,17 @@ def _formatter_example_for_profile(profile):
 
 def _build_formatter_fact_digest(collected_tool_outputs, citations=None, pending_action_draft=None):
     lines = []
+    for item in collected_tool_outputs or []:
+        tool_name = item.get('tool_name')
+        output = item.get('tool_output') or {}
+        summary = output.get('summary') or {}
+        if summary.get('evidence_unavailable') or output.get('error') or summary.get('error'):
+            lines.append(f'- 证据限制：{tool_name} 不可用或查询失败，不能按零结果推断业务正常。')
+        elif tool_name == 'query_alerts':
+            lines.append(f"- 告警查询事实：本轮筛选命中 {_safe_int(summary.get('count'), len(output.get('alerts') or []))} 条告警，不能用其他工具的数量代替。")
+        elif tool_name in ('query_dashboard_panel_data', 'query_grafana_promql'):
+            for section in output.get('sections') or []:
+                lines.append(f"- 指标事实：{section.get('title') or tool_name}：{'；'.join(str(value) for value in (section.get('items') or [])[:5])}")
     alert_context = _collect_alert_context(collected_tool_outputs or [], citations or [])
     if alert_context.get('entries'):
         lines.append(f"- 告警事实：共 {alert_context.get('count') or len(alert_context.get('entries') or [])} 条相关告警。")
@@ -10708,7 +12527,7 @@ def _build_answer_formatter_messages(question, draft_content, sections, citation
     skill_lines = [
         (
             f"- {skill.name}（{skill.category or '未分类'}）：{skill.description}\n"
-            f"  适用 Action：{'、'.join(skill.applicable_actions or []) or '通用'}\n"
+            f"  挂载的问答类型：{'、'.join(skill.applicable_actions or []) or '未挂载'}\n"
             f"  工具依赖：{'、'.join((skill.recommended_tools or []) + (skill.builtin_tools or [])) or '未声明工具依赖'}；最终可用工具还要经过 MCP 可用性、用户 RBAC 和 Action 安全策略过滤。\n"
             f"  内容：{skill.content}"
         )
@@ -10726,6 +12545,7 @@ def _build_answer_formatter_messages(question, draft_content, sections, citation
         'formatter_profile': profile,
     }
     required_headings = {
+        'slo': '结论：/ 依据：/ 建议操作：/ 可继续查看：',
         'alerts': '结论：/ 依据：/ 建议操作：/ 可继续查看：',
         'incident': '结论：/ 依据：/ 建议操作：/ 可继续查看：',
         'task': '结论：/ 执行概要：/ 下一步：/ 可继续查看：',
@@ -10773,46 +12593,45 @@ def _content_conflicts_with_tool_facts(content, collected_tool_outputs):
     if not text:
         return False
     compact = re.sub(r'\s+', '', text)
-    negative_patterns = [
-        '0条',
-        '暂无',
-        '未查到',
-        '没查到',
-        '没找到',
-        '没有找到',
-        '未找到',
-        '没有命中',
-        '未命中',
-        '无日志',
-        '没有日志',
-        '当前无日志',
-        '没有严重告警',
-        '没有未确认',
-        '当前无告警',
-    ]
-    positive_count_match = re.search(r'([1-9]\d*)条', compact)
-
     for item in collected_tool_outputs or []:
         tool_name = item.get('tool_name')
         tool_output = item.get('tool_output') or {}
         summary = tool_output.get('summary') or {}
-        if tool_name == 'query_alerts':
-            alerts = tool_output.get('alerts') or []
-            try:
-                count = int(summary.get('count', len(alerts)))
-            except (TypeError, ValueError):
-                count = len(alerts)
-            if count > 0 and any(pattern in compact for pattern in negative_patterns):
+        if tool_name not in ('query_alerts', 'query_logs'):
+            continue
+        noun = '告警' if tool_name == 'query_alerts' else '日志'
+        values = tool_output.get('alerts' if noun == '告警' else 'logs') or []
+        count = _safe_int(summary.get('count'), len(values))
+        clauses = re.split(r'[。！？\n；;]|[，,](?=(?:建议|请|下一步))', compact)
+        for clause in clauses:
+            if noun not in clause:
+                continue
+            if re.match(r'^[-*]*(?:建议|请|下一步|如果|若|可尝试)', clause):
+                continue
+            selected_count = count
+            subject = noun
+            if noun == '告警':
+                for label, field in (('严重', 'critical'), ('未确认', 'active')):
+                    if label + noun in clause and field in summary:
+                        selected_count = _safe_int(summary[field], count)
+                        subject = label + noun
+                        break
+                else:
+                    if re.search(r'(?:严重|未确认|已关闭|已恢复|警告)告警', clause):
+                        continue
+            counts = [int(match.group(1)) for match in re.finditer(
+                rf'(?<!\d)(\d+)条(?:相关|符合筛选条件的|匹配的)?{subject}', clause,
+            )]
+            counts.extend(int(match.group(1)) for match in re.finditer(
+                rf'{subject}(?:查询|数量|总数|命中|返回|共|为|有|发现|到|[：:,，=]){{0,8}}(\d+)条', clause,
+            ))
+            absent = re.search(
+                rf'(?:暂无|没有|未查到|没查到|未找到|没找到|未命中|没有命中|当前无)(?:任何|相关|符合筛选条件的)?{subject}'
+                rf'|{subject}(?:查询|结果|数量|[：:,，]){{0,3}}(?:为空|未命中|未查到|没有命中)', clause,
+            )
+            if selected_count > 0 and (absent or 0 in counts):
                 return True
-            if count == 0 and positive_count_match and '告警' in compact:
-                return True
-        elif tool_name == 'query_logs':
-            logs = tool_output.get('logs') or []
-            count = _safe_int(summary.get('count'), len(logs))
-            has_log_word = any(token in compact for token in ['日志', 'log', 'LOG', 'WARN', 'ERROR', 'WARNING'])
-            if count > 0 and has_log_word and any(pattern in compact for pattern in negative_patterns):
-                return True
-            if count == 0 and has_log_word and positive_count_match:
+            if selected_count == 0 and any(value > 0 for value in counts):
                 return True
     return False
 
@@ -10942,6 +12761,7 @@ def _count_present_headings(text, aliases_list):
 
 def _missing_required_headings(text, profile):
     required_markers = {
+        'slo': [('结论：', ['结论：']), ('依据：', ['依据：']), ('建议操作：', ['建议操作：']), ('可继续查看：', ['可继续查看：'])],
         'alerts': [('结论：', ['结论：']), ('依据：', ['依据：']), ('建议操作：', ['建议操作：']), ('可继续查看：', ['可继续查看：'])],
         'incident': [('结论：', ['结论：']), ('依据：', ['依据：']), ('建议操作：', ['建议操作：']), ('可继续查看：', ['可继续查看：'])],
         'task': [('结论：', ['结论：']), ('执行概要：', ['执行概要：']), ('下一步：', ['下一步：']), ('可继续查看：', ['可继续查看：'])],
@@ -10964,6 +12784,7 @@ def _is_formatted_answer_valid(content, *, pending_action_draft=None, message_ty
     if len(compact) < 24:
         return False
     required_markers = {
+        'slo': [['结论：'], ['依据：'], ['建议操作：']],
         'alerts': [['结论：'], ['依据：'], ['建议操作：']],
         'incident': [['结论：'], ['依据：'], ['建议操作：']],
         'task': [['结论：'], ['执行概要：'], ['下一步：']],
@@ -11006,7 +12827,29 @@ def _formatter_repair_issue(content, *, fallback_content='', collected_tool_outp
     return ''
 
 
-def _run_answer_formatter(provider, *, question, draft_content, sections, citations, tool_calls, pending_action_draft, message_type, active_skills, collected_tool_outputs=None):
+def _request_answer_formatter_once(provider, request, *, formatter_skill, active_skills, attempt, previous_issue=''):
+    messages = _build_answer_formatter_messages(
+        **{key: request[key] for key in (
+            'question', 'draft_content', 'sections', 'citations', 'tool_calls',
+            'pending_action_draft', 'message_type', 'collected_tool_outputs',
+        )},
+        formatter_skill=formatter_skill, active_skills=active_skills,
+        attempt=attempt, previous_issue=previous_issue,
+        reference_answer=request['fallback_content'] if attempt >= 2 else '',
+    )
+    completion = _request_model_completion(
+        provider,
+        {'model': provider.default_model, 'temperature': min(provider.temperature or 0.2, 0.2),
+         'max_tokens': provider.max_tokens, 'messages': messages},
+        purpose=AIOpsModelInvocation.PURPOSE_ANSWER_FORMATTING,
+    )
+    choice = ((completion or {}).get('choices') or [{}])[0]
+    return _normalize_formatter_output(_extract_message_content(choice.get('message') or {}))
+
+
+def _run_answer_formatter(provider, *, question, draft_content, sections, citations, tool_calls, pending_action_draft, message_type, active_skills, collected_tool_outputs=None, model_error_policy='fallback'):
+    from .langgraph_formatter import defer_formatter
+
     formatter_skill = _find_skill_by_slug(active_skills, ANSWER_FORMATTER_SKILL_SLUG)
     fallback_content = _build_fallback_answer(
         sections,
@@ -11015,47 +12858,30 @@ def _run_answer_formatter(provider, *, question, draft_content, sections, citati
         question=question,
         collected_tool_outputs=collected_tool_outputs or [],
     )
-    if not formatter_skill:
+    profile = _detect_formatter_profile(question, pending_action_draft, message_type, collected_tool_outputs=collected_tool_outputs)
+    alert_context = _collect_alert_context(collected_tool_outputs or [], citations or [])
+    max_attempts = 4 if alert_context.get('entries') and any(keyword in str(question or '').lower() for keyword in ['告警', 'alert', 'alerts']) else 3
+    request = {
+        'question': question, 'draft_content': draft_content, 'sections': sections, 'citations': citations,
+        'tool_calls': tool_calls, 'pending_action_draft': pending_action_draft, 'message_type': message_type,
+        'collected_tool_outputs': collected_tool_outputs or [], 'fallback_content': fallback_content,
+        'profile': profile, 'max_attempts': max_attempts, 'model_error_policy': model_error_policy,
+    }
+    deferred = defer_formatter(provider, request, active_skills) if formatter_skill else False
+    if deferred or not formatter_skill:
         return {
             'used': False,
             'content': draft_content or fallback_content,
             'fallback_content': fallback_content,
-            'reason': 'formatter_skill_disabled',
+            'reason': 'checkpointed_formatter' if deferred else 'formatter_skill_disabled',
         }
 
-    profile = _detect_formatter_profile(question, pending_action_draft, message_type, collected_tool_outputs=collected_tool_outputs)
     previous_issue = ''
-    alert_context = _collect_alert_context(collected_tool_outputs or [], citations or [])
-    max_attempts = 4 if alert_context.get('entries') and any(keyword in str(question or '').lower() for keyword in ['告警', 'alert', 'alerts']) else 3
     for attempt in range(1, max_attempts + 1):
-        messages = _build_answer_formatter_messages(
-            question=question,
-            draft_content=draft_content,
-            sections=sections,
-            citations=citations,
-            tool_calls=tool_calls,
-            pending_action_draft=pending_action_draft,
-            message_type=message_type,
-            formatter_skill=formatter_skill,
-            active_skills=active_skills,
-            collected_tool_outputs=collected_tool_outputs,
-            attempt=attempt,
-            previous_issue=previous_issue,
-            reference_answer=fallback_content if attempt >= 2 else '',
+        content = _request_answer_formatter_once(
+            provider, request, formatter_skill=formatter_skill, active_skills=active_skills,
+            attempt=attempt, previous_issue=previous_issue,
         )
-        completion = _request_model_completion(
-            provider,
-            {
-                'model': provider.default_model,
-                'temperature': min(provider.temperature or 0.2, 0.2),
-                'max_tokens': provider.max_tokens,
-                'messages': messages,
-            },
-            purpose=AIOpsModelInvocation.PURPOSE_ANSWER_FORMATTING,
-        )
-        choice = ((completion or {}).get('choices') or [{}])[0]
-        message = choice.get('message') or {}
-        content = _normalize_formatter_output(_extract_message_content(message))
         previous_issue = _formatter_repair_issue(
             content,
             fallback_content=fallback_content,
@@ -12601,7 +14427,7 @@ def _resolve_host_targets_for_task(question='', environment='', target_status='a
 
 def create_pending_task_action_from_draft(session, assistant_message, draft):
     draft = _ensure_task_draft_title(draft)
-    return AIOpsPendingAction.objects.create(
+    action = AIOpsPendingAction.objects.create(
         session=session,
         message=assistant_message,
         action_type=AIOpsPendingAction.ACTION_EXECUTE_HOST_TASK,
@@ -12609,6 +14435,29 @@ def create_pending_task_action_from_draft(session, assistant_message, draft):
         risk_level=draft.get('risk_level') or AIOpsPendingAction.RISK_LOW,
         action_payload=draft,
     )
+    _schedule_action_confirmation(action)
+    return action
+
+
+def _schedule_action_confirmation(action):
+    from .langgraph_pilot import start_action_confirmation
+
+    transaction.on_commit(lambda: start_action_confirmation(action.id), robust=True)
+
+
+def create_pending_action_from_draft(session, assistant_message, draft):
+    if draft.get('action_type') == AIOpsPendingAction.ACTION_CREATE_CMDB_ASSET:
+        action = AIOpsPendingAction.objects.create(
+            session=session,
+            message=assistant_message,
+            action_type=AIOpsPendingAction.ACTION_CREATE_CMDB_ASSET,
+            title=draft.get('title') or '新增 CMDB 资产',
+            risk_level=draft.get('risk_level') or AIOpsPendingAction.RISK_MEDIUM,
+            action_payload=draft,
+        )
+        _schedule_action_confirmation(action)
+        return action
+    return create_pending_task_action_from_draft(session, assistant_message, draft)
 
 
 def create_pending_task_action(session, assistant_message, user, question):
@@ -12846,12 +14695,157 @@ def _should_materialize_host_task(question, result, draft):
     return False
 
 
-def confirm_action(action, user, request=None):
+def _serializer_error_text(errors):
+    if isinstance(errors, dict):
+        return '；'.join(
+            f'{key}：{_serializer_error_text(value)}'
+            for key, value in errors.items()
+        )
+    if isinstance(errors, (list, tuple)):
+        return '，'.join(_serializer_error_text(value) for value in errors)
+    return str(errors or '表单校验失败')
+
+
+def _confirm_cmdb_asset_action(action, user, request=None, payload=None):
+    if not user_has_permissions(user, ['cmdb.ci.manage']):
+        raise ValueError('当前账号没有创建 CMDB 资产的权限。')
+    result_payload = action.result_payload if isinstance(action.result_payload, dict) else {}
+    if action.status != AIOpsPendingAction.STATUS_PENDING:
+        if result_payload.get('asset_id') and isinstance(result_payload.get('asset'), dict):
+            return result_payload['asset']
+        raise ValueError('当前动作状态不可确认。')
+
+    draft = dict(action.action_payload or {})
+    stored_values = dict(draft.get('form_values') or {})
+    submitted_values = dict((payload or {}).get('form_values') or {})
+    form_values = {**stored_values, **submitted_values}
+    form_values['attributes'] = {
+        **dict(stored_values.get('attributes') or {}),
+        **dict(submitted_values.get('attributes') or {}),
+    }
+    draft['form_values'] = form_values
+    action.action_payload = draft
+    action.save(update_fields=['action_payload', 'updated_at'])
+
+    from cmdb.models import CIField, CIType
+    from cmdb.serializers import ConfigItemSerializer
+    from cmdb.sync import normalize_ci_attributes
+    from cmdb.views import (
+        _config_item_snapshot,
+        _ensure_user_can_manage_ci_resource,
+        _record_ci_change,
+        _sync_completion_issue,
+    )
+
+    try:
+        ci_type_id = int(form_values.get('ci_type'))
+    except (TypeError, ValueError):
+        raise ValueError('资产分类不能为空。')
+    ci_type = CIType.objects.filter(id=ci_type_id, is_active=True).first()
+    if not ci_type:
+        raise ValueError('所选资产分类不存在或已停用。')
+    allowed_attribute_codes = set(
+        CIField.objects.filter(ci_type=ci_type, is_active=True, is_sensitive=False).values_list('code', flat=True)
+    )
+    attributes = {
+        str(key): value
+        for key, value in form_values['attributes'].items()
+        if str(key) in allowed_attribute_codes
+    }
+    form_schema = draft.get('form_schema') if isinstance(draft.get('form_schema'), dict) else {}
+    base_field_codes = {
+        str(field.get('code') or '')
+        for field in form_schema.get('base_fields') or []
+        if isinstance(field, dict)
+    }
+    uses_resource_scope_nodes = bool({'business_node', 'environment_node'} & base_field_codes)
+    serializer_data = {
+        'name': str(form_values.get('name') or '').strip(),
+        'ci_type': ci_type.id,
+        'admin_user': str(form_values.get('admin_user') or '').strip(),
+        'status': str(form_values.get('status') or 'active').strip(),
+        'attributes': attributes,
+    }
+    if uses_resource_scope_nodes:
+        if not form_values.get('business_node'):
+            raise ValueError('业务线不能为空。')
+        if not form_values.get('environment_node'):
+            raise ValueError('环境不能为空。')
+        serializer_data.update({
+            'business_node': form_values.get('business_node'),
+            'environment_node': form_values.get('environment_node'),
+        })
+    else:
+        serializer_data.update({
+            'business_line': str(form_values.get('business_line') or '').strip(),
+            'environment': str(form_values.get('environment') or 'prod').strip(),
+        })
+    serializer = ConfigItemSerializer(data=serializer_data, context={'request': request} if request else {})
+    if not serializer.is_valid():
+        raise ValueError(_serializer_error_text(serializer.errors))
+    _ensure_user_can_manage_ci_resource(
+        user,
+        ci_type_id=ci_type.id,
+        business_line=serializer.validated_data.get('business_line', ''),
+        environment=serializer.validated_data.get('environment', 'prod'),
+    )
+
+    with transaction.atomic():
+        config_item = serializer.save(
+            attributes=normalize_ci_attributes(serializer.validated_data.get('attributes') or {})
+        )
+        after = _config_item_snapshot(config_item)
+        _record_ci_change(
+            config_item,
+            'create',
+            {},
+            after,
+            operator=user.username,
+            source='aiops_assistant',
+        )
+        _sync_completion_issue(config_item)
+        record_event(
+            request=request,
+            module='cmdb',
+            category='asset',
+            action='create_cmdb_asset_from_aiops',
+            title='AIOps 新增 CMDB 资产',
+            summary=f'通过智能助手新增资产 {config_item.name}',
+            result=EventRecord.RESULT_SUCCESS,
+            resource_type='config_item',
+            resource_id=config_item.id,
+            resource_name=config_item.name,
+            business_line=config_item.business_line,
+            environment=config_item.environment,
+            correlation_id=f'aiops-action:{action.id}',
+            metadata={
+                'session_id': action.session_id,
+                'pending_action_id': action.id,
+                'ci_type_id': config_item.ci_type_id,
+                'ci_type_name': config_item.ci_type.name,
+                'created_by': user.username,
+            },
+        )
+        action.status = AIOpsPendingAction.STATUS_EXECUTED
+        action.confirmed_by = user.username
+        action.confirmed_at = timezone.now()
+        action.result_payload = {
+            'asset_id': config_item.id,
+            'asset_name': config_item.name,
+            'asset': ConfigItemSerializer(config_item, context={'request': request} if request else {}).data,
+        }
+        action.save(update_fields=['status', 'confirmed_by', 'confirmed_at', 'result_payload', 'updated_at'])
+    return action.result_payload['asset']
+
+
+def confirm_action(action, user, request=None, payload=None):
     config = get_agent_config()
     if not config.allow_action_execution:
         raise ValueError('管理员已关闭机器人动作执行。')
     if action.session.user_id != user.id:
         raise ValueError('只能确认自己的动作。')
+    if action.action_type == AIOpsPendingAction.ACTION_CREATE_CMDB_ASSET:
+        return _confirm_cmdb_asset_action(action, user, request=request, payload=payload)
     if action.action_type != AIOpsPendingAction.ACTION_EXECUTE_HOST_TASK:
         raise ValueError('不支持的动作类型。')
     if not user_has_permissions(user, ['aiops.task.execute', 'ops.host.execute']):
@@ -12915,6 +14909,11 @@ def cancel_action(action, user):
     action.confirmed_by = user.username
     action.confirmed_at = timezone.now()
     action.save(update_fields=['status', 'confirmed_by', 'confirmed_at', 'updated_at'])
+    from .models import AIOpsRemediationVerification
+
+    AIOpsRemediationVerification.objects.filter(action=action, status='waiting', task__isnull=True).update(
+        status='inconclusive', summary='处置动作已取消，未执行恢复验证。', finished_at=timezone.now(),
+    )
     return action
 
 
@@ -13209,6 +15208,20 @@ def _model_request_summary(payload):
 
 def _record_model_invocation(provider, payload, data=None, *, status_value, latency_ms=0, purpose='', session=None, message=None, user=None, error_detail=''):
     try:
+        from .langgraph_execution import model_audit_scope
+
+        scope = model_audit_scope()
+        session_id = getattr(session, 'pk', None)
+        message_id = getattr(message, 'pk', None)
+        username = getattr(user, 'username', '') or getattr(getattr(session, 'user', None), 'username', '')
+        if scope and all(
+            value is None or value == scope.get(name)
+            for name, value in (('session_id', session_id), ('message_id', message_id), ('user_id', getattr(user, 'pk', None)))
+        ):
+            session_id = session_id or scope.get('session_id')
+            message_id = message_id or scope.get('message_id')
+            if not username and scope.get('user_id'):
+                username = get_user_model().objects.filter(pk=scope['user_id']).values_list('username', flat=True).first() or ''
         meta = (data or {}).get('_meta') if isinstance(data, dict) else {}
         meta = meta if isinstance(meta, dict) else {}
         prompt_tokens, completion_tokens, total_tokens = _model_usage_from_response(data or {})
@@ -13220,9 +15233,9 @@ def _record_model_invocation(provider, payload, data=None, *, status_value, late
             response_summary['error'] = str(error_detail)[:240]
         AIOpsModelInvocation.objects.create(
             provider=provider,
-            session=session,
-            message=message,
-            username=getattr(user, 'username', '') or getattr(getattr(session, 'user', None), 'username', ''),
+            session_id=session_id,
+            message_id=message_id,
+            username=username,
             purpose=purpose or AIOpsModelInvocation.PURPOSE_CHAT_PLANNING,
             requested_model=str(meta.get('requested_model') or payload.get('model') or '').strip(),
             resolved_model=str(meta.get('resolved_model') or payload.get('model') or '').strip(),
@@ -13516,7 +15529,7 @@ def _probe_model_tool_calling(provider, model_name):
 
 def list_model_provider_models(provider, probe=True, max_probe=8):
     if not provider or not (provider.base_url or '').strip() or not provider.get_api_key().strip():
-        raise ValueError('请先保存 Base URL 和 API Key 后再拉取模型列表')
+        raise ValueError('请填写 Base URL 和 API Key 后获取模型列表')
 
     endpoint = f"{_model_provider_api_base(provider)}/models"
     catalog_error = ''
@@ -13532,7 +15545,7 @@ def list_model_provider_models(provider, probe=True, max_probe=8):
             response = requests.get(
                 endpoint,
                 headers=headers,
-                timeout=max(provider.timeout_seconds, 5),
+                timeout=_graph_request_timeout(max(provider.timeout_seconds, 5)),
             )
             break
         except requests.RequestException as exc:
@@ -13651,7 +15664,7 @@ def _request_model_completion_legacy(provider, payload):
                     endpoint,
                     headers=headers,
                     json=request_payload,
-                    timeout=max(provider.timeout_seconds, 5),
+                    timeout=_graph_request_timeout(max(provider.timeout_seconds, 5)),
                 )
             except requests.RequestException as exc:
                 raise AIOpsModelCallError(f'{exc.__class__.__name__}: {exc}') from exc
@@ -13733,7 +15746,7 @@ def _request_model_completion(provider, payload, *, session=None, message=None, 
                             endpoint,
                             headers=headers,
                             json=resilient_payload,
-                            timeout=max(provider.timeout_seconds, 5),
+                            timeout=_graph_request_timeout(max(provider.timeout_seconds, 5)),
                         )
                     except requests.RequestException as exc:
                         last_error = f'{exc.__class__.__name__}: {exc}'
@@ -14130,7 +16143,7 @@ class _HTTPMCPClientSession(_BaseMCPClientSession):
             self.server.endpoint_or_command,
             json=message,
             headers=headers,
-            timeout=self.timeout_seconds,
+            timeout=_graph_request_timeout(self.timeout_seconds),
         )
         if response.status_code >= 400:
             raise ValueError(_sanitize_mcp_error_text(response.text or f'HTTP {response.status_code}'))
@@ -14365,7 +16378,7 @@ def _build_runtime_prompt(config, active_mcp_servers, active_skills, user, mcp_d
     skill_lines = [
         (
             f"- {skill.name}（{skill.category or '未分类'}）：{skill.description}\n"
-            f"  适用 Action：{'、'.join(skill.applicable_actions or []) or '通用'}\n"
+            f"  挂载的问答类型：{'、'.join(skill.applicable_actions or []) or '未挂载'}\n"
             f"  工具依赖：{'、'.join((skill.recommended_tools or []) + (skill.builtin_tools or [])) or '未声明工具依赖'}；最终可用工具还要经过 MCP 可用性、用户 RBAC 和 Action 安全策略过滤。\n"
             f"  内容：{skill.content}"
         )
@@ -14379,7 +16392,7 @@ def _build_runtime_prompt(config, active_mcp_servers, active_skills, user, mcp_d
             f"上下文：{'、'.join(action.get('required_context') or []) or '无强制上下文'}；"
             f"输出：{'、'.join(action.get('output_blocks') or [])}"
         )
-        for action in list_action_registry(user=user, include_unavailable=False)
+        for action in list_capabilities(user=user, include_unavailable=False)
     ]
     permission_lines = [
         f"- 可聊天：{'是' if user_has_permissions(user, ['aiops.chat.view']) else '否'}",
@@ -14399,19 +16412,20 @@ def _build_runtime_prompt(config, active_mcp_servers, active_skills, user, mcp_d
         '\n'.join(mcp_lines) if mcp_lines else '- 当前无可用 MCP',
         '外部 MCP 运行状态：',
         '\n'.join(diagnostic_lines) if diagnostic_lines else '- 当前无外部 MCP 诊断信息',
-        'Action 与 Skill 边界：',
-        '- Action 是任务入口和流程策略，决定 agent 模式、上下文、预检、风险、确认流、结构化输出和默认 Skill。',
+        '问答类型与 Skill 边界：',
+        '- 问答类型是统一入口和流程策略，决定 agent 模式、上下文、预检、风险、确认流、结构化输出和挂载的 Skill。',
         '- Skill 是能力包，声明工具依赖，并提供 SOP、证据清单、查询规范、风险判断和回答格式。',
-        '- 最终可调用工具必须同时满足选中 Skill 工具依赖、MCP 可用、用户 RBAC 和 Action 安全策略。',
+        '- 最终可调用工具必须同时满足选中 Skill 工具依赖、MCP 可用、用户 RBAC 和流程安全策略。',
         '启用 Skill：',
         '\n'.join(skill_lines) if skill_lines else '- 当前无启用 Skill',
-        '可用 Action Registry：',
-        '\n'.join(action_lines) if action_lines else '- 当前无可用 action',
+        '可用问答类型：',
+        '\n'.join(action_lines) if action_lines else '- 当前无可用问答类型',
         '当前用户权限：',
         '\n'.join(permission_lines),
         '运行约束：',
         '\n'.join(runtime_lines),
         '要求：优先调用工具获取事实；未确认前不能声称任务已执行；如果数据不足，请明确说明。',
+        'CMDB 查询直接使用 CMDB 资源树中的业务线和环境节点，不依赖知识图谱环境；用户未指定 CMDB 环境时不得强制补充环境。',
         '如果用户明确要求生成、创建、新建、安排任务、巡检任务或 K8s 修改任务，不要只做查询，必须调用 generate_host_task。',
         '任务生成类请求必须以 query_task_resources 返回的任务中心资源底座为目标来源；知识图谱只用于环境识别和辅助元信息，不能把知识图谱命名空间或实时资源列表当作生成任务草稿的硬前置。',
         '知识图谱里的“图谱展示命名空间”只控制拓扑图展示，不限制 query_k8s_resources 或 query_k8s_cluster_summary；只读 K8s 查询默认允许查询全部命名空间，用户显式指定命名空间时才按命名空间收窄。',
@@ -14456,6 +16470,21 @@ def _build_history_messages(session, config):
 def _tool_allowed(user, tool_name):
     if not tool_feature_enabled(tool_name):
         return False
+    if tool_name == 'query_cmdb_items':
+        return user_has_permissions(user, ['cmdb.ci.view'])
+    if tool_name == 'query_cmdb_insights':
+        return any(user_has_permissions(user, [permission]) for permission in [
+            'cmdb.dashboard.view', 'cmdb.ci.view', 'cmdb.model.view', 'cmdb.ipam.view',
+            'cmdb.sync.view', 'cmdb.request.submit', 'cmdb.request.approve', 'cmdb.audit.view',
+        ])
+    if tool_name == 'create_cmdb_asset_draft':
+        return user_has_permissions(user, ['cmdb.ci.manage'])
+    if tool_name == 'query_cost_report':
+        return user_has_permissions(user, ['cmdb.cost.view'])
+    if tool_name == 'query_cmdb_topology':
+        return user_has_permissions(user, ['cmdb.topology.view'])
+    if tool_name == 'query_cmdb_quality':
+        return user_has_permissions(user, ['cmdb.ci.view'])
     if tool_name == 'query_knowledge_graph':
         return user_has_permissions(user, ['aiops.knowledge.view'])
     if tool_name == 'query_hosts':
@@ -14488,6 +16517,8 @@ def _tool_allowed(user, tool_name):
         return user_has_permissions(user, ['ops.alert.view'])
     if tool_name == 'query_alert_metrics':
         return user_has_permissions(user, ['ops.metric.query'])
+    if tool_name == 'query_system_posture':
+        return user_has_permissions(user, ['ops.observability.system_posture.view'])
     if tool_name == 'query_dashboard_metadata':
         return user_has_permissions(user, ['ops.grafana.view'])
     if tool_name == 'query_grafana_promql':
@@ -14519,6 +16550,77 @@ def _tool_specs_for_runtime(active_mcp_servers, user):
                 tool_names.append(tool_name)
 
     catalog = {
+        'query_cmdb_items': {
+            'description': '查询 CMDB 资产台账和资产分布。环境直接按 CMDB 资源树节点名称识别，不要求先选择 AIOps 知识环境；未指定环境时查询全部授权资产。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'query': {'type': 'string'},
+                    'environment': {'type': 'string', 'description': 'CMDB 环境节点名称，可留空'},
+                    'business_line': {'type': 'string'},
+                    'ci_type': {'type': 'string'},
+                    'status': {'type': 'string', 'enum': ['active', 'idle', 'stopped', 'offline', '']},
+                    'admin_user': {'type': 'string'},
+                    'asset_ids': {'type': 'array', 'items': {'type': 'integer'}, 'description': '连续追问时可传上一轮资产 ID'},
+                    'attribute_names': {'type': 'array', 'items': {'type': 'string'}, 'description': '仅返回指定的非敏感扩展属性'},
+                    'search_terms': {'type': 'array', 'items': {'type': 'string'}, 'description': '仅保留资产名、实例名等有效检索词'},
+                    'limit': {'type': 'integer', 'minimum': 1, 'maximum': 20},
+                },
+            },
+        },
+        'query_cmdb_insights': {
+            'description': '查询 CMDB 总览、资产模型、IPAM、资产采集、资源申请、水位策略、操作审计和到期提醒。适用于跨 CMDB 页面盘点与扩展问答；每个主题都会再次校验对应页面权限。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'query': {'type': 'string'},
+                    'topic': {'type': 'string', 'enum': ['overview', 'models', 'ipam', 'sync', 'requests', 'thresholds', 'audit', 'expiry', '']},
+                    'environment': {'type': 'string', 'description': 'CMDB 环境节点名称，可留空'},
+                    'business_line': {'type': 'string'},
+                    'days': {'type': 'integer', 'minimum': 1, 'maximum': 365},
+                    'limit': {'type': 'integer', 'minimum': 1, 'maximum': 20},
+                },
+            },
+        },
+        'create_cmdb_asset_draft': {
+            'description': '生成助手内 CMDB 新增资产动态表单。仅在用户明确要求新增、添加、创建或录入资产时使用；返回待确认表单，确认前不会写入。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'question': {'type': 'string'},
+                    'request_payload': {
+                        'type': 'object',
+                        'properties': {
+                            'name': {'type': 'string'}, 'ci_type': {'type': 'string'},
+                            'environment': {'type': 'string'}, 'business_line': {'type': 'string'},
+                            'admin_user': {'type': 'string'}, 'status': {'type': 'string'},
+                            'attributes': {'type': 'object'},
+                        },
+                    },
+                },
+            },
+        },
+        'query_cost_report': {
+            'description': '分析 CMDB 月度成本、六个月趋势、业务/环境/类型/云厂商分布、高成本资源和成本优化建议。用户问成本、费用、账单、降本或优化空间时使用；结果已按用户的 CMDB 资源授权范围裁剪。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'query': {'type': 'string'},
+                    'environment': {'type': 'string', 'description': 'CMDB 环境节点名称，可留空'},
+                    'business_line': {'type': 'string'},
+                    'month': {'type': 'string', 'description': 'YYYY-MM'},
+                    'limit': {'type': 'integer', 'minimum': 1, 'maximum': 20},
+                },
+            },
+        },
+        'query_cmdb_topology': {
+            'description': '查询 CMDB 配置项之间的业务依赖、部署和连接关系。用户问资产关联、依赖、上下游、部署在哪或影响范围时使用；结果已按用户授权范围裁剪。',
+            'parameters': {'type': 'object', 'properties': {'query': {'type': 'string'}, 'environment': {'type': 'string', 'description': 'CMDB 环境节点名称，可留空'}, 'business_line': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 20}}},
+        },
+        'query_cmdb_quality': {
+            'description': '分析 CMDB 数据质量、资产完整度、孤岛配置项、来源缺失和待治理风险。',
+            'parameters': {'type': 'object', 'properties': {'query': {'type': 'string'}, 'environment': {'type': 'string', 'description': 'CMDB 环境节点名称，可留空'}, 'business_line': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 20}}},
+        },
         'query_knowledge_graph': {
             'description': '查询 AIOps 知识图谱中的环境关联、系统拓扑、服务依赖、上下游和资源关系。用户问某环境有哪些系统/服务/依赖/关联关系时优先使用。',
             'parameters': {
@@ -14625,8 +16727,8 @@ def _tool_specs_for_runtime(active_mcp_servers, user):
             'parameters': {'type': 'object', 'properties': {'query': {'type': 'string'}, 'errors_only': {'type': 'boolean'}, 'duration_minutes': {'type': 'integer', 'minimum': 5, 'maximum': 1440}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 10}}},
         },
         'query_recent_changes': {
-            'description': '查询最近应用发布变更。',
-            'parameters': {'type': 'object', 'properties': {'limit': {'type': 'integer', 'minimum': 1, 'maximum': 10}}},
+            'description': '查询当前知识环境、系统与服务范围内的最近应用发布变更。',
+            'parameters': {'type': 'object', 'properties': {'query': {'type': 'string'}, 'system_name': {'type': 'string'}, 'service': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 10}}},
         },
         'query_host_tasks': {
             'description': '查询任务中心的任务记录。',
@@ -14681,6 +16783,10 @@ def _tool_specs_for_runtime(active_mcp_servers, user):
         },
     }
 
+    catalog['query_system_posture'] = {
+        'description': '查询系统态势、SLA、健康度、可用性、错误率、延迟和组件状态。环境配置了系统态势时，分析类问题必须优先使用。',
+        'parameters': {'type': 'object', 'properties': {'query': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 10}}},
+    }
     catalog['query_dashboard_metadata'] = {
         'description': '查询平台已同步的 Grafana 看板元数据、目录、标题和环境关联。需要实时指标值时使用 query_grafana_promql 或 query_dashboard_panel_data。',
         'parameters': {'type': 'object', 'properties': {'query': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 10}}},
@@ -14864,6 +16970,10 @@ def _build_runtime_tool_registry(active_mcp_servers, user):
                     'schema_fingerprint': _fingerprint_mcp_config(server),
                     'description_warnings': ((tool.get('_meta') or {}).get('description_warnings') or []),
                 }
+        except ChatJobLeaseLost:
+            if client_session is not None:
+                client_session.close()
+            raise
         except Exception as exc:
             diagnostics.append(_build_mcp_runtime_diagnostic(server, 'failed', str(exc)))
             if client_session is not None:
@@ -14994,7 +17104,7 @@ def _scope_tool_arguments(session, tool_name, arguments):
         'query_alerts',
         'query_alert_root_cause',
         'query_alert_metrics',
-        
+        'query_system_posture',
         'query_observability',
         'query_logs',
         'query_traces',
@@ -15019,7 +17129,20 @@ def _scope_tool_arguments(session, tool_name, arguments):
     return scoped
 
 
+def _graph_request_timeout(seconds):
+    from .langgraph_execution import bounded_timeout
+    return bounded_timeout(seconds)
+
+
 def _run_tool_call(session, user_message, user, tool_name, arguments, registry_entry=None):
+    from .langgraph_execution import run_tool
+
+    return run_tool(tool_name, lambda: _run_tool_call_once(
+        session, user_message, user, tool_name, arguments, registry_entry,
+    ), external=bool(registry_entry and registry_entry.get('kind') == 'external'))
+
+
+def _run_tool_call_once(session, user_message, user, tool_name, arguments, registry_entry=None):
     if not tool_feature_enabled(tool_name):
         return {
             'tool_output': {'sections': [], 'citations': [], 'error': 'tool_disabled'},
@@ -15046,6 +17169,8 @@ def _run_tool_call(session, user_message, user, tool_name, arguments, registry_e
                 success=not bool(result.get('isError')),
             )
             return _summarize_external_tool_result(registry_entry, result)
+        except ChatJobLeaseLost:
+            raise
         except Exception as exc:
             error_text = _sanitize_mcp_error_text(str(exc))
             _finish_tool_invocation(invocation, {'error': error_text}, started_at, success=False)
@@ -15056,6 +17181,79 @@ def _run_tool_call(session, user_message, user, tool_name, arguments, registry_e
                 'message_type': AIOpsChatMessage.TYPE_TEXT,
             }
 
+    if tool_name == 'query_cmdb_items':
+        result = query_cmdb_items(
+            session,
+            user_message,
+            user,
+            query=arguments.get('query', ''),
+            environment=arguments.get('environment', ''),
+            business_line=arguments.get('business_line', ''),
+            ci_type=arguments.get('ci_type', ''),
+            status=arguments.get('status', ''),
+            admin_user=arguments.get('admin_user', ''),
+            asset_ids=arguments.get('asset_ids') or [],
+            attribute_names=arguments.get('attribute_names') or [],
+            search_terms=arguments.get('search_terms') if 'search_terms' in arguments else None,
+            limit=arguments.get('limit') or 6,
+        )
+        return {'tool_output': result, 'sections': result.get('sections', []), 'citations': result.get('citations', []), 'message_type': AIOpsChatMessage.TYPE_TEXT}
+    if tool_name == 'query_cmdb_insights':
+        result = query_cmdb_insights(
+            session,
+            user_message,
+            user,
+            query=arguments.get('query', ''),
+            topic=arguments.get('topic', ''),
+            environment=arguments.get('environment', ''),
+            business_line=arguments.get('business_line', ''),
+            days=arguments.get('days') or 30,
+            limit=arguments.get('limit') or 8,
+        )
+        return {'tool_output': result, 'sections': result.get('sections', []), 'citations': result.get('citations', []), 'message_type': AIOpsChatMessage.TYPE_ANALYSIS}
+    if tool_name == 'create_cmdb_asset_draft':
+        result = build_cmdb_asset_draft(
+            session,
+            user_message,
+            user,
+            question=arguments.get('question') or arguments.get('query', ''),
+            request_payload=arguments.get('request_payload') or arguments,
+        )
+        return result
+    if tool_name == 'query_cost_report':
+        result = query_cost_report(
+            session,
+            user_message,
+            user,
+            query=arguments.get('query', ''),
+            environment=arguments.get('environment', ''),
+            business_line=arguments.get('business_line', '') or arguments.get('system_name', ''),
+            month=arguments.get('month', ''),
+            limit=arguments.get('limit') or 5,
+        )
+        return {'tool_output': result, 'sections': result.get('sections', []), 'citations': result.get('citations', []), 'message_type': AIOpsChatMessage.TYPE_ANALYSIS}
+    if tool_name == 'query_cmdb_topology':
+        result = query_cmdb_topology(
+            session,
+            user_message,
+            user,
+            query=arguments.get('query', ''),
+            environment=arguments.get('environment', ''),
+            business_line=arguments.get('business_line', '') or arguments.get('system_name', ''),
+            limit=arguments.get('limit') or 8,
+        )
+        return {'tool_output': result, 'sections': result.get('sections', []), 'citations': result.get('citations', []), 'message_type': AIOpsChatMessage.TYPE_ANALYSIS}
+    if tool_name == 'query_cmdb_quality':
+        result = query_cmdb_quality(
+            session,
+            user_message,
+            user,
+            query=arguments.get('query', ''),
+            environment=arguments.get('environment', ''),
+            business_line=arguments.get('business_line', '') or arguments.get('system_name', ''),
+            limit=arguments.get('limit') or 8,
+        )
+        return {'tool_output': result, 'sections': result.get('sections', []), 'citations': result.get('citations', []), 'message_type': AIOpsChatMessage.TYPE_ANALYSIS}
     if tool_name == 'query_knowledge_graph':
         result = query_knowledge_graph(
             session,
@@ -15160,6 +17358,17 @@ def _run_tool_call(session, user_message, user, tool_name, arguments, registry_e
             step=arguments.get('step') or ALERT_METRIC_DEFAULT_STEP_SECONDS,
             budget=arguments.get('budget') or ALERT_METRIC_QUERY_BUDGET,
             metric_datasource_id=arguments.get('metric_datasource_id') or '',
+            _alert_snapshot=getattr(session, '_incident_alert_snapshot', None),
+        )
+        return {'tool_output': result, 'sections': result.get('sections', []), 'citations': result.get('citations', []), 'message_type': AIOpsChatMessage.TYPE_ANALYSIS}
+    if tool_name == 'query_system_posture':
+        result = query_system_posture(
+            session,
+            user_message,
+            user,
+            query=arguments.get('query', ''),
+            limit=arguments.get('limit') or 6,
+            analysis_scope=arguments.get('analysis_scope') if isinstance(arguments.get('analysis_scope'), dict) else None,
         )
         return {'tool_output': result, 'sections': result.get('sections', []), 'citations': result.get('citations', []), 'message_type': AIOpsChatMessage.TYPE_ANALYSIS}
     if tool_name == 'query_dashboard_metadata':
@@ -15232,7 +17441,9 @@ def _run_tool_call(session, user_message, user, tool_name, arguments, registry_e
         )
         return {'tool_output': result, 'sections': result.get('sections', []), 'citations': result.get('citations', []), 'message_type': AIOpsChatMessage.TYPE_ANALYSIS}
     if tool_name == 'query_recent_changes':
-        result = query_recent_changes(session, user_message, user, limit=arguments.get('limit') or 5)
+        result = query_recent_changes(session, user_message, user, limit=arguments.get('limit') or 5,
+                                      query=arguments.get('query') or '', system_name=arguments.get('system_name') or '',
+                                      service=arguments.get('service') or '')
         return {'tool_output': result, 'sections': result.get('sections', []), 'citations': result.get('citations', []), 'message_type': AIOpsChatMessage.TYPE_ANALYSIS}
     if tool_name == 'query_host_tasks':
         result = query_host_tasks(session, user_message, user, query=arguments.get('query', ''), status=arguments.get('status', ''), limit=arguments.get('limit') or 6)
@@ -15275,7 +17486,28 @@ def _run_tool_call(session, user_message, user, tool_name, arguments, registry_e
     raise ValueError(f'Unsupported tool: {tool_name}')
 
 
-def _run_selected_action(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, action, emit):
+def _run_selected_action(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, action, emit, graph_runtime=False):
+    page_context = normalize_page_context((session.context or {}).get('page_context'))
+    emit(
+        step={
+            'title': '问答类型路由',
+            'detail': f"已选择问答类型 {normalize_capability_code(action.get('code'))}，匹配处理流程 {action.get('display_name') or action.get('code')}。",
+            'status': PROCESSING_STATUS_COMPLETED,
+        },
+        text=f"已识别问答类型：{normalize_capability_code(action.get('code'))}",
+    )
+    missing_fields = _missing_action_context_fields(
+        action, question, knowledge_environment=knowledge_environment,
+        analysis_scope=analysis_scope, page_context=page_context,
+    )
+    if missing_fields:
+        return _build_action_preflight_result(
+            action, knowledge_environment=knowledge_environment, analysis_scope=analysis_scope,
+            missing_fields=missing_fields,
+            summary=f"已识别为 {action.get('display_name') or action.get('code')}，请先补齐必要上下文后再继续。",
+            suggestions=_action_preflight_suggestions(action, missing_fields, knowledge_environment=knowledge_environment),
+            current_question=question, page_context=page_context,
+        )
     action_skills = _skills_for_action(active_skills, action)
     action_code = action.get('code')
     if action_code == 'alert.root_cause':
@@ -15291,6 +17523,7 @@ def _run_selected_action(session, user_message, user, question, scoped_question,
             action_skills,
             action,
             emit,
+            graph_runtime=graph_runtime,
         )
     if action_code == 'change.correlation':
         return _run_change_correlation_evidence(
@@ -15374,18 +17607,167 @@ def _run_selected_action(session, user_message, user, question, scoped_question,
             provider,
             action_skills,
             emit,
+            graph_runtime=graph_runtime,
+            action=action,
+            action_route='selected_host_task_generation',
         )
+        if graph_runtime:
+            return result
         return _attach_selected_action_metadata(result, action, extra_metadata={'action_route': 'selected_host_task_generation'})
     return None
 
 
-def _dispatch_with_tool_runtime(session, user_message, user, question, progress_callback=None, analysis_only=False):
+def _question_scope_disabled_reason(config, question, category='auto', route='', page_context=None):
+    """Check configured question types before fastpaths or graph lanes can call tools."""
+    enabled = set(config.enabled_capability_codes)
+    if all(item['code'] in enabled for item in BUILTIN_CAPABILITY_REGISTRY):
+        return ''
+    if not enabled:
+        return '智能体策略尚未启用任何问答类型，请联系管理员配置。'
+    category = str(category or 'auto').lower()
+    category = {'incident': 'troubleshoot', 'monitoring': 'troubleshoot', 'deployment': 'event.analysis',
+                'operations': 'host_task.generate', 'cost': 'cmdb'}.get(category, category)
+    codes = set()
+    if category != 'auto':
+        codes.add(normalize_capability_code(category))
+    else:
+        lane_code = {'incident': 'troubleshoot', 'k8s': 'troubleshoot', 'self_heal': 'troubleshoot',
+                     'correlation': 'event.analysis', 'slo': 'slo.analysis', 'action': 'host_task.generate', 'cmdb': 'cmdb'}.get(route)
+        if lane_code:
+            codes.add(lane_code)
+        for definition in BUILTIN_ACTION_REGISTRY:
+            if _action_question_matches(definition['code'], question):
+                codes.add(normalize_capability_code(definition['code']))
+        if _is_direct_log_question(question):
+            codes.add('log.query_generate')
+        if _is_direct_event_list_question(question):
+            codes.add('event.analysis')
+        if _is_direct_alert_list_question(question) or _is_direct_alert_analysis_question(question) or _is_direct_k8s_resource_lookup_question(question):
+            codes.add('troubleshoot')
+        if _cmdb_tool_for_question(question, page_context=page_context or {}, question_category=category):
+            codes.add('cmdb')
+    disabled = codes - enabled
+    if disabled:
+        names = [item['display_name'] for item in BUILTIN_CAPABILITY_REGISTRY if item['code'] in disabled]
+        return f"问答类型「{'、'.join(names) or '所选类型'}」已在智能体策略中停用，请重新选择或联系管理员。"
+    return ''
+
+
+def _dispatch_with_tool_runtime(session, user_message, user, question, progress_callback=None, analysis_only=False, cmdb_only=False, graph_runtime=False):
     emit = progress_callback or (lambda **kwargs: None)
     config = get_agent_config()
     provider = get_active_provider(config)
+    requested_model = str((user_message.metadata or {}).get('model') or '').strip()
+    if requested_model and provider:
+        allowed_models = {
+            str(item or '').strip()
+            for item in [provider.default_model, provider.backup_model]
+            if str(item or '').strip()
+        }
+        if requested_model in allowed_models:
+            provider = copy.copy(provider)
+            provider.default_model = requested_model
 
     active_mcp_servers = _get_selected_mcp_servers(config)
     active_skills = _get_selected_skills(config, user=user)
+    session_context = session.context if isinstance(getattr(session, 'context', None), dict) else {}
+    page_context = normalize_page_context(session_context.get('page_context'))
+    user_metadata = user_message.metadata if isinstance(getattr(user_message, 'metadata', None), dict) else {}
+    question_category = str(user_metadata.get('question_category') or 'auto').strip().lower()
+    disabled_reason = _question_scope_disabled_reason(config, question, question_category, page_context=page_context)
+    if disabled_reason:
+        return _build_dispatch_error_result(disabled_reason)
+    requested_action = _resolve_question_category_action(question_category, question, user=user)
+    if requested_action and not requested_action.get('available'):
+        return _build_dispatch_error_result('当前账号无权使用该问答类型，请重新选择问答类型。')
+    task_generation_requested = graph_runtime and not cmdb_only and (
+        _action_question_matches('host_task.generate', question)
+        or _looks_like_shell_task_request(question, {})
+        or _looks_like_playbook_generation_request(question, {})
+    )
+    cmdb_question_scope = question_category in {'cmdb', 'cost'} or (question_category == 'auto' and str(page_context.get('page') or '').startswith('cmdb'))
+    analysis_requested = graph_runtime and not cmdb_only and not cmdb_question_scope and (
+        _is_alert_environment_analysis_question(question) or _is_service_anomaly_question(question)
+    )
+    explicit_query_requested = not cmdb_only and not cmdb_question_scope and not any(
+        keyword in str(question or '').lower() for keyword in ['cmdb', '配置项', '资产台账', '资产']
+    ) and (
+        _is_direct_knowledge_graph_question(question) or _is_direct_log_question(question) or _is_trace_focused_question(question)
+        or _is_direct_promql_question(question) or _is_direct_alert_list_question(question)
+        or _is_direct_alert_analysis_question(question) or _is_direct_event_list_question(question)
+        or _is_direct_posture_question(question) or _is_direct_k8s_resource_lookup_question(question)
+    )
+    graph_workflow_requested = bool(requested_action) or task_generation_requested or analysis_requested or explicit_query_requested
+    cmdb_tool_name = _cmdb_tool_for_question(
+        question,
+        page_context=page_context,
+        question_category=question_category,
+    )
+    if not graph_workflow_requested and not cmdb_tool_name and _cmdb_is_followup_question(question) and _cmdb_context_value(session, 'last_item_ids', []):
+        cmdb_tool_name = 'query_cmdb_items'
+    if not graph_workflow_requested and not cmdb_tool_name and _cmdb_question_has_catalog_reference(question, user):
+        cmdb_tool_name = 'query_cmdb_items'
+    grounded_cmdb_arguments = {} if graph_workflow_requested else _cmdb_grounded_query_arguments(question, user, session=session)
+    if not cmdb_tool_name and (
+        grounded_cmdb_arguments.get('has_catalog_scope')
+        or grounded_cmdb_arguments.get('use_previous_context')
+    ):
+        cmdb_tool_name = 'query_cmdb_items'
+    semantic_cmdb_arguments = None
+    if (
+        not graph_workflow_requested
+        and not cmdb_tool_name
+        and _provider_is_ready(provider)
+        and _cmdb_context_value(session, 'last_item_ids', [])
+    ):
+        semantic_cmdb_arguments = _llm_extract_cmdb_query_arguments(
+            provider,
+            question,
+            user,
+            session=session,
+            user_message=user_message,
+        )
+        if semantic_cmdb_arguments.get('is_cmdb_query'):
+            cmdb_tool_name = 'query_cmdb_items'
+    if not graph_workflow_requested and cmdb_tool_name and _runtime_tool_is_available(active_mcp_servers, user, cmdb_tool_name):
+        cmdb_capability = capability_by_code('cmdb', user=user)
+        cmdb_arguments = _cmdb_direct_tool_arguments(cmdb_tool_name, question, page_context=page_context)
+        if cmdb_tool_name == 'query_cmdb_items':
+            cmdb_arguments = _enrich_cmdb_query_arguments(
+                cmdb_arguments,
+                provider if _provider_is_ready(provider) else None,
+                question,
+                user,
+                session=session,
+                user_message=user_message,
+                extracted=semantic_cmdb_arguments,
+            )
+        result = _direct_tool_fastpath(
+            session,
+            user_message,
+            user,
+            tool_name=cmdb_tool_name,
+            arguments=cmdb_arguments,
+            question=question,
+            scoped_question=question,
+            knowledge_environment=None,
+            analysis_scope={'scope': 'cmdb_authorized', 'summary': {'node_count': 0}},
+            execution_mode='direct_cmdb_query',
+            provider=provider if _provider_is_ready(provider) else None,
+            active_skills=_skills_for_action(active_skills, cmdb_capability),
+            emit=emit,
+            step_title='CMDB 授权范围查询',
+            step_detail='命中资产、成本、拓扑或数据质量意图，直接按 CMDB 资源授权范围查询。',
+            step_text='正在查询 CMDB',
+            extra_metadata={
+                'page_context': page_context,
+                'cmdb_tool': cmdb_tool_name,
+                'question_category': question_category,
+            },
+        )
+        return _attach_selected_action_metadata(result, cmdb_capability, extra_metadata={'action_route': 'direct_cmdb_query'})
+    if cmdb_only:
+        return None
     environment_resolution = _resolve_chat_environment(session, question)
     if environment_resolution.get('status') != 'resolved':
         emit(
@@ -15402,8 +17784,6 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
         analysis_scope = _build_analysis_scope(knowledge_environment)
     except Exception as exc:
         analysis_scope = {'environment': knowledge_environment.get('name'), 'error': str(exc)[:200]}
-    session_context = session.context if isinstance(getattr(session, 'context', None), dict) else {}
-    page_context = normalize_page_context(session_context.get('page_context'))
     _persist_session_context(
         session,
         current_environment={'name': knowledge_environment.get('name'), 'aliases': knowledge_environment.get('aliases') or []},
@@ -15421,6 +17801,12 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
     scoped_question = f"{knowledge_environment.get('name')} {question}".strip()
     provider_ready = _provider_is_ready(provider)
     formatter_provider = provider if provider_ready else None
+    if requested_action:
+        return _run_selected_action(
+            session, user_message, user, question, scoped_question, knowledge_environment,
+            analysis_scope, formatter_provider, active_skills, requested_action, emit,
+            graph_runtime=graph_runtime,
+        )
     selected_action = _select_action_for_question(question, user=user, analysis_scope=analysis_scope)
     selected_action = select_action_by_handler(
         question,
@@ -15428,6 +17814,17 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
         page_context=page_context,
         current_code=selected_action.get('code') if selected_action else '',
     ) or selected_action
+    if selected_action:
+        active_skills = _skills_for_action(active_skills, selected_action)
+    if _is_direct_knowledge_graph_question(question):
+        return _direct_tool_fastpath(
+            session, user_message, user, tool_name='query_knowledge_graph',
+            arguments={'query': scoped_question, 'environment': knowledge_environment['name'], 'limit': 12,
+                       'service': _detect_observability_service(question, analysis_scope=analysis_scope, knowledge_environment=knowledge_environment)},
+            question=question, scoped_question=scoped_question, knowledge_environment=knowledge_environment,
+            analysis_scope=analysis_scope, execution_mode='direct_knowledge_graph_query',
+            provider=formatter_provider, active_skills=active_skills, emit=emit,
+        )
     if _is_direct_alert_analysis_question(question):
         direct_action = selected_action if selected_action and selected_action.get('code') == 'alert.root_cause' else _action_registry_item_by_code('alert.root_cause', user=user)
         emit(
@@ -15522,6 +17919,7 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
             active_skills,
             alert_action,
             emit,
+            graph_runtime=graph_runtime,
         )
     if _is_direct_k8s_resource_lookup_question(question):
         resource_type = _detect_k8s_resource_type(question)
@@ -15552,36 +17950,12 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
         )
     if (
         selected_action
+        and not _is_trace_focused_question(question)
         and not _is_direct_container_question(question)
+        and (change_correlation_selected or not _is_direct_posture_question(question))
         and not _is_direct_promql_question(question)
         and (change_correlation_selected or not _is_direct_event_list_question(question))
     ):
-        emit(
-            step={
-                'title': 'Action Router',
-                'detail': f"已命中动作 {selected_action.get('display_name') or selected_action.get('code')}。",
-                'status': PROCESSING_STATUS_COMPLETED,
-            },
-            text=f"已识别动作：{selected_action.get('code')}",
-        )
-        missing_fields = _missing_action_context_fields(
-            selected_action,
-            question,
-            knowledge_environment=knowledge_environment,
-            analysis_scope=analysis_scope,
-            page_context=page_context,
-        )
-        if missing_fields:
-            return _build_action_preflight_result(
-                selected_action,
-                knowledge_environment=knowledge_environment,
-                analysis_scope=analysis_scope,
-                missing_fields=missing_fields,
-                summary=f"已识别为 {selected_action.get('display_name') or selected_action.get('code')}，请先补齐必要上下文后再继续。",
-                suggestions=_action_preflight_suggestions(selected_action, missing_fields, knowledge_environment=knowledge_environment),
-                current_question=question,
-                page_context=page_context,
-            )
         routed_result = _run_selected_action(
             session,
             user_message,
@@ -15594,10 +17968,12 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
             active_skills,
             selected_action,
             emit,
+            graph_runtime=graph_runtime,
         )
         if routed_result:
             return routed_result
-    if not analysis_only and _is_task_generation_question(question):
+    if (graph_runtime or not analysis_only) and _is_task_generation_question(question):
+        task_action = _action_registry_item_by_code('host_task.generate', user=user)
         result = _run_task_generation_evidence(
             session,
             user_message,
@@ -15609,8 +17985,11 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
             formatter_provider,
             active_skills,
             emit,
+            graph_runtime=graph_runtime,
+            action=task_action,
         )
-        task_action = _action_registry_item_by_code('host_task.generate', user=user)
+        if graph_runtime:
+            return result
         return _attach_selected_action_metadata(result, task_action, extra_metadata={'action_route': 'deterministic_task_generation'}) if task_action else result
     if _is_k8s_analysis_question(question):
         result = _run_k8s_analysis_evidence(
@@ -15666,6 +18045,7 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
             formatter_provider,
             active_skills,
             emit,
+            graph_runtime=graph_runtime,
         )
     if _is_direct_log_question(question):
         parameter_provider = formatter_provider if provider_ready else None
@@ -15700,6 +18080,27 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
             log_arguments,
             provider=formatter_provider,
             active_skills=active_skills,
+        )
+    if is_system_posture_enabled() and _is_direct_posture_question(question):
+        posture_action = _action_registry_item_by_code('slo.analysis', user=user)
+        return _direct_tool_fastpath(
+            session,
+            user_message,
+            user,
+            tool_name='query_system_posture',
+            arguments={'query': scoped_question, 'limit': 8},
+            question=question,
+            scoped_question=scoped_question,
+            knowledge_environment=knowledge_environment,
+            analysis_scope=analysis_scope,
+            execution_mode='direct_posture_fastpath',
+            provider=formatter_provider,
+            active_skills=active_skills,
+            emit=emit,
+            step_title='系统态势直接查询',
+            step_detail='命中 SLA/系统态势类事实问题，直接查询系统态势，LLM 只用于结果总结。',
+            step_text='正在直接查询系统态势',
+            selected_action=posture_action,
         )
     if _is_direct_promql_question(question):
         promql = _extract_promql_from_question(question)
@@ -15755,7 +18156,7 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
         trace_arguments = {
             'query': _extract_quoted_trace_query(scoped_question),
             'errors_only': any(keyword in question for keyword in ['异常', '错误', '失败']),
-            'duration_minutes': 60 if '最近' in question else 30,
+            'duration_minutes': _detect_log_duration_minutes(question),
             'limit': 10,
         }
         return _direct_tool_fastpath(
@@ -15861,13 +18262,32 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
     if _is_direct_log_question(question):
         messages.append({
             'role': 'user',
-            'content': '路由约束：本问题明确限定在日志中查询或分析，必须调用 query_logs；不要先调用 query_alerts。若用户同时提到警告和错误，使用 levels=["warning","error"]。',
+            'content': '路由约束：本问题明确限定在日志中查询或分析，必须调用 query_logs；不要先调用 query_alerts 或 query_system_posture。若用户同时提到警告和错误，使用 levels=["warning","error"]。',
         })
     if analysis_only:
         messages.append({
             'role': 'user',
             'content': '请求约束：本轮为只分析模式，只能做查询、分析、解释和建议；禁止生成、创建、新建、安排待执行任务，禁止调用 generate_host_task。',
         })
+
+    if graph_runtime:
+        from .langgraph_runtime import build_agent_context
+
+        try:
+            return {'_agent_context': build_agent_context(
+                provider=provider, active_mcp_servers=active_mcp_servers, active_skills=active_skills,
+                knowledge_environment=knowledge_environment, analysis_scope=analysis_scope,
+                selected_action=selected_action, messages=messages, tools=tools, registry=registry,
+                mcp_diagnostics=mcp_diagnostics,
+            )}
+        finally:
+            for client in managed_clients:
+                try:
+                    client.close()
+                except ChatJobLeaseLost:
+                    raise
+                except Exception:
+                    pass
 
     try:
         for round_index in range(6):
@@ -15974,6 +18394,8 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
                 text='\u6b63\u5728\u6574\u7406\u56de\u7b54',
             )
             break
+    except ChatJobLeaseLost:
+        raise
     except AIOpsModelCallError as exc:
         emit(
             step={
@@ -16036,6 +18458,21 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
             except Exception:
                 pass
 
+    return _finalize_tool_runtime_answer(
+        provider=provider, question=question, knowledge_environment=knowledge_environment,
+        analysis_scope=analysis_scope, active_skills=active_skills, selected_action=selected_action,
+        mcp_diagnostics=mcp_diagnostics, sections=sections, citations=citations,
+        executed_tool_names=executed_tool_names, collected_tool_outputs=collected_tool_outputs,
+        pending_action_draft=pending_action_draft, message_type=message_type,
+        final_content=final_content, emit=emit,
+    )
+
+
+def _finalize_tool_runtime_answer(
+    *, provider, question, knowledge_environment, analysis_scope, active_skills, selected_action,
+    mcp_diagnostics, sections, citations, executed_tool_names, collected_tool_outputs,
+    pending_action_draft, message_type, final_content, emit,
+):
     citations = _dedupe_citations(citations)
     emit(
         step={
@@ -16087,6 +18524,7 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
                 message_type=message_type,
                 active_skills=active_skills,
                 collected_tool_outputs=collected_tool_outputs,
+                model_error_policy='error',
             )
             if formatter_result.get('used'):
                 final_content = _normalize_formatter_output(formatter_result.get('content') or final_content)
@@ -16111,6 +18549,8 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
                     },
                     text='Skill 模板整形已回退到代码模板',
                 )
+        except ChatJobLeaseLost:
+            raise
         except AIOpsModelCallError as exc:
             emit(
                 step={
@@ -16170,14 +18610,24 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
     return result
 
 
-def _build_chat_result(session, user_message, user, question, progress_callback=None, analysis_only=False):
+def _build_chat_result_legacy(session, user_message, user, question, progress_callback=None, analysis_only=False, cmdb_only=False, graph_runtime=False):
     emit = progress_callback or (lambda **kwargs: None)
-    emit(
-        status_value=PROCESSING_STATUS_RUNNING,
-        text='已收到问题，正在准备上下文',
-    )
+    if not cmdb_only:
+        emit(
+            status_value=PROCESSING_STATUS_RUNNING,
+            text='已收到问题，正在准备上下文',
+        )
     try:
-        result = _dispatch_with_tool_runtime(session, user_message, user, question, progress_callback=emit, analysis_only=analysis_only)
+        result = _dispatch_with_tool_runtime(
+            session,
+            user_message,
+            user,
+            question,
+            progress_callback=emit,
+            analysis_only=analysis_only,
+            cmdb_only=cmdb_only,
+            graph_runtime=graph_runtime,
+        )
         if result:
             return result
     except AIOpsModelCallError as exc:
@@ -16186,13 +18636,61 @@ def _build_chat_result(session, user_message, user, question, progress_callback=
             text='LLM 接口调用失败',
         )
         return _build_llm_api_error_result(str(exc))
+    except ChatJobLeaseLost:
+        raise
     except Exception as exc:
         emit(
             step={'title': '\u5904\u7406\u5f02\u5e38', 'detail': str(exc)[:120], 'status': PROCESSING_STATUS_FAILED},
             text='\u95ee\u7b54\u5931\u8d25',
         )
         return _build_dispatch_error_result(str(exc))
+    if cmdb_only:
+        return None
     return _build_dispatch_error_result('\u672a\u83b7\u5f97\u5230\u6709\u6548\u56de\u7b54')
+
+
+def _build_chat_result(session, user_message, user, question, progress_callback=None, analysis_only=False):
+    """Run the default chat through LangGraph, with a compatibility fallback."""
+    try:
+        from .langgraph_pilot import LangGraphPilotUnavailable, run_langgraph_chat
+
+        return run_langgraph_chat(
+            session,
+            user_message,
+            user,
+            question,
+            progress_callback=progress_callback,
+            analysis_only=analysis_only,
+        )
+    except LangGraphPilotUnavailable:
+        degradation = {
+            'orchestration_engine': 'legacy', 'orchestration_degraded': True,
+            'orchestration_degradation_reason': 'langgraph_unavailable',
+            'orchestration_user_message_id': user_message.id,
+            'orchestration_status': 'running',
+        }
+        user_message.refresh_from_db(fields=['metadata'])
+        user_message.metadata = {**(user_message.metadata or {}), **degradation}
+        user_message.save(update_fields=['metadata'])
+        if progress_callback:
+            progress_callback(metadata_updates=degradation, text='执行追踪暂不可用，本轮使用兼容运行，无法从节点断点恢复。')
+        from .langgraph_execution import compatibility_audit_scope
+
+        with compatibility_audit_scope(session, user_message, user):
+            result = _build_chat_result_legacy(
+                session,
+                user_message,
+                user,
+                question,
+                progress_callback=progress_callback,
+                analysis_only=analysis_only,
+            )
+        degradation['orchestration_status'] = 'failed' if result.get('message_type') == AIOpsChatMessage.TYPE_ERROR else 'completed'
+        result['metadata'] = {**(result.get('metadata') or {}), **degradation}
+        user_message.refresh_from_db(fields=['metadata'])
+        user_message.metadata = {**(user_message.metadata or {}), **degradation}
+        user_message.save(update_fields=['metadata'])
+        return result
 
 
 
@@ -16260,32 +18758,46 @@ def _apply_dispatch_result_to_message(session, assistant_message, result, user, 
     if analysis_only:
         merged_metadata['analysis_only'] = True
     response_blocks = list(merged_metadata.get('response_blocks') or [])
-    pending_action = None
+    pending_action = assistant_message.pending_actions.order_by('-id').first()
     draft = result.get('pending_action_draft')
     action_decision = None
 
     if draft and not draft.get('error'):
-        draft = _ensure_task_draft_title(draft)
+        is_host_task_draft = draft.get('action_type') != AIOpsPendingAction.ACTION_CREATE_CMDB_ASSET
+        if is_host_task_draft:
+            draft = _ensure_task_draft_title(draft)
         action_block_reason = 'policy' if not config.allow_action_execution else ('analysis_only' if analysis_only else '')
-        if action_block_reason:
+        if pending_action:
+            merged_metadata['pending_action_id'] = pending_action.id
+            action_decision = {
+                'status': 'materialized' if pending_action.status == AIOpsPendingAction.STATUS_CONFIRMED else 'pending_confirmation',
+                'reason': 'existing_action',
+                'pending_action_id': pending_action.id,
+            }
+            task_id = (pending_action.result_payload or {}).get('task_id')
+            if task_id:
+                merged_metadata['created_task_id'] = task_id
+                merged_metadata['task_materialized_in_center'] = True
+        elif action_block_reason:
             if action_block_reason == 'policy':
                 merged_metadata['action_execution_disabled'] = True
             if analysis_only:
                 merged_metadata['analysis_only_enforced'] = True
             action_decision = {'status': 'blocked', 'reason': action_block_reason}
-        elif _should_materialize_host_task(question, result, draft):
+        elif is_host_task_draft and _should_materialize_host_task(question, result, draft):
             try:
-                task = _create_host_task_record_from_draft(draft, user, session=session)
-                pending_action = create_pending_task_action_from_draft(session, assistant_message, draft)
-                pending_action.status = AIOpsPendingAction.STATUS_CONFIRMED
-                pending_action.confirmed_by = user.username
-                pending_action.confirmed_at = timezone.now()
-                pending_action.result_payload = {
-                    'task_id': task.id,
-                    'task_name': task.name,
-                    'materialized_in_task_center': True,
-                }
-                pending_action.save(update_fields=['status', 'confirmed_by', 'confirmed_at', 'result_payload', 'updated_at'])
+                with transaction.atomic():
+                    task = _create_host_task_record_from_draft(draft, user, session=session)
+                    pending_action = create_pending_action_from_draft(session, assistant_message, draft)
+                    pending_action.status = AIOpsPendingAction.STATUS_CONFIRMED
+                    pending_action.confirmed_by = user.username
+                    pending_action.confirmed_at = timezone.now()
+                    pending_action.result_payload = {
+                        'task_id': task.id,
+                        'task_name': task.name,
+                        'materialized_in_task_center': True,
+                    }
+                    pending_action.save(update_fields=['status', 'confirmed_by', 'confirmed_at', 'result_payload', 'updated_at'])
                 merged_metadata['pending_action_id'] = pending_action.id
                 merged_metadata['created_task_id'] = task.id
                 merged_metadata['task_materialized_in_center'] = True
@@ -16302,7 +18814,7 @@ def _apply_dispatch_result_to_message(session, assistant_message, result, user, 
                 action_decision = {'status': 'failed', 'reason': 'task_materialization_error', 'error': str(exc)[:200]}
                 final_content = f"{final_content}\n\n任务中心创建失败：{exc}"
         else:
-            pending_action = create_pending_task_action_from_draft(session, assistant_message, draft)
+            pending_action = create_pending_action_from_draft(session, assistant_message, draft)
             merged_metadata['pending_action_id'] = pending_action.id
             action_decision = {
                 'status': 'pending_confirmation',
@@ -16356,17 +18868,45 @@ def _apply_dispatch_result_to_message(session, assistant_message, result, user, 
 
 
 
-def _run_async_chat_worker(session_id, user_message_id, user_id, assistant_message_id, question, analysis_only=False):
+class ChatJobLeaseLost(RuntimeError):
+    pass
+
+
+def _run_async_chat_worker(session_id, user_message_id, user_id, assistant_message_id, question, analysis_only=False, thread_id='', check_lease=None):
     close_old_connections()
     try:
         session = AIOpsChatSession.objects.select_related('user').get(pk=session_id)
         user_message = AIOpsChatMessage.objects.get(pk=user_message_id)
         assistant_message = AIOpsChatMessage.objects.get(pk=assistant_message_id)
         user = session.user if session.user_id == user_id else session.user.__class__.objects.get(pk=user_id)
-        emit = _make_processing_callback(assistant_message_id)
-        result = _build_chat_result(session, user_message, user, question, progress_callback=emit, analysis_only=analysis_only)
+        processing_callback = _make_processing_callback(assistant_message_id)
+
+        def emit(**kwargs):
+            if check_lease:
+                check_lease()
+            return processing_callback(**kwargs)
+
+        result = _build_chat_result(
+            session,
+            user_message,
+            user,
+            question,
+            progress_callback=emit,
+            analysis_only=analysis_only,
+        )
+        if thread_id:
+            result.setdefault('metadata', {})['langgraph_thread_id'] = thread_id
+            result['metadata']['langgraph_resume_status'] = (
+                'failed' if result.get('message_type') == AIOpsChatMessage.TYPE_ERROR else 'completed'
+            )
+        if check_lease:
+            check_lease()
         _apply_dispatch_result_to_message(session, assistant_message, result, user, enable_stream=True, progress_callback=emit, question=question, analysis_only=analysis_only)
+    except ChatJobLeaseLost:
+        raise
     except Exception as exc:
+        if check_lease:
+            check_lease()
         _update_chat_message_processing(
             assistant_message_id,
             status_value=PROCESSING_STATUS_FAILED,
@@ -16374,7 +18914,12 @@ def _run_async_chat_worker(session_id, user_message_id, user_id, assistant_messa
             step={'title': '\u5904\u7406\u5931\u8d25', 'detail': str(exc)[:120], 'status': PROCESSING_STATUS_FAILED},
             content=f'\u95ee\u7b54\u5931\u8d25\uff1a{str(exc)}',
             message_type=AIOpsChatMessage.TYPE_ERROR,
-            metadata_updates={'execution_mode': 'error', 'error_detail': str(exc)[:500]},
+            metadata_updates={
+                'execution_mode': 'error',
+                'error_detail': str(exc)[:500],
+                'langgraph_thread_id': thread_id,
+                'langgraph_resume_status': 'failed',
+            },
         )
         session = AIOpsChatSession.objects.filter(pk=session_id).first()
         if session:
@@ -16385,21 +18930,193 @@ def _run_async_chat_worker(session_id, user_message_id, user_id, assistant_messa
 
 
 def start_async_chat_processing(session, user_message, user, assistant_message, analysis_only=False):
-    worker = threading.Thread(
-        target=_run_async_chat_worker,
-        kwargs={
-            'session_id': session.id,
-            'user_message_id': user_message.id,
-            'user_id': user.id,
-            'assistant_message_id': assistant_message.id,
-            'question': user_message.content,
+    from .langgraph_pilot import ensure_langgraph_thread_id
+
+    thread_id = ensure_langgraph_thread_id(user_message)
+    assistant_metadata = dict(assistant_message.metadata or {})
+    assistant_metadata.update({
+        'orchestration_engine': 'langgraph',
+        'langgraph_thread_id': thread_id,
+        'langgraph_user_message_id': user_message.id,
+        'langgraph_resume_status': 'queued',
+    })
+    assistant_message.metadata = assistant_metadata
+    assistant_message.save(update_fields=['metadata'])
+    job, _ = AIOpsChatJob.objects.get_or_create(
+        assistant_message=assistant_message,
+        defaults={
+            'user_message': user_message,
+            'thread_id': thread_id,
             'analysis_only': analysis_only,
         },
-        daemon=True,
-        name=f'aiops-chat-{assistant_message.id}',
     )
-    worker.start()
-    return worker
+    return job
+
+
+def resume_async_chat_processing(assistant_message_id):
+    """Requeue an interrupted chat; active leases remain owned by their worker."""
+    job = AIOpsChatJob.objects.select_related('assistant_message').get(assistant_message_id=assistant_message_id)
+    if job.status == AIOpsChatJob.STATUS_COMPLETED:
+        return None
+    if job.status == AIOpsChatJob.STATUS_RUNNING and job.lease_until and job.lease_until > timezone.now():
+        return None
+    if job.status == AIOpsChatJob.STATUS_FAILED:
+        return None
+    job.status = AIOpsChatJob.STATUS_QUEUED
+    job.lease_until = None
+    job.claim_token = None
+    job.error_message = ''
+    job.save(update_fields=['status', 'lease_until', 'claim_token', 'error_message', 'updated_at'])
+    return job
+
+
+def resume_interrupted_async_chats(limit=20):
+    """Requeue expired jobs without touching completed or live work."""
+    now = timezone.now()
+    candidates = AIOpsChatJob.objects.filter(
+        status=AIOpsChatJob.STATUS_RUNNING,
+        lease_until__lt=now,
+    ).order_by('created_at', 'id')[:max(1, int(limit or 20))]
+    resumed = []
+    for job in candidates:
+        updated = AIOpsChatJob.objects.filter(
+            pk=job.pk,
+            status=AIOpsChatJob.STATUS_RUNNING,
+            lease_until__lt=now,
+        ).update(status=AIOpsChatJob.STATUS_QUEUED, lease_until=None, claim_token=None)
+        if updated:
+            resumed.append(job.assistant_message_id)
+    return resumed
+
+
+def claim_async_chat_job(lease_seconds=120):
+    now = timezone.now()
+    candidates = AIOpsChatJob.objects.filter(
+        Q(status=AIOpsChatJob.STATUS_QUEUED)
+        | Q(status=AIOpsChatJob.STATUS_RUNNING, lease_until__lt=now)
+    ).order_by('created_at', 'id')[:20]
+    for candidate in candidates:
+        claim_token = uuid.uuid4()
+        claimed = AIOpsChatJob.objects.filter(pk=candidate.pk).filter(
+            Q(status=AIOpsChatJob.STATUS_QUEUED)
+            | Q(status=AIOpsChatJob.STATUS_RUNNING, lease_until__lt=now)
+        ).update(
+            status=AIOpsChatJob.STATUS_RUNNING,
+            attempt_count=F('attempt_count') + 1,
+            claim_token=claim_token,
+            lease_until=now + timedelta(seconds=lease_seconds),
+        )
+        if claimed:
+            return AIOpsChatJob.objects.select_related('assistant_message', 'user_message', 'user_message__session__user').get(pk=candidate.pk)
+    return None
+
+
+def process_async_chat_job(job):
+    """Run one claimed job and extend its lease while LangGraph is active."""
+    if not job.claim_token:
+        raise ValueError('聊天任务尚未被 worker 领取')
+    stop_heartbeat = threading.Event()
+    lease_lost = threading.Event()
+
+    def check_lease():
+        if lease_lost.is_set():
+            raise ChatJobLeaseLost('聊天任务租约已失效')
+        try:
+            owned = AIOpsChatJob.objects.filter(
+                pk=job.pk,
+                status=AIOpsChatJob.STATUS_RUNNING,
+                claim_token=job.claim_token,
+                lease_until__gt=timezone.now(),
+            ).exists()
+        except DatabaseError as exc:
+            lease_lost.set()
+            raise ChatJobLeaseLost('无法验证聊天任务租约') from exc
+        if not owned:
+            lease_lost.set()
+            raise ChatJobLeaseLost('聊天任务租约已失效')
+
+    def renew_lease():
+        while not stop_heartbeat.wait(30):
+            close_old_connections()
+            try:
+                renewed = AIOpsChatJob.objects.filter(
+                    pk=job.pk,
+                    status=AIOpsChatJob.STATUS_RUNNING,
+                    claim_token=job.claim_token,
+                    lease_until__gt=timezone.now(),
+                ).update(lease_until=timezone.now() + timedelta(seconds=120))
+                if not renewed:
+                    lease_lost.set()
+                    return
+            except DatabaseError:
+                lease_lost.set()
+                return
+            finally:
+                close_old_connections()
+
+    heartbeat = threading.Thread(target=renew_lease, daemon=True, name=f'aiops-chat-lease-{job.id}')
+    heartbeat.start()
+    try:
+        check_lease()
+        assistant_message = job.assistant_message
+        metadata = dict(assistant_message.metadata or {})
+        if metadata.get('processing_status') != PROCESSING_STATUS_COMPLETED:
+            metadata['langgraph_resume_status'] = 'running'
+            assistant_message.metadata = metadata
+            assistant_message.save(update_fields=['metadata'])
+            _run_async_chat_worker(
+                job.user_message.session_id,
+                job.user_message_id,
+                job.user_message.session.user_id,
+                job.assistant_message_id,
+                job.user_message.content,
+                analysis_only=job.analysis_only,
+                thread_id=job.thread_id,
+                check_lease=check_lease,
+            )
+        check_lease()
+        assistant_message.refresh_from_db()
+        status_value = (assistant_message.metadata or {}).get('processing_status')
+        job.status = (
+            AIOpsChatJob.STATUS_COMPLETED
+            if status_value == PROCESSING_STATUS_COMPLETED and assistant_message.message_type != AIOpsChatMessage.TYPE_ERROR
+            else AIOpsChatJob.STATUS_FAILED
+        )
+        job.error_message = '' if job.status == AIOpsChatJob.STATUS_COMPLETED else str((assistant_message.metadata or {}).get('error_detail') or '')[:500]
+    except ChatJobLeaseLost:
+        lease_lost.set()
+    except Exception as exc:
+        try:
+            check_lease()
+        except ChatJobLeaseLost:
+            lease_lost.set()
+        else:
+            job.status = AIOpsChatJob.STATUS_FAILED
+            job.error_message = str(exc)[:500]
+            _update_chat_message_processing(
+                job.assistant_message_id,
+                status_value=PROCESSING_STATUS_FAILED,
+                text='问答失败',
+                message_type=AIOpsChatMessage.TYPE_ERROR,
+                metadata_updates={'langgraph_resume_status': 'failed', 'error_detail': job.error_message},
+            )
+    finally:
+        stop_heartbeat.set()
+        heartbeat.join(timeout=2)
+        if not lease_lost.is_set():
+            AIOpsChatJob.objects.filter(
+                pk=job.pk,
+                status=AIOpsChatJob.STATUS_RUNNING,
+                claim_token=job.claim_token,
+                lease_until__gt=timezone.now(),
+            ).update(
+                status=job.status,
+                error_message=job.error_message,
+                lease_until=None,
+                claim_token=None,
+                updated_at=timezone.now(),
+            )
+    return job
 
 
 

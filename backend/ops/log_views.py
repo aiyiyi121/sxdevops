@@ -393,11 +393,48 @@ def _extract_query_terms(query):
 
 
 def _matches_demo_query(message, attributes, query):
-    terms = _extract_query_terms(query)
-    if not terms:
-        return True
+    text = str(query or '').strip()
+    field_clauses = re.findall(r'(?P<field>[A-Za-z_][A-Za-z0-9_.-]*):(?:"(?P<quoted>[^"]+)"|(?P<bare>[^\s()]+))', text)
+    field_values = {}
+    for field, quoted, bare in field_clauses:
+        value = (quoted or bare or '').strip().lower()
+        if value:
+            field_values.setdefault(field, []).append(value)
+
+    def get_field_value(field):
+        aliases = {
+            'service.name': ('service.name', 'service', 'service_name'),
+            'host.name': ('host.name', 'host', 'host_name'),
+            'trace.id': ('trace.id', 'trace_id', 'traceId', 'traceID'),
+            'level': ('level', 'log.level', 'severity'),
+        }
+        for key in aliases.get(field, (field,)):
+            value = _get_nested(attributes or {}, key) if '.' in key else (attributes or {}).get(key)
+            if value not in (None, ''):
+                if isinstance(value, dict) and 'name' in value:
+                    value = value['name']
+                return str(value).lower()
+        return ''
+
+    for field, expected_values in field_values.items():
+        actual = get_field_value(field)
+        if not actual or not any(expected in actual for expected in expected_values):
+            return False
+
     haystack = ' '.join([str(message), json.dumps(attributes or {}, ensure_ascii=False)]).lower()
-    return all(term in haystack for term in terms)
+    generic_query = re.sub(r'(?P<field>[A-Za-z_][A-Za-z0-9_.-]*):(?:"[^"]+"|[^\s()]+)', ' ', text)
+    generic_query = re.sub(r'\b[A-Za-z_][A-Za-z0-9_.-]*:\s*(?=\()', ' ', generic_query)
+    groups = [group for group in re.split(r'\bAND\b', generic_query, flags=re.IGNORECASE) if group.strip()]
+    for group in groups:
+        terms = _extract_query_terms(group)
+        if not terms:
+            continue
+        if re.search(r'\bOR\b', group, flags=re.IGNORECASE):
+            if not any(term in haystack for term in terms):
+                return False
+        elif not all(term in haystack for term in terms):
+            return False
+    return True
 
 
 def _demo_time_points(start_ms, end_ms, count):
@@ -1055,15 +1092,28 @@ def _sls_request(method, config, path, params=None):
     ).decode('utf-8')
     headers['Authorization'] = f'LOG {access_key_id}:{signature}'
 
-    url = f'https://{_sls_host(config)}{path}'
+    url = f'https://{_sls_host(config)}{resource}'
     try:
-        response = http_requests.request(method, url, params=params, headers=headers, timeout=REQUEST_TIMEOUT)
+        response = http_requests.request(method, url, headers=headers, timeout=REQUEST_TIMEOUT)
     except http_requests.Timeout as exc:
         raise ProviderError('Aliyun SLS request timed out', status.HTTP_504_GATEWAY_TIMEOUT, {'detail': str(exc)}) from exc
     except http_requests.ConnectionError as exc:
         raise ProviderError('Unable to connect to Aliyun SLS', status.HTTP_502_BAD_GATEWAY, {'detail': str(exc)}) from exc
     _raise_for_status(response, 'Aliyun SLS')
-    return _safe_json(response)
+    payload = _safe_json(response)
+    if isinstance(payload, list):
+        response_headers = getattr(response, 'headers', {}) or {}
+        raw_count = response_headers.get('x-log-count') or response_headers.get('X-Log-Count')
+        try:
+            count = int(raw_count)
+        except (TypeError, ValueError):
+            count = len(payload)
+        return {
+            'logs': payload,
+            'count': count,
+            'progress': response_headers.get('x-log-progress') or response_headers.get('X-Log-Progress') or '',
+        }
+    return payload
 
 
 def _catalog_loki(config, payload):
@@ -1247,7 +1297,7 @@ def _query_elk(config, payload):
 
     hits = response.get('hits', {}).get('hits', [])
     total = response.get('hits', {}).get('total', {})
-    total_value = total.get('value') if isinstance(total, dict) else len(hits)
+    total_value = total.get('value') if isinstance(total, dict) else total if isinstance(total, int) else len(hits)
     logs = []
     for hit in hits:
         source = hit.get('_source') or {}
@@ -1296,6 +1346,7 @@ def _query_sls(config, payload):
             'type': 'log',
             'from': int(start_ms / 1000),
             'to': int(end_ms / 1000),
+            'offset': 0,
             'line': _sanitize_limit(payload.get('limit')),
             'reverse': 'true',
             'query': query,
@@ -1457,7 +1508,7 @@ def log_providers(request):
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated, build_rbac_permission('ops.log.query', allow_demo_write=True)])
+@permission_classes([IsAuthenticated, build_rbac_permission('ops.log.query')])
 def log_provider_catalog(request, provider):
     try:
         resolved_provider, config, _ = _resolve_provider_and_config({**request.data, 'provider': provider})
@@ -1474,7 +1525,7 @@ def log_provider_catalog(request, provider):
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated, build_rbac_permission('ops.log.query', allow_demo_write=True)])
+@permission_classes([IsAuthenticated, build_rbac_permission('ops.log.query')])
 def log_query(request):
     try:
         provider, config, datasource = _resolve_provider_and_config(request.data)

@@ -18,6 +18,7 @@ from django.utils import timezone
 from django.utils.text import slugify
 
 from .models import Host, HostTask, HostTaskExecution, K8sCluster, TaskResource
+from .task_resources import cmdb_resource_defaults
 
 _TASK_THREADS = {}
 _TASK_THREADS_LOCK = threading.Lock()
@@ -60,6 +61,9 @@ def _validate_remote_command(task, command_text):
 
 class TaskResourceHostTarget:
     def __init__(self, resource):
+        if resource.cmdb_ci_id:
+            for field, value in cmdb_resource_defaults(resource.cmdb_ci).items():
+                setattr(resource, field, value)
         self.source = 'task_resource'
         self.resource_id = resource.id
         self.id = resource.id
@@ -69,7 +73,7 @@ class TaskResourceHostTarget:
         self.system_name = self.business_line
         self.environment = resource.environment.name if resource.environment_id else ''
         self.event_environment, self.event_environment_name = _resource_event_environment(resource)
-        self.status = 'online' if resource.status == TaskResource.STATUS_ACTIVE else 'offline'
+        self.status = 'online' if resource.status == TaskResource.STATUS_ACTIVE and not resource.execution_blocked_reason else 'offline'
         self.ssh_port = resource.ssh_port or 22
         self.ssh_user = resource.ssh_user or 'root'
         self.ssh_password = resource.ssh_password or ''
@@ -267,6 +271,7 @@ def _ansible_inventory_alias(host):
 
 
 def open_ssh_client(host, timeout_seconds):
+    _ensure_task_resource_available(host)
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     client.connect(
@@ -423,6 +428,7 @@ def _finish_execution(execution, status, output='', error_message='', started_at
 
 
 def _build_ansible_extra_vars(host):
+    _ensure_task_resource_available(host)
     extra_vars = {
         'ansible_connection': 'ssh',
         'ansible_user': host.ssh_user or 'root',
@@ -434,6 +440,15 @@ def _build_ansible_extra_vars(host):
     if host.ssh_password:
         extra_vars['ansible_password'] = host.ssh_password
     return extra_vars
+
+
+def _ensure_task_resource_available(host):
+    if isinstance(host, TaskResourceHostTarget):
+        resource = TaskResource.objects.select_related('cmdb_ci').filter(pk=host.resource_id).first()
+        if not resource:
+            raise ValueError('执行资源已移除')
+        if resource.execution_blocked_reason:
+            raise ValueError(resource.execution_blocked_reason)
 
 
 def _build_ansible_process_env():
@@ -1262,6 +1277,7 @@ def _run_k8s_service_patch(task, cluster, target):
             if isinstance(spec.get('ports'), list):
                 item['ports'] = _format_service_ports_from_patch(spec['ports']) or item.get('ports', '')
             k8s_views._set_demo_state(cluster.id, 'services', items)
+            k8s_views.patch_demo_manifest(cluster.id, 'service', namespace, service_name, patch)
             k8s_views._invalidate_cluster_runtime_cache(cluster)
             return f'Service {namespace}/{service_name} 已通过 K8s API 更新 [演示模式]'
         raise RuntimeError(f'未找到 Service：{namespace}/{service_name}')
@@ -1340,6 +1356,7 @@ def _run_k8s_scale_workload(task, cluster, target):
                 if workload_type == 'deployment':
                     item['available_replicas'] = min(item.get('available_replicas', item.get('ready_replicas', 0)), replicas)
                 k8s_views._set_demo_state(cluster.id, cache_name, items)
+                k8s_views.patch_demo_manifest(cluster.id, workload_type, namespace, name, {'spec': {'replicas': replicas}})
                 k8s_views._invalidate_cluster_runtime_cache(cluster)
                 return f'{name} scaled to {replicas} replicas [演示模式]'
         raise RuntimeError(f'未找到资源：{workload_type}/{namespace}/{name}')
@@ -1381,11 +1398,24 @@ def _run_single_k8s_task(task, target):
     command = _k8s_command_text(task, target)
     execution = _create_running_k8s_execution(task, target, command)
     try:
+        resource_id = target.get('resource_id') or target.get('task_resource_id')
+        if resource_id:
+            resource = TaskResource.objects.select_related('cmdb_ci').filter(pk=resource_id).first()
+            if not resource:
+                raise ValueError('执行资源已移除')
+            if resource.execution_blocked_reason:
+                raise ValueError(resource.execution_blocked_reason)
         if not target.get('cluster_id'):
             raise RuntimeError('缺少 K8s 集群')
         cluster = K8sCluster.objects.filter(pk=target.get('cluster_id')).first()
         if not cluster:
             raise RuntimeError(f"未找到 K8s 集群：{target.get('cluster_name') or target.get('cluster_id')}")
+        if task.created_by:
+            from django.contrib.auth import get_user_model
+            from rbac.k8s_access import validate_k8s_task_access
+            actor = get_user_model().objects.filter(username=task.created_by).first()
+            if actor:
+                validate_k8s_task_access(actor, task.task_type, [target], task.payload)
         if task.task_type == HostTask.TASK_K8S_RESTART_POD:
             output = _run_k8s_restart_pod(task, cluster, target)
         elif task.task_type == HostTask.TASK_K8S_POD_EXEC:

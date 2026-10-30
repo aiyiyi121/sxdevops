@@ -89,92 +89,102 @@
       </el-table>
     </div>
 
-    <el-dialog
+    <el-dialog :close-on-click-modal="false" class="workbench-edit-dialog"
       v-model="dialogVisible"
       :title="editingId ? '编辑日志数据源' : '新增日志数据源'"
       width="720px"
-      top="6vh"
+      top="5vh"
       append-to-body
       destroy-on-close
     >
-      <el-form :model="form" label-width="110px">
-        <el-form-item label="数据源名称">
-          <el-input v-model="form.name" placeholder="例如：生产 ELK" />
-        </el-form-item>
-        <el-form-item label="日志类型">
-          <el-select v-model="form.provider" style="width: 100%" @change="onProviderChange">
-            <el-option v-for="provider in providers" :key="provider.id" :label="providerLabel(provider.id)" :value="provider.id" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="描述">
-          <el-input v-model="form.description" type="textarea" :rows="2" placeholder="说明该数据源的用途，例如生产业务日志" />
-        </el-form-item>
-        <div class="switch-row">
-          <el-switch v-model="form.is_enabled" active-text="启用" inactive-text="停用" />
-          <el-switch v-model="form.is_default" active-text="设为默认" inactive-text="普通数据源" />
-        </div>
+      <el-form class="workbench-editor-form--sectioned" label-position="top" :model="form" label-width="110px">
+        <section class="workbench-editor-section">
+          <div class="workbench-editor-heading"><span class="workbench-editor-step">01</span><h3>数据源信息</h3></div>
+          <div class="workbench-editor-grid">
+            <el-form-item label="数据源名称">
+              <el-input v-model="form.name" placeholder="例如：生产 ELK" />
+            </el-form-item>
+            <el-form-item label="日志类型">
+              <el-select v-model="form.provider" style="width: 100%" @change="onProviderChange">
+                <el-option v-for="provider in providers" :key="provider.id" :label="providerLabel(provider.id)" :value="provider.id" />
+              </el-select>
+            </el-form-item>
+            <el-form-item class="workbench-editor-full" label="描述">
+              <el-input v-model="form.description" type="textarea" :rows="2" placeholder="说明该数据源的用途，例如生产业务日志" />
+            </el-form-item>
+            <div class="switch-row">
+              <el-switch v-model="form.is_enabled" active-text="启用" inactive-text="停用" />
+              <el-switch v-model="form.is_default" active-text="设为默认" inactive-text="普通数据源" />
+            </div>
+          </div>
+        </section>
 
-        <template v-if="form.provider === 'loki'">
-          <el-form-item label="Loki 地址">
-            <el-input v-model="form.config.endpoint" placeholder="http://localhost:3100" />
-          </el-form-item>
-        </template>
+        <section class="workbench-editor-section workbench-editor-section--tinted">
+          <div class="workbench-editor-heading"><span class="workbench-editor-step">02</span><h3>连接与认证</h3></div>
+          <div class="workbench-editor-grid">
+            <template v-if="form.provider === 'loki'">
+              <el-form-item label="Loki 地址">
+                <el-input v-model="form.config.endpoint" placeholder="http://localhost:3100" />
+              </el-form-item>
+            </template>
 
-        <template v-else-if="form.provider === 'elk'">
-          <el-form-item label="ES 地址">
-            <el-input v-model="form.config.endpoint" placeholder="https://es.example.com:9200" />
-          </el-form-item>
-          <el-form-item label="认证方式">
-            <el-select v-model="form.config.auth_type" style="width: 100%">
-              <el-option label="无认证" value="none" />
-              <el-option label="Basic Auth" value="basic" />
-              <el-option label="API Key" value="api_key" />
-              <el-option label="Bearer Token" value="bearer" />
-            </el-select>
-          </el-form-item>
-          <el-form-item v-if="form.config.auth_type === 'basic'" label="用户名">
-            <el-input v-model="form.config.username" placeholder="elastic" />
-          </el-form-item>
-          <el-form-item v-if="form.config.auth_type === 'basic'" label="密码">
-            <el-input v-model="form.config.password" show-password :placeholder="secretPlaceholder('password')" />
-          </el-form-item>
-          <el-form-item v-if="form.config.auth_type === 'api_key'" label="API Key">
-            <el-input v-model="form.config.api_key" show-password :placeholder="secretPlaceholder('api_key')" />
-          </el-form-item>
-          <el-form-item v-if="form.config.auth_type === 'bearer'" label="Bearer Token">
-            <el-input v-model="form.config.bearer_token" show-password :placeholder="secretPlaceholder('bearer_token')" />
-          </el-form-item>
-          <el-form-item label="索引模式">
-            <el-input v-model="form.config.index_pattern" placeholder="logs-*" />
-          </el-form-item>
-          <el-form-item label="时间字段">
-            <el-input v-model="form.config.time_field" placeholder="@timestamp" />
-          </el-form-item>
-          <el-form-item label="消息字段">
-            <el-input v-model="form.config.message_fields" placeholder="message,log,msg" />
-          </el-form-item>
-        </template>
+            <template v-else-if="form.provider === 'elk'">
+              <el-form-item label="ES 地址">
+                <el-input v-model="form.config.endpoint" placeholder="https://es.example.com:9200" />
+              </el-form-item>
+              <el-form-item label="认证方式">
+                <el-select v-model="form.config.auth_type" style="width: 100%">
+                  <el-option label="无认证" value="none" />
+                  <el-option label="Basic Auth" value="basic" />
+                  <el-option label="API Key" value="api_key" />
+                  <el-option label="Bearer Token" value="bearer" />
+                </el-select>
+              </el-form-item>
+              <el-form-item v-if="form.config.auth_type === 'basic'" label="用户名">
+                <el-input v-model="form.config.username" placeholder="elastic" />
+              </el-form-item>
+              <el-form-item v-if="form.config.auth_type === 'basic'" label="密码">
+                <el-input v-model="form.config.password" show-password :placeholder="secretPlaceholder('password')" />
+              </el-form-item>
+              <el-form-item v-if="form.config.auth_type === 'api_key'" label="API Key">
+                <el-input v-model="form.config.api_key" show-password :placeholder="secretPlaceholder('api_key')" />
+              </el-form-item>
+              <el-form-item v-if="form.config.auth_type === 'bearer'" label="Bearer Token">
+                <el-input v-model="form.config.bearer_token" show-password :placeholder="secretPlaceholder('bearer_token')" />
+              </el-form-item>
+              <el-form-item label="索引模式">
+                <el-input v-model="form.config.index_pattern" placeholder="logs-*" />
+              </el-form-item>
+              <el-form-item label="时间字段">
+                <el-input v-model="form.config.time_field" placeholder="@timestamp" />
+              </el-form-item>
+              <el-form-item label="消息字段">
+                <el-input v-model="form.config.message_fields" placeholder="message,log,msg" />
+              </el-form-item>
+            </template>
 
-        <template v-else-if="form.provider === 'sls'">
-          <el-form-item label="SLS Endpoint">
-            <el-input v-model="form.config.endpoint" placeholder="cn-hangzhou.log.aliyuncs.com" />
-          </el-form-item>
-          <el-form-item label="Project">
-            <el-input v-model="form.config.project" placeholder="project-name" />
-          </el-form-item>
-          <el-form-item label="Logstore">
-            <el-input v-model="form.config.logstore" placeholder="app-logstore" />
-          </el-form-item>
-          <el-form-item label="Topic">
-            <el-input v-model="form.config.topic" placeholder="可选" />
-          </el-form-item>
-          <el-form-item label="AccessKey ID">
-            <el-input v-model="form.config.access_key_id" :placeholder="secretPlaceholder('access_key_id')" />
-          </el-form-item>
-          <el-form-item label="AccessKey Secret">
-            <el-input v-model="form.config.access_key_secret" show-password :placeholder="secretPlaceholder('access_key_secret')" />
-          </el-form-item>
-        </template>
+            <template v-else-if="form.provider === 'sls'">
+              <el-form-item label="SLS Endpoint">
+                <el-input v-model="form.config.endpoint" placeholder="cn-hangzhou.log.aliyuncs.com" />
+              </el-form-item>
+              <el-form-item label="Project">
+                <el-input v-model="form.config.project" placeholder="project-name" />
+              </el-form-item>
+              <el-form-item label="Logstore">
+                <el-input v-model="form.config.logstore" placeholder="app-logstore" />
+              </el-form-item>
+              <el-form-item label="Topic">
+                <el-input v-model="form.config.topic" placeholder="可选" />
+              </el-form-item>
+              <el-form-item label="AccessKey ID">
+                <el-input v-model="form.config.access_key_id" :placeholder="secretPlaceholder('access_key_id')" />
+              </el-form-item>
+              <el-form-item label="AccessKey Secret">
+                <el-input v-model="form.config.access_key_secret" show-password :placeholder="secretPlaceholder('access_key_secret')" />
+              </el-form-item>
+            </template>
+          </div>
+        </section>
       </el-form>
 
       <template #footer>

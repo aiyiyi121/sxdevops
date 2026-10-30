@@ -44,6 +44,28 @@ class TransactionTicketApiTests(TestCase):
         self.assertEqual(ticket.status, TransactionTicket.STATUS_PENDING)
         self.assertEqual(ticket.approval_flow_id, self.flow.id)
 
+    def test_create_vulnerability_ticket_uses_vulnerability_type(self):
+        response = self.client.post(
+            '/api/transaction-tickets/',
+            {
+                'title': 'OpenSSH 漏洞处理',
+                'ticket_type': TransactionTicket.TYPE_VULNERABILITY,
+                'priority': 'high',
+                'business_line': '电商业务',
+                'environment': 'prod',
+                'approval_flow': self.flow.id,
+                'owner': '安全运营',
+                'window': '2026-09-03 前完成',
+                'description': '完成补丁修复并由安全负责人复测确认。',
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        ticket = TransactionTicket.objects.get()
+        self.assertEqual(ticket.ticket_type, TransactionTicket.TYPE_VULNERABILITY)
+        self.assertEqual(ticket.get_ticket_type_display(), '漏洞处理')
+
     def test_transaction_ticket_workflow_actions_persist_status(self):
         ticket = TransactionTicket.objects.create(
             title='预发核心链路巡检',

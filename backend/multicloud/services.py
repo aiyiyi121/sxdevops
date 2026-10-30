@@ -1,6 +1,7 @@
 from collections import Counter, defaultdict
 from datetime import timedelta
 from decimal import Decimal
+import re
 
 from django.utils import timezone
 
@@ -22,35 +23,49 @@ PROVIDER_CATALOG = {
         'label': '腾讯云',
         'regions': ['ap-guangzhou', 'ap-shanghai'],
         'default_region': 'ap-guangzhou',
-        'resource_types': ['ecs', 'rds', 'slb', 'k8s', 'redis', 'security_group'],
+        'resource_types': ['ecs', 'rds', 'slb', 'k8s', 'redis'],
         'description': '适合测试、灰度和高并发业务。',
     },
     'huawei': {
         'label': '华为云',
         'regions': ['cn-north-4', 'cn-east-3'],
         'default_region': 'cn-north-4',
-        'resource_types': ['ecs', 'rds', 'k8s', 'nat', 'eip', 'security_group'],
+        'resource_types': ['ecs', 'rds', 'k8s', 'nat', 'eip'],
         'description': '适合政企、容灾和混合云场景。',
     },
     'baidu': {
         'label': '百度智能云',
         'regions': ['bj', 'gz'],
         'default_region': 'bj',
-        'resource_types': ['ecs', 'rds', 'slb', 'k8s', 'security_group'],
+        'resource_types': ['ecs', 'rds', 'slb', 'k8s'],
         'description': '适合 AI 与搜索类业务。',
     },
     'aws': {
         'label': 'AWS',
         'regions': ['ap-southeast-1', 'eu-central-1'],
         'default_region': 'ap-southeast-1',
-        'resource_types': ['ecs', 'rds', 'slb', 'k8s', 'redis', 'oss', 'nat', 'eip', 'security_group'],
+        'resource_types': ['ecs', 'rds', 'slb', 'k8s', 'redis', 'oss', 'nat', 'eip'],
         'description': '适合出海与全球化业务。',
+    },
+    'vsphere': {
+        'label': 'VMware vSphere / ESXi',
+        'regions': ['private-cloud'],
+        'default_region': 'private-cloud',
+        'resource_types': ['ecs'],
+        'description': '适合机房私有云资源接入，当前优先支持 VMware ESXi / vCenter 8.0.2 VM 资产同步。',
     },
 }
 
+DEMO_MODE_DISABLED_MESSAGE = 'Demo 模式已下线，请配置真实账号凭据。'
+
+
+def _is_demo_credential(credential):
+    return bool(getattr(credential, 'demo_mode', False)) or str(getattr(credential, 'auth_mode', '') or '').strip().lower() == 'demo'
+
+
 CMDB_TYPE_MAP = {
     'ecs': '云主机',
-    'rds': '云数据库',
+    'rds': 'MySQL',
     'slb': '负载均衡',
     'k8s': 'K8s 集群',
     'redis': 'Redis',
@@ -62,7 +77,7 @@ CMDB_TYPE_MAP = {
 
 CMDB_TYPE_MAP = {
     'ecs': '云主机(ECS)',
-    'rds': '云数据库',
+    'rds': 'MySQL',
     'slb': '负载均衡',
     'k8s': 'K8s 集群',
     'redis': 'Redis',
@@ -70,6 +85,26 @@ CMDB_TYPE_MAP = {
     'nat': 'NAT 网关',
     'eip': '弹性 IP',
     'security_group': '安全组',
+}
+
+CMDB_TYPE_CODE_MAP = {
+    'ecs': 'CLOUD_SERVER',
+    'rds': 'MYSQL',
+    'slb': 'LOAD_BALANCER',
+    'k8s': 'K8S_CLUSTER',
+    'redis': 'REDIS',
+    'oss': 'OBJECT_STORAGE',
+    'nat': 'NAT_GATEWAY',
+    'eip': 'ELASTIC_IP',
+    'security_group': 'SECURITY_GROUP',
+}
+
+VSPHERE_VM_CMDB_TYPE = {
+    'name': '虚拟机',
+    'code': 'VIRTUAL_MACHINE',
+    'icon': 'Platform',
+    'color': '#0ea5e9',
+    'description': '私有云或虚拟化平台中的虚拟机实例，当前支持 vSphere / ESXi 自动注册。',
 }
 
 BASE_COST = {
@@ -112,16 +147,75 @@ def resource_type_label(resource_type):
     return dict(CloudAsset.RESOURCE_TYPE_CHOICES).get(resource_type, resource_type)
 
 
+def _cmdb_type_meta_for_asset(asset):
+    provider = (asset.provider or '').lower()
+    resource_type = (asset.resource_type or '').lower()
+    if provider == 'vsphere' and resource_type in {'ecs', 'vm', 'virtual_machine'}:
+        return VSPHERE_VM_CMDB_TYPE
+    return {
+        'name': CMDB_TYPE_MAP.get(resource_type, '云主机(ECS)'),
+        'code': CMDB_TYPE_CODE_MAP.get(resource_type, ''),
+        'icon': '',
+        'color': '#3b82f6',
+        'description': '由多云模块自动创建',
+    }
+
+
+def _get_or_create_cmdb_type(meta):
+    code = meta.get('code') or ''
+    name = meta.get('name') or '云主机(ECS)'
+    ci_type = CIType.objects.filter(code=code).first() if code else None
+    if not ci_type:
+        ci_type, _ = CIType.objects.get_or_create(
+            name=name,
+            defaults={
+                'code': code,
+                'icon': meta.get('icon', ''),
+                'color': meta.get('color', '#3b82f6'),
+                'description': meta.get('description', '由多云模块自动创建'),
+            },
+        )
+    update_fields = []
+    if code and not ci_type.code:
+        ci_type.code = code
+        update_fields.append('code')
+    if meta.get('icon') and not ci_type.icon:
+        ci_type.icon = meta['icon']
+        update_fields.append('icon')
+    if update_fields:
+        ci_type.save(update_fields=[*update_fields, 'updated_at'])
+    return ci_type
+
+
+def _find_existing_cmdb_item_for_asset(asset, ci_type):
+    source_filter = {
+        'attributes__cmdb_source': 'multicloud',
+        'attributes__provider': asset.provider,
+        'attributes__resource_id': asset.resource_id,
+    }
+    matches = ConfigItem.objects.filter(**source_filter).order_by('id')
+    ci = matches.filter(ci_type=ci_type).first() or matches.first()
+    if ci:
+        matches.exclude(id=ci.id).delete()
+        return ci
+    return ConfigItem.objects.filter(
+        name=asset.name,
+        attributes__cmdb_source='multicloud',
+        attributes__provider=asset.provider,
+        attributes__account_id=asset.environment.credential.account_id,
+    ).order_by('id').first()
+
+
 def test_credential_connection(credential):
     region = credential.default_region or PROVIDER_CATALOG.get(credential.provider, {}).get('default_region', '')
-    if credential.demo_mode:
+    if _is_demo_credential(credential):
         result = {
-            'success': True,
-            'status': 'healthy',
-            'message': f'Demo mode connection verified, region {region or "-"}',
+            'success': False,
+            'status': 'error',
+            'message': DEMO_MODE_DISABLED_MESSAGE,
             'region': region,
-            'demo_mode': True,
-            'sdk_mode': 'demo',
+            'demo_mode': bool(getattr(credential, 'demo_mode', False)),
+            'sdk_mode': 'disabled',
         }
     elif not credential.is_enabled:
         result = {
@@ -222,6 +316,42 @@ def _inventory(environment):
     factor = _factor(environment)
     region = environment.region or environment.credential.default_region or PROVIDER_CATALOG.get(provider, {}).get('default_region', '')
     zone = environment.zone or _zone(region)
+    if provider == 'vsphere':
+        prefix = environment.code
+        return [
+            _asset(
+                f'{prefix}-vm-01',
+                'ecs',
+                environment,
+                region,
+                zone,
+                private_ip='10.60.11.10',
+                charge_type='私有云',
+                spec='VMware VM / 4C8G',
+                cpu=4,
+                memory_gb=Decimal('8.0'),
+                disk_gb=Decimal('120.0'),
+                monthly_cost=Decimal('0.00'),
+                tags={'role': 'vm', 'platform': 'vsphere'},
+                metadata={'hypervisor': 'VMware ESXi', 'supported_version': '8.0.2', 'avg_cpu': 36, 'avg_memory': 52},
+            ),
+            _asset(
+                f'{prefix}-vm-02',
+                'ecs',
+                environment,
+                region,
+                zone,
+                private_ip='10.60.11.11',
+                charge_type='私有云',
+                spec='VMware VM / 2C4G',
+                cpu=2,
+                memory_gb=Decimal('4.0'),
+                disk_gb=Decimal('80.0'),
+                monthly_cost=Decimal('0.00'),
+                tags={'role': 'vm', 'platform': 'vsphere'},
+                metadata={'hypervisor': 'VMware ESXi', 'supported_version': '8.0.2', 'avg_cpu': 18, 'avg_memory': 41},
+            ),
+        ]
     ip_prefix = {
         'prod': '10.10',
         'test': '10.20',
@@ -229,11 +359,11 @@ def _inventory(environment):
         'shared': '10.40',
     }.get(environment.environment_type, '10.50')
     public_prefix = {
-        'aliyun': '198.18',
-        'tencent': '198.19',
-        'huawei': '198.18',
-        'baidu': '198.19',
-        'aws': '198.18',
+        'aliyun': '47.96',
+        'tencent': '119.29',
+        'huawei': '124.70',
+        'baidu': '180.76',
+        'aws': '54.251',
     }.get(provider, '198.18')
     prefix = environment.code
     rows = [
@@ -376,22 +506,6 @@ def _inventory(environment):
                 tags={'role': 'public-network'},
             )
         )
-    if provider in {'tencent', 'baidu', 'aws', 'huawei'}:
-        rows.append(
-            _asset(
-                f'{prefix}-web-sg',
-                'security_group',
-                environment,
-                region,
-                zone,
-                charge_type='免费',
-                spec='Web Ingress',
-                risk_level='warning' if environment.environment_type == 'prod' else 'normal',
-                sync_state='drift' if environment.environment_type == 'prod' else 'synced',
-                tags={'role': 'security'},
-                metadata={'open_ports': [22, 80, 443]},
-            )
-        )
     return rows
 
 
@@ -411,8 +525,8 @@ def _summary(environment):
 
 
 def _inventory_for_environment(environment):
-    if environment.credential.demo_mode:
-        return _inventory(environment), {'sync_mode': 'demo', 'source': 'demo-template'}
+    if _is_demo_credential(environment.credential):
+        raise CloudAdapterError(DEMO_MODE_DISABLED_MESSAGE)
 
     adapter = get_cloud_adapter(environment.credential)
     if not adapter:
@@ -502,6 +616,8 @@ def sync_environment_inventory(environment, operator='', task_type='full'):
 
 def sync_credential_environments(credential, operator=''):
     environments = list(credential.environments.all())
+    if not environments:
+        environments = [_ensure_default_environment(credential, operator=operator)]
     tasks = [sync_environment_inventory(environment, operator=operator, task_type='inventory') for environment in environments]
     success_count = sum(1 for task in tasks if task.status == 'success')
     return {
@@ -515,6 +631,50 @@ def sync_credential_environments(credential, operator=''):
         ),
         'tasks': [task.id for task in tasks],
     }
+
+
+def _slug(value):
+    text = re.sub(r'[^a-zA-Z0-9-]+', '-', str(value or '').strip().lower()).strip('-')
+    return text or 'default'
+
+
+def _unique_environment_code(base):
+    base = _slug(base)[:50]
+    code = base
+    index = 1
+    while CloudEnvironment.objects.filter(code=code).exists():
+        suffix = f'-{index}'
+        code = f'{base[:64 - len(suffix)]}{suffix}'
+        index += 1
+    return code
+
+
+def _ensure_default_environment(credential, operator=''):
+    provider_meta = PROVIDER_CATALOG.get(credential.provider, {})
+    region = (
+        credential.default_region
+        or (credential.account_id if credential.provider == 'vsphere' else '')
+        or provider_meta.get('default_region')
+        or 'default'
+    )
+    name = f'{credential.name}-默认环境'
+    code = _unique_environment_code(f'{credential.provider}-{credential.id or credential.name}-default')
+    return CloudEnvironment.objects.create(
+        credential=credential,
+        name=name,
+        code=code,
+        business_line=(credential.tags or {}).get('business_line', ''),
+        environment_type='prod',
+        region=region,
+        zone='',
+        vpc_name='private-cloud' if credential.provider == 'vsphere' else '',
+        network_cidr='',
+        owner=credential.owner,
+        description='账号接入后自动创建的默认同步环境',
+        tags={'auto_created': True, 'created_by': operator or 'system'},
+        created_by=operator or 'system',
+        updated_by=operator or 'system',
+    )
 
 
 def build_recommendations(limit=8):
@@ -835,10 +995,7 @@ def execute_batch_action(scope, action, ids=None, operator='', payload=None):
                 credential.save(update_fields=['is_enabled', 'updated_by', 'updated_at'])
                 results.append({'id': credential.id, 'name': credential.name, 'status': 'success', 'detail': f'Credential {action}d'})
             elif action in {'demo_on', 'demo_off'}:
-                credential.demo_mode = action == 'demo_on'
-                credential.updated_by = operator or credential.updated_by
-                credential.save(update_fields=['demo_mode', 'updated_by', 'updated_at'])
-                results.append({'id': credential.id, 'name': credential.name, 'status': 'success', 'detail': f'Demo mode set to {credential.demo_mode}'})
+                results.append({'id': credential.id, 'name': credential.name, 'status': 'failed', 'detail': DEMO_MODE_DISABLED_MESSAGE})
             else:
                 raise ValueError(f'Unsupported credential batch action: {action}')
 
@@ -1007,66 +1164,86 @@ def build_overview():
 
 
 def sync_environment_to_cmdb(environment, operator=''):
+    now = timezone.now()
     task = CloudSyncTask.objects.create(
         credential=environment.credential,
         environment=environment,
         task_type='cmdb',
         status='running',
         operator=operator or 'system',
-        started_at=timezone.now(),
+        started_at=now,
         summary=f'Sync {environment.name} to CMDB',
     )
+    if _is_demo_credential(environment.credential):
+        task.status = 'failed'
+        task.summary = f'CMDB sync failed: {environment.name}'
+        task.result = {
+            'environment': environment.name,
+            'provider': environment.credential.provider,
+            'demo_mode': bool(getattr(environment.credential, 'demo_mode', False)),
+            'error': DEMO_MODE_DISABLED_MESSAGE,
+        }
+        task.finished_at = now
+        task.save(update_fields=['status', 'summary', 'result', 'finished_at'])
+        return task
     asset_qs = environment.assets.all()
     if not asset_qs.exists():
         sync_environment_inventory(environment, operator=operator or 'system', task_type='inventory')
         asset_qs = environment.assets.all()
 
     current_month = timezone.now().strftime('%Y-%m')
-    ci_types = {
-        name: CIType.objects.get_or_create(name=name, defaults={'description': '由多云模块自动创建', 'color': '#3b82f6'})[0]
-        for name in set(CMDB_TYPE_MAP.values())
-    }
     created_count = 0
     updated_count = 0
     for asset in asset_qs:
-        ci, created = ConfigItem.objects.update_or_create(
-            name=asset.name,
-            ci_type=ci_types[CMDB_TYPE_MAP.get(asset.resource_type, '云主机')],
-            defaults={
-                'business_line': environment.business_line,
-                'environment': environment.environment_type if environment.environment_type in {'prod', 'test', 'dev'} else 'test',
-                'admin_user': environment.owner,
-                'status': {
-                    'running': 'active',
-                    'stopped': 'idle',
-                    'degraded': 'idle',
-                    'error': 'offline',
-                }.get(asset.status, 'active'),
-                'attributes': {
-                    'provider': asset.provider,
-                    'cloud_provider': asset.provider,
-                    'account_name': environment.credential.name,
-                    'account_id': environment.credential.account_id,
-                    'resource_type': asset.resource_type,
-                    'resource_id': asset.resource_id,
-                    'region': asset.region,
-                    'zone': asset.zone,
-                    'vpc_name': asset.vpc_name,
-                    'public_ip': asset.public_ip,
-                    'private_ip': asset.private_ip,
-                    'ip_address': asset.private_ip or asset.public_ip or '',
-                    'monthly_cost': float(asset.monthly_cost or 0),
-                    'cpu': asset.cpu,
-                    'memory_gb': float(asset.memory_gb or 0),
-                    'disk_gb': float(asset.disk_gb or 0),
-                    'risk_level': asset.risk_level,
-                    'sync_state': asset.sync_state,
-                    'cloud_env_code': environment.code,
-                    'cmdb_source': 'multicloud',
-                    **(asset.metadata or {}),
-                },
+        ci_type = _get_or_create_cmdb_type(_cmdb_type_meta_for_asset(asset))
+        defaults = {
+            'business_line': environment.business_line,
+            'environment': environment.environment_type if environment.environment_type in {'prod', 'test', 'dev'} else 'test',
+            'admin_user': environment.owner,
+            'status': {
+                'running': 'active',
+                'stopped': 'idle',
+                'degraded': 'idle',
+                'error': 'offline',
+            }.get(asset.status, 'active'),
+            'attributes': {
+                'provider': asset.provider,
+                'cloud_provider': asset.provider,
+                'account_name': environment.credential.name,
+                'account_id': environment.credential.account_id,
+                'resource_type': asset.resource_type,
+                'resource_id': asset.resource_id,
+                'region': asset.region,
+                'zone': asset.zone,
+                'vpc_name': asset.vpc_name,
+                'public_ip': asset.public_ip,
+                'private_ip': asset.private_ip,
+                'ip_address': asset.private_ip or asset.public_ip or '',
+                'monthly_cost': float(asset.monthly_cost or 0),
+                'cpu': asset.cpu,
+                'memory_gb': float(asset.memory_gb or 0),
+                'disk_gb': float(asset.disk_gb or 0),
+                'risk_level': asset.risk_level,
+                'sync_state': asset.sync_state,
+                'cloud_env_code': environment.code,
+                'cmdb_source': 'multicloud',
+                **(asset.metadata or {}),
             },
-        )
+        }
+        ci = _find_existing_cmdb_item_for_asset(asset, ci_type)
+        if ci:
+            created = False
+            ci.name = asset.name
+            ci.ci_type = ci_type
+            for field, value in defaults.items():
+                setattr(ci, field, value)
+            ci.save()
+        else:
+            ci, created = ConfigItem.objects.update_or_create(
+                name=asset.name,
+                ci_type=ci_type,
+                defaults=defaults,
+            )
         created_count += int(created)
         updated_count += int(not created)
         CostRecord.objects.update_or_create(

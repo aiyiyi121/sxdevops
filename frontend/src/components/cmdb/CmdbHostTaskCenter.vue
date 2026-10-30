@@ -419,7 +419,7 @@
         </div>
       </div>
     </template>
-    <el-dialog v-model="templateCreateVisible" :title="templateDialogTitle" width="980px" destroy-on-close append-to-body align-center>
+    <el-dialog top="5vh" :close-on-click-modal="false" class="workbench-edit-dialog" v-model="templateCreateVisible" :title="templateDialogTitle" width="980px" destroy-on-close append-to-body>
       <div class="template-editor-topbar">
         <div class="section-tip">{{ ui.templateEditorTip }}</div>
       </div>
@@ -439,7 +439,7 @@
       </div>
       <div class="template-editor-layout">
         <div class="template-editor-panel template-editor-main">
-          <el-form :model="templateDraft" label-width="92px" class="task-form">
+          <el-form label-position="top" :model="templateDraft" label-width="92px" class="task-form">
             <div class="template-editor-section">
               <div class="template-editor-section-title">{{ ui.editorBasicInfo }}</div>
               <div class="form-row">
@@ -3088,6 +3088,11 @@ watch(() => route.query.taskId, async (value, previousValue) => {
 
 .history-card {
   min-width: 0;
+}
+
+.task-center-page > .history-card,
+.task-center-page > .template-list-card {
+  flex-grow: 1;
 }
 
 .history-head {

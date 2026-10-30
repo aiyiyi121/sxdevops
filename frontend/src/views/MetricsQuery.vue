@@ -18,7 +18,7 @@
 
     <ObservabilityRouteTabs v-if="activeTab === 'datasources'" group="datasources" />
 
-    <section v-if="activeTab === 'query'" class="metric-query-workbench">
+    <section v-if="activeTab === 'query'" class="metric-query-workbench workbench-fill-panel">
       <div class="query-console">
         <section class="panel metric-query-unified-card metric-query-left-card">
       <div class="metric-query-unified-head">
@@ -214,7 +214,7 @@
         </aside>
       </div>
 
-      <section class="panel metric-result-card">
+      <section class="panel metric-result-card workbench-fill-panel">
         <div class="metric-result-head">
           <div class="metric-result-title-block">
             <span class="metric-result-title">Graph</span>
@@ -327,40 +327,50 @@
       </el-table>
     </section>
 
-    <el-dialog v-model="dialog.visible" :title="dialog.editingId ? '编辑指标数据源' : '新增指标数据源'" width="720px" append-to-body destroy-on-close>
-      <el-form ref="sourceFormRef" :model="sourceForm" :rules="sourceRules" label-width="124px">
-        <el-form-item label="名称" prop="name">
-          <el-input v-model.trim="sourceForm.name" placeholder="例如：电商测试 Prometheus" />
-        </el-form-item>
-        <el-form-item label="查询地址" prop="query_url">
-          <el-input v-model.trim="sourceForm.query_url" placeholder="http://prometheus:9090" />
-        </el-form-item>
-        <el-form-item label="认证方式">
-          <el-select v-model="sourceForm.auth_type" style="width: 180px">
-            <el-option label="无认证" value="none" />
-            <el-option label="Basic" value="basic" />
-            <el-option label="Bearer Token" value="bearer" />
-          </el-select>
-        </el-form-item>
-        <el-form-item v-if="sourceForm.auth_type === 'basic'" label="Basic 账号">
-          <div class="inline-fields">
-            <el-input v-model.trim="sourceForm.username" placeholder="用户名" />
-            <el-input v-model="sourceForm.password" type="password" show-password placeholder="密码；已配置可留 configured" />
+    <el-dialog top="5vh" :close-on-click-modal="false" class="workbench-edit-dialog" v-model="dialog.visible" :title="dialog.editingId ? '编辑指标数据源' : '新增指标数据源'" width="720px" append-to-body destroy-on-close>
+      <el-form class="workbench-editor-form--sectioned" label-position="top" ref="sourceFormRef" :model="sourceForm" :rules="sourceRules" label-width="124px">
+        <section class="workbench-editor-section">
+          <div class="workbench-editor-heading"><span class="workbench-editor-step">01</span><h3>数据源信息</h3></div>
+          <div class="workbench-editor-grid">
+            <el-form-item label="名称" prop="name">
+              <el-input v-model.trim="sourceForm.name" placeholder="例如：电商测试 Prometheus" />
+            </el-form-item>
+            <el-form-item label="查询地址" prop="query_url">
+              <el-input v-model.trim="sourceForm.query_url" placeholder="http://prometheus:9090" />
+            </el-form-item>
           </div>
-        </el-form-item>
-        <el-form-item v-if="sourceForm.auth_type === 'bearer'" label="Bearer Token">
-          <el-input v-model="sourceForm.bearer_token" type="password" show-password placeholder="已配置可保留 configured" />
-        </el-form-item>
-        <el-form-item label="连接设置">
-          <div class="inline-fields inline-fields--small">
-            <el-checkbox v-model="sourceForm.tls_skip_verify">跳过 TLS 校验</el-checkbox>
-            <el-checkbox v-model="sourceForm.is_default">设为默认</el-checkbox>
-            <el-switch v-model="sourceForm.is_enabled" inline-prompt active-text="启用" inactive-text="停用" />
+        </section>
+        <section class="workbench-editor-section workbench-editor-section--tinted">
+          <div class="workbench-editor-heading"><span class="workbench-editor-step">02</span><h3>认证与连接设置</h3></div>
+          <div>
+            <el-form-item label="认证方式">
+              <el-select v-model="sourceForm.auth_type" style="width: 180px">
+                <el-option label="无认证" value="none" />
+                <el-option label="Basic" value="basic" />
+                <el-option label="Bearer Token" value="bearer" />
+              </el-select>
+            </el-form-item>
+            <el-form-item v-if="sourceForm.auth_type === 'basic'" label="Basic 账号">
+              <div class="inline-fields">
+                <el-input v-model.trim="sourceForm.username" placeholder="用户名" />
+                <el-input v-model="sourceForm.password" type="password" show-password placeholder="密码；已配置可留 configured" />
+              </div>
+            </el-form-item>
+            <el-form-item v-if="sourceForm.auth_type === 'bearer'" label="Bearer Token">
+              <el-input v-model="sourceForm.bearer_token" type="password" show-password placeholder="已配置可保留 configured" />
+            </el-form-item>
+            <el-form-item label="连接设置">
+              <div class="inline-fields inline-fields--small">
+                <el-checkbox v-model="sourceForm.tls_skip_verify">跳过 TLS 校验</el-checkbox>
+                <el-checkbox v-model="sourceForm.is_default">设为默认</el-checkbox>
+                <el-switch v-model="sourceForm.is_enabled" inline-prompt active-text="启用" inactive-text="停用" />
+              </div>
+            </el-form-item>
+            <el-form-item class="workbench-editor-full" label="描述">
+              <el-input v-model.trim="sourceForm.description" maxlength="255" show-word-limit />
+            </el-form-item>
           </div>
-        </el-form-item>
-        <el-form-item label="描述">
-          <el-input v-model.trim="sourceForm.description" maxlength="255" show-word-limit />
-        </el-form-item>
+        </section>
       </el-form>
       <template #footer>
         <el-button @click="dialog.visible = false">取消</el-button>

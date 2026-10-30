@@ -478,6 +478,16 @@ def normalize_alert_payload(provider, payload, integration=None):
     for alert in alerts:
         alert['source_type'] = provider
         alert['labels'] = {**default_labels, **_dict(alert.get('labels'))}
+        labels = alert['labels']
+        for field, aliases in {
+            'environment': ('env', 'environment'), 'cluster': ('cluster',),
+            'namespace': ('namespace',), 'region': ('region', 'az'),
+            'business_line': ('business_line', 'team', 'busi_group'),
+        }.items():
+            if not alert.get(field):
+                alert[field] = _text(_first(*(labels.get(key) for key in aliases)))
+        if not alert.get('service'):
+            alert['service'] = _service_from_labels(labels)
         alert['fingerprint'] = _fingerprint(provider, alert)
         if not alert.get('starts_at'):
             alert['starts_at'] = timezone.now()

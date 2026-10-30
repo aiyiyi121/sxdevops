@@ -16,17 +16,30 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
 ENV PIP_INDEX_URL=${PIP_INDEX_URL}
+ARG KUBECTL_VERSION=v1.29.3
+ARG TARGETARCH
 
 WORKDIR /app
 
 COPY backend/requirements.txt /app/backend/requirements.txt
-RUN pip install --no-cache-dir -r /app/backend/requirements.txt
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH:-amd64}/kubectl" -o /usr/local/bin/kubectl \
+    && chmod +x /usr/local/bin/kubectl \
+    && kubectl version --client \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir -r /app/backend/requirements.txt
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends bash bash-completion \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY LICENSE /app/LICENSE
 COPY backend/ /app/backend/
 COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
 COPY docker/entrypoint.sh /entrypoint.sh
 
-RUN chmod +x /entrypoint.sh
+RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
 
 WORKDIR /app/backend
 

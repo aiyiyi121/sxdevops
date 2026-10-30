@@ -227,7 +227,6 @@ class QueryOrderViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     serializer_class = QueryOrderSerializer
     search_fields = ['submitter', 'sql_content']
     http_method_names = ['get', 'post', 'head', 'options']
-    demo_account_allowed_actions = {'create'}
     rbac_permissions = {
         'list': ['sqlaudit.query.view'],
         'retrieve': ['sqlaudit.query.view'],
@@ -282,7 +281,7 @@ class QueryOrderViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated, build_rbac_permission('sqlaudit.order.submit', allow_demo_write=True)])
+@permission_classes([IsAuthenticated, build_rbac_permission('sqlaudit.order.submit')])
 def sql_check_api(request):
     sql_content = request.data.get('sql_content', '')
     sql_type = request.data.get('sql_type', 'DML')

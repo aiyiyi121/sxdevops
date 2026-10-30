@@ -4,8 +4,11 @@ from . import views
 from . import loki_views
 from . import log_views
 from . import docker_views
+from . import docker_logs
 from . import k8s_views
 from . import observability_views
+from . import rum_views
+from sxdevops.features import is_system_posture_enabled
 
 router = DefaultRouter()
 router.register(r'hosts', views.HostViewSet)
@@ -33,6 +36,9 @@ router.register(r'alert-actions', views.AlertActionViewSet, basename='alert-acti
 router.register(r'logs', views.LogEntryViewSet)
 router.register(r'log/datasources', log_views.LogDataSourceViewSet, basename='log-datasource')
 router.register(r'observability/datasource-links', observability_views.ObservabilityDataSourceLinkViewSet, basename='observability-datasource-link')
+if is_system_posture_enabled():
+    router.register(r'observability/system-posture/environments', observability_views.SystemPostureEnvironmentViewSet, basename='system-posture-environment')
+    router.register(r'observability/system-posture/systems', observability_views.SystemPostureSystemViewSet, basename='system-posture-system')
 router.register(r'observability/tracing/datasources', observability_views.TracingDataSourceViewSet, basename='tracing-datasource')
 router.register(r'observability/metric/datasources', observability_views.MetricDataSourceViewSet, basename='metric-datasource')
 router.register(r'k8s/clusters', k8s_views.K8sClusterViewSet)
@@ -55,11 +61,14 @@ urlpatterns = [
     path('docker/images/', docker_views.list_images, name='docker-images'),
     path('docker/images/remove/', docker_views.remove_images, name='docker-images-remove'),
     path('docker/images/prune/', docker_views.prune_dangling_images, name='docker-images-prune'),
+    path('docker/images/<str:image_id>/inspect/', docker_views.image_inspect, name='docker-image-inspect'),
     path('docker/containers/<str:container_id>/action/', docker_views.container_action, name='docker-container-action'),
     path('docker/containers/<str:container_id>/remove/', docker_views.container_remove, name='docker-container-remove'),
     path('docker/containers/<str:container_id>/logs/', docker_views.container_logs, name='docker-container-logs'),
+    path('docker/containers/<str:container_id>/log_page/', docker_logs.container_log_page, name='docker-container-log-page'),
     path('docker/containers/<str:container_id>/inspect/', docker_views.container_inspect, name='docker-container-inspect'),
     path('observability/overview/', observability_views.observability_overview, name='observability-overview'),
+    path('observability/rum/overview/', rum_views.rum_overview, name='observability-rum-overview'),
     path('observability/grafana/config/', observability_views.grafana_setting_view, name='observability-grafana-config'),
     path('observability/metrics/query/', observability_views.metrics_promql_query, name='observability-metrics-query'),
     path('observability/metrics/series-names/', observability_views.metrics_series_names, name='observability-metrics-series-names'),
@@ -73,4 +82,10 @@ urlpatterns = [
     path('', include(router.urls)),
 ]
 
+if is_system_posture_enabled():
+    urlpatterns = [
+        path('observability/system-posture/history/', observability_views.observability_system_posture_history, name='observability-system-posture-history'),
+        path('observability/system-posture/', observability_views.observability_system_posture, name='observability-system-posture'),
+        *urlpatterns,
+    ]
 

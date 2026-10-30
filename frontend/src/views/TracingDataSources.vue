@@ -76,59 +76,69 @@
       </el-table>
     </div>
 
-    <el-dialog
+    <el-dialog :close-on-click-modal="false" class="workbench-edit-dialog"
       v-model="dialogVisible"
       :title="editingId ? '编辑链路数据源' : '新增链路数据源'"
       width="720px"
-      top="6vh"
+      top="5vh"
       append-to-body
       destroy-on-close
     >
-      <el-form :model="form" label-width="120px">
-        <el-form-item label="数据源名称">
-          <el-input v-model="form.name" placeholder="例如：生产 Tempo" />
-        </el-form-item>
-        <el-form-item label="Provider">
-          <el-select v-model="form.provider" style="width: 100%" @change="onProviderChange">
-            <el-option v-for="provider in providers" :key="provider.id" :label="provider.name" :value="provider.id" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="描述">
-          <el-input v-model="form.description" type="textarea" :rows="2" placeholder="例如：生产环境 OpenTelemetry 查询入口" />
-        </el-form-item>
-        <el-form-item label="状态">
-          <div class="switch-row switch-row--form">
-            <el-switch v-model="form.is_enabled" active-text="启用" inactive-text="停用" />
-            <el-switch v-model="form.is_default" active-text="设为默认" inactive-text="普通数据源" />
+      <el-form class="workbench-editor-form--sectioned" label-position="top" :model="form" label-width="120px">
+        <section class="workbench-editor-section">
+          <div class="workbench-editor-heading"><span class="workbench-editor-step">01</span><h3>数据源信息</h3></div>
+          <div class="workbench-editor-grid">
+            <el-form-item label="数据源名称">
+              <el-input v-model="form.name" placeholder="例如：生产 Tempo" />
+            </el-form-item>
+            <el-form-item label="Provider">
+              <el-select v-model="form.provider" style="width: 100%" @change="onProviderChange">
+                <el-option v-for="provider in providers" :key="provider.id" :label="provider.name" :value="provider.id" />
+              </el-select>
+            </el-form-item>
+            <el-form-item class="workbench-editor-full" label="描述">
+              <el-input v-model="form.description" type="textarea" :rows="2" placeholder="例如：生产环境 OpenTelemetry 查询入口" />
+            </el-form-item>
+            <el-form-item label="状态">
+              <div class="switch-row switch-row--form">
+                <el-switch v-model="form.is_enabled" active-text="启用" inactive-text="停用" />
+                <el-switch v-model="form.is_default" active-text="设为默认" inactive-text="普通数据源" />
+              </div>
+            </el-form-item>
           </div>
-        </el-form-item>
+        </section>
 
-        <template v-if="form.provider === 'skywalking'">
-          <el-form-item label="UI 地址">
-            <el-input v-model="form.config.ui_url" placeholder="http://skywalking-ui.example.com" />
-          </el-form-item>
-          <el-form-item label="OAP 地址">
-            <el-input v-model="form.config.oap_url" placeholder="http://skywalking-oap.example.com:12800" />
-          </el-form-item>
-          <el-form-item label="GraphQL Path">
-            <el-input v-model="form.config.graphql_path" placeholder="/graphql" />
-          </el-form-item>
-          <el-form-item label="默认 Layer">
-            <el-input v-model="form.config.default_layer" placeholder="可选，例如 GENERAL" />
-          </el-form-item>
-        </template>
+        <section class="workbench-editor-section workbench-editor-section--tinted">
+          <div class="workbench-editor-heading"><span class="workbench-editor-step">02</span><h3>连接与认证</h3></div>
+          <div class="workbench-editor-grid">
+            <template v-if="form.provider === 'skywalking'">
+              <el-form-item label="UI 地址">
+                <el-input v-model="form.config.ui_url" placeholder="http://skywalking-ui.example.com" />
+              </el-form-item>
+              <el-form-item label="OAP 地址">
+                <el-input v-model="form.config.oap_url" placeholder="http://skywalking-oap.example.com:12800" />
+              </el-form-item>
+              <el-form-item label="GraphQL Path">
+                <el-input v-model="form.config.graphql_path" placeholder="/graphql" />
+              </el-form-item>
+              <el-form-item label="默认 Layer">
+                <el-input v-model="form.config.default_layer" placeholder="可选，例如 GENERAL" />
+              </el-form-item>
+            </template>
 
-        <template v-else>
-          <el-form-item label="UI 地址">
-            <el-input v-model="form.config.ui_url" :placeholder="uiPlaceholder(form.provider)" />
-          </el-form-item>
-          <el-form-item label="查询地址">
-            <el-input v-model="form.config.query_url" :placeholder="queryPlaceholder(form.provider)" />
-          </el-form-item>
-          <el-form-item label="Authorization">
-            <el-input v-model="form.config.authorization" show-password :placeholder="secretPlaceholder('authorization')" />
-          </el-form-item>
-        </template>
+            <template v-else>
+              <el-form-item label="UI 地址">
+                <el-input v-model="form.config.ui_url" :placeholder="uiPlaceholder(form.provider)" />
+              </el-form-item>
+              <el-form-item label="查询地址">
+                <el-input v-model="form.config.query_url" :placeholder="queryPlaceholder(form.provider)" />
+              </el-form-item>
+              <el-form-item label="Authorization">
+                <el-input v-model="form.config.authorization" show-password :placeholder="secretPlaceholder('authorization')" />
+              </el-form-item>
+            </template>
+          </div>
+        </section>
       </el-form>
 
       <template #footer>

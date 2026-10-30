@@ -65,43 +65,58 @@
       </div>
     </div>
 
-    <el-dialog v-model="dialogVisible" :title="editingId ? '编辑数据源' : '新增数据源'" width="90%" style="max-width:560px;" top="5vh" append-to-body destroy-on-close>
-      <el-form :model="form" label-width="90px">
-        <el-form-item label="数据库类型">
-          <el-select v-model="form.db_type" style="width:100%" @change="handleTypeChange">
-            <el-option v-for="option in DATASOURCE_TYPE_OPTIONS" :key="option.value" :label="option.label" :value="option.value" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="名称">
-          <el-input v-model="form.name" placeholder="例如 prod-db-master" />
-        </el-form-item>
-        <el-form-item label="主机地址">
-          <el-input v-model="form.host" placeholder="例如 192.168.1.100" />
-        </el-form-item>
-        <el-form-item label="端口">
-          <el-input-number v-model="form.port" :min="1" :max="65535" style="width:100%" />
-        </el-form-item>
-        <el-form-item label="用户名">
-          <el-input v-model="form.user" :placeholder="form.db_type === 'mongodb' ? '例如 admin' : '例如 root'" />
-        </el-form-item>
-        <el-form-item label="密码">
-          <el-input v-model="form.password" type="password" show-password
+    <el-dialog :close-on-click-modal="false" class="workbench-edit-dialog" v-model="dialogVisible" :title="editingId ? '编辑数据源' : '新增数据源'" width="90%" style="max-width:560px;" top="5vh" append-to-body destroy-on-close>
+      <el-form class="workbench-editor-form--sectioned" label-position="top" :model="form" label-width="90px">
+        <section class="workbench-editor-section">
+          <div class="workbench-editor-heading"><span class="workbench-editor-step">01</span><h3>数据源信息</h3></div>
+          <div class="workbench-editor-grid">
+            <el-form-item label="数据库类型">
+              <el-select v-model="form.db_type" style="width:100%" @change="handleTypeChange">
+                <el-option v-for="option in DATASOURCE_TYPE_OPTIONS" :key="option.value" :label="option.label" :value="option.value" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="名称">
+              <el-input v-model="form.name" placeholder="例如 prod-db-master" />
+            </el-form-item>
+          </div>
+        </section>
+        <section class="workbench-editor-section workbench-editor-section--tinted">
+          <div class="workbench-editor-heading"><span class="workbench-editor-step">02</span><h3>连接与认证</h3></div>
+          <div class="workbench-editor-grid">
+            <el-form-item label="主机地址">
+              <el-input v-model="form.host" placeholder="例如 192.168.1.100" />
+            </el-form-item>
+            <el-form-item label="端口">
+              <el-input-number v-model="form.port" :min="1" :max="65535" style="width:100%" />
+            </el-form-item>
+            <el-form-item label="用户名">
+              <el-input v-model="form.user" :placeholder="form.db_type === 'mongodb' ? '例如 admin' : '例如 root'" />
+            </el-form-item>
+            <el-form-item label="密码">
+              <el-input v-model="form.password" type="password" show-password
             :placeholder="editingId ? '留空则不修改' : '请输入密码'" />
-        </el-form-item>
-        <el-form-item label="字符集">
-          <el-select v-model="form.charset" style="width:100%" :disabled="form.db_type === 'mongodb'">
-            <el-option label="utf8mb4" value="utf8mb4" />
-            <el-option label="utf8" value="utf8" />
-            <el-option label="latin1" value="latin1" />
-            <el-option label="gbk" value="gbk" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="状态">
-          <el-switch v-model="form.is_active" active-text="启用" inactive-text="停用" />
-        </el-form-item>
-        <el-form-item label="备注">
-          <el-input v-model="form.remark" type="textarea" :rows="2" />
-        </el-form-item>
+            </el-form-item>
+          </div>
+        </section>
+        <section class="workbench-editor-section workbench-editor-section--tinted">
+          <div class="workbench-editor-heading"><span class="workbench-editor-step">03</span><h3>其他设置</h3></div>
+          <div class="workbench-editor-grid">
+            <el-form-item label="字符集">
+              <el-select v-model="form.charset" style="width:100%" :disabled="form.db_type === 'mongodb'">
+                <el-option label="utf8mb4" value="utf8mb4" />
+                <el-option label="utf8" value="utf8" />
+                <el-option label="latin1" value="latin1" />
+                <el-option label="gbk" value="gbk" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="状态">
+              <el-switch v-model="form.is_active" active-text="启用" inactive-text="停用" />
+            </el-form-item>
+            <el-form-item class="workbench-editor-full" label="备注">
+              <el-input v-model="form.remark" type="textarea" :rows="2" />
+            </el-form-item>
+          </div>
+        </section>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>

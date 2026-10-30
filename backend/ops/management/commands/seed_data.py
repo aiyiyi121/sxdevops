@@ -1,4 +1,4 @@
-﻿import json
+import json
 import random
 from datetime import timedelta
 
@@ -1201,7 +1201,7 @@ class Command(BaseCommand):
         host_configs = [
             {
                 'hostname': 'order-api-ecs-01',
-                'ip_address': '10.10.1.10',
+                'ip_address': '192.0.2.1',
                 'os_type': 'Alibaba Cloud Linux 3',
                 'business_line': SYSTEM_TRADE,
                 'environment': 'prod',
@@ -1227,7 +1227,7 @@ class Command(BaseCommand):
             },
             {
                 'hostname': 'order-perf-test-ecs',
-                'ip_address': '10.10.20.10',
+                'ip_address': '192.0.2.2',
                 'os_type': 'Ubuntu 22.04',
                 'business_line': SYSTEM_TRADE,
                 'environment': 'test',
@@ -1266,7 +1266,7 @@ class Command(BaseCommand):
             },
             {
                 'hostname': 'legacy-data-sync',
-                'ip_address': '10.20.30.20',
+                'ip_address': '192.0.2.3',
                 'os_type': 'CentOS 7.9',
                 'business_line': BIZ_DATA,
                 'environment': 'prod',
@@ -1279,7 +1279,7 @@ class Command(BaseCommand):
             },
             {
                 'hostname': 'k8s-node-01',
-                'ip_address': '10.30.1.11',
+                'ip_address': '192.0.2.4',
                 'os_type': 'Ubuntu 22.04',
                 'business_line': BIZ_INFRA,
                 'environment': 'prod',
@@ -1451,10 +1451,7 @@ class Command(BaseCommand):
             f'演示数据完成: {len(hosts)} 台主机, {Deployment.objects.count()} 个发布单, {Alert.objects.count()} 条告警, {LogEntry.objects.count()} 条日志'
         )
 
-        self.stdout.write('正在生成 RBAC 演示数据...')
         seed_marketplace_demo(self.stdout, hosts)
-        call_command('seed_rbac_demo')
-        self.stdout.write('正在生成 RBAC 演示数据...')
         self.stdout.write('正在生成 CMDB 演示数据...')
         seed_cmdb_demo(self.stdout)
         call_command('seed_transaction_ticket_demo')

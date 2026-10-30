@@ -1,5 +1,5 @@
 <template>
-  <div class="event-source-page fade-in">
+  <div class="event-source-page fade-in workbench-page-shell">
     <section class="hero panel">
       <div class="hero-copy">
         <div class="hero-title-row">
@@ -20,7 +20,7 @@
 
     <EventWallTabs />
 
-    <section class="source-board">
+    <section class="source-board workbench-fill-panel">
       <div class="panel source-map-panel" v-loading="loading">
         <div class="section-head">
           <h3>平台内置事件源</h3>
@@ -208,33 +208,43 @@ Content-Type: application/json</pre>
       </div>
     </el-dialog>
 
-    <el-dialog v-model="sourceDialogVisible" title="新建自定义 Webhook 接入" width="620px" append-to-body destroy-on-close>
+    <el-dialog top="5vh" :close-on-click-modal="false" class="workbench-edit-dialog" v-model="sourceDialogVisible" title="新建自定义 Webhook 接入" width="620px" append-to-body destroy-on-close>
       <div class="access-create-tip">
         <strong>接入流程</strong>
         <span>先选择默认事件分类并创建来源，平台会立即生成接收地址和令牌；外部系统只负责 POST 事务事件。</span>
       </div>
-      <el-form label-position="top" :model="sourceForm" class="access-create-form">
-        <el-form-item label="接入名称">
-          <el-input v-model="sourceForm.name" placeholder="例如：内部发布平台" />
-        </el-form-item>
-        <el-form-item label="接入类型（用于生成 Webhook 地址，创建后不建议修改）">
-          <el-input v-model="sourceForm.code" placeholder="例如：internal-release" />
-        </el-form-item>
-        <el-form-item label="默认事件分类">
-          <el-select v-model="sourceForm.event_category" placeholder="请选择接入事件分类" style="width: 100%">
-            <el-option v-for="item in eventCategoryOptions" :key="item.key" :label="item.label" :value="item.key" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="来源系统地址（可选，仅用于备注来源，不是平台接收地址）">
-          <el-input v-model="sourceForm.endpoint_url" placeholder="例如：https://release.example.com" />
-        </el-form-item>
-        <el-form-item label="说明">
-          <el-input v-model="sourceForm.description" type="textarea" :rows="3" placeholder="说明这个接入会推送哪些事务事件" />
-        </el-form-item>
-        <div class="access-endpoint-preview">
-          <span>创建后的平台接收地址</span>
-          <strong>{{ endpointPreview }}</strong>
-        </div>
+      <el-form label-position="top" :model="sourceForm" class="workbench-editor-form--sectioned access-create-form">
+        <section class="workbench-editor-section">
+          <div class="workbench-editor-heading"><span class="workbench-editor-step">01</span><h3>接入信息</h3></div>
+          <div>
+            <el-form-item label="接入名称">
+              <el-input v-model="sourceForm.name" placeholder="例如：内部发布平台" />
+            </el-form-item>
+            <el-form-item label="接入类型（用于生成 Webhook 地址，创建后不建议修改）">
+              <el-input v-model="sourceForm.code" placeholder="例如：internal-release" />
+            </el-form-item>
+            <el-form-item label="默认事件分类">
+              <el-select v-model="sourceForm.event_category" placeholder="请选择接入事件分类" style="width: 100%">
+                <el-option v-for="item in eventCategoryOptions" :key="item.key" :label="item.label" :value="item.key" />
+              </el-select>
+            </el-form-item>
+          </div>
+        </section>
+        <section class="workbench-editor-section workbench-editor-section--tinted">
+          <div class="workbench-editor-heading"><span class="workbench-editor-step">02</span><h3>来源与说明</h3></div>
+          <div>
+            <el-form-item class="workbench-editor-full" label="来源系统地址（可选，仅用于备注来源，不是平台接收地址）">
+              <el-input v-model="sourceForm.endpoint_url" placeholder="例如：https://release.example.com" />
+            </el-form-item>
+            <el-form-item class="workbench-editor-full" label="说明">
+              <el-input v-model="sourceForm.description" type="textarea" :rows="3" placeholder="说明这个接入会推送哪些事务事件" />
+            </el-form-item>
+            <div class="access-endpoint-preview">
+              <span>创建后的平台接收地址</span>
+              <strong>{{ endpointPreview }}</strong>
+            </div>
+          </div>
+        </section>
       </el-form>
       <template #footer>
         <el-button @click="sourceDialogVisible = false">取消</el-button>
@@ -304,35 +314,45 @@ Content-Type: application/json</pre>
       </div>
     </el-drawer>
 
-    <el-dialog v-model="editDialogVisible" title="编辑事件源接入" width="620px" append-to-body destroy-on-close>
-      <el-form label-position="top" :model="sourceEditForm" class="access-edit-form">
-        <el-form-item label="接入类型">
-          <el-input v-model="sourceEditForm.code" placeholder="例如：jenkins-prod" />
-        </el-form-item>
-        <el-form-item label="Webhook 接收地址">
-          <el-input :model-value="editEndpointPreview" readonly>
-            <template #append>
-              <el-button @click="copyText(editEndpointPreview, '接入地址已复制')">复制</el-button>
-            </template>
-          </el-input>
-        </el-form-item>
-        <el-form-item label="接入名称">
-          <el-input v-model="sourceEditForm.name" />
-        </el-form-item>
-        <el-form-item label="默认事件分类">
-          <el-select v-model="sourceEditForm.event_category" style="width: 100%">
-            <el-option v-for="item in eventCategoryOptions" :key="item.key" :label="item.label" :value="item.key" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="来源系统地址（可选，仅备注）">
-          <el-input v-model="sourceEditForm.endpoint_url" placeholder="例如：https://release.example.com" />
-        </el-form-item>
-        <el-form-item label="说明">
-          <el-input v-model="sourceEditForm.description" type="textarea" :rows="3" />
-        </el-form-item>
-        <el-form-item label="启用状态">
-          <el-switch v-model="sourceEditForm.enabled" active-text="启用" inactive-text="停用" />
-        </el-form-item>
+    <el-dialog top="5vh" :close-on-click-modal="false" class="workbench-edit-dialog" v-model="editDialogVisible" title="编辑事件源接入" width="620px" append-to-body destroy-on-close>
+      <el-form label-position="top" :model="sourceEditForm" class="workbench-editor-form--sectioned access-edit-form">
+        <section class="workbench-editor-section">
+          <div class="workbench-editor-heading"><span class="workbench-editor-step">01</span><h3>接入地址</h3></div>
+          <div>
+            <el-form-item label="接入类型">
+              <el-input v-model="sourceEditForm.code" placeholder="例如：jenkins-prod" />
+            </el-form-item>
+            <el-form-item label="Webhook 接收地址">
+              <el-input :model-value="editEndpointPreview" readonly>
+                <template #append>
+                  <el-button @click="copyText(editEndpointPreview, '接入地址已复制')">复制</el-button>
+                </template>
+              </el-input>
+            </el-form-item>
+          </div>
+        </section>
+        <section class="workbench-editor-section workbench-editor-section--tinted">
+          <div class="workbench-editor-heading"><span class="workbench-editor-step">02</span><h3>接入信息与状态</h3></div>
+          <div>
+            <el-form-item label="接入名称">
+              <el-input v-model="sourceEditForm.name" />
+            </el-form-item>
+            <el-form-item label="默认事件分类">
+              <el-select v-model="sourceEditForm.event_category" style="width: 100%">
+                <el-option v-for="item in eventCategoryOptions" :key="item.key" :label="item.label" :value="item.key" />
+              </el-select>
+            </el-form-item>
+            <el-form-item class="workbench-editor-full" label="来源系统地址（可选，仅备注）">
+              <el-input v-model="sourceEditForm.endpoint_url" placeholder="例如：https://release.example.com" />
+            </el-form-item>
+            <el-form-item class="workbench-editor-full" label="说明">
+              <el-input v-model="sourceEditForm.description" type="textarea" :rows="3" />
+            </el-form-item>
+            <el-form-item label="启用状态">
+              <el-switch v-model="sourceEditForm.enabled" active-text="启用" inactive-text="停用" />
+            </el-form-item>
+          </div>
+        </section>
       </el-form>
       <template #footer>
         <el-button @click="editDialogVisible = false">取消</el-button>
@@ -804,6 +824,10 @@ onMounted(loadAll)
 
 .source-map-panel {
   padding: 14px;
+}
+
+.source-map-panel:last-child {
+  flex-grow: 1;
 }
 
 .source-filter-bar {

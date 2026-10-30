@@ -1,12 +1,15 @@
 import json
 import importlib
+import uuid
 from datetime import timedelta
 from decimal import Decimal
+from io import StringIO
 from unittest import mock
 
 import requests
 import yaml
 from django.contrib.auth import get_user_model
+from django.core.management import call_command
 from django.core.cache import cache
 from django.test import TestCase, override_settings
 from django.urls import NoReverseMatch, clear_url_caches, reverse
@@ -14,15 +17,16 @@ from django.utils import timezone
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
-from cmdb.models import CIType, ConfigItem
+from cmdb.models import CIChangeLog, CIField, CIRelation, CIResourceAuthorization, CIType, ConfigItem, CostRecord, ResourceNode
 from eventwall.models import EventRecord, EventSource
 from marketplace.models import ServiceDeployment, ServiceTemplate
-from ops.models import Alert, Deployment, DockerHost, GrafanaSetting, Host, HostTask, K8sCluster, LogDataSource, LogEntry, MetricDataSource, ObservabilityDataSourceLink, TaskResource, TaskResourceGroup, TracingDataSource, TransactionTicket
-from rbac.models import Role
+from ops.models import Alert, Deployment, DockerHost, GrafanaSetting, Host, HostTask, K8sCluster, LogDataSource, LogEntry, MetricDataSource, ObservabilityDataSourceLink, SystemPostureEnvironment, SystemPostureSystem, TaskResource, TaskResourceGroup, TracingDataSource, TransactionTicket
+from rbac.models import PermissionDefinition, Role
 from rbac.services import ensure_builtin_rbac
 
 from .models import (
     AIOpsChatMessage,
+    AIOpsChatJob,
     AIOpsChatSession,
     AIOpsExternalTask,
     AIOpsKnowledgeEnvironment,
@@ -63,13 +67,22 @@ from .services import (
     _skills_for_action,
     _summarize_external_tool_result,
     _build_runtime_tool_registry,
+    _enrich_cmdb_query_arguments,
+    _cmdb_grounded_query_arguments,
+    _dispatch_with_tool_runtime,
     list_platform_mcp_tools,
     recover_masked_suggested_question,
+    resume_async_chat_processing,
+    resume_interrupted_async_chats,
+    claim_async_chat_job,
+    process_async_chat_job,
     build_action_preflight_contract,
     _should_materialize_host_task,
     _run_tool_call,
     build_task_draft,
+    build_cmdb_asset_draft,
     confirm_action,
+    create_pending_action_from_draft,
     create_pending_task_action_from_draft,
     get_active_provider,
     get_agent_config,
@@ -80,9 +93,14 @@ from .services import (
     query_alerts,
     query_alert_metrics,
     query_cost_report,
+    query_dashboard_panel_data,
     query_cmdb_items,
+    query_cmdb_insights,
+    query_cmdb_quality,
+    query_cmdb_topology,
     query_hosts,
     query_knowledge_graph,
+    query_resources,
     query_task_resources,
     query_k8s_cluster_summary,
     query_k8s_resources,
@@ -90,12 +108,82 @@ from .services import (
     query_alert_root_cause,
     query_logs,
     query_recent_changes,
+    query_system_posture,
     query_traces,
     query_workorders,
 )
 
 
 User = get_user_model()
+
+
+@override_settings(SYSTEM_POSTURE_ENABLED=False)
+class AIOpsSystemPostureDisabledTests(TestCase):
+    def setUp(self):
+        ensure_builtin_rbac()
+        self.user = User.objects.create_user(username='aiops_open_user', password='Passw0rd!123')
+        self.user.rbac_roles.add(Role.objects.get(code='platform-admin'))
+        self.session = AIOpsChatSession.objects.create(user=self.user, title='open')
+        self.message = AIOpsChatMessage.objects.create(
+            session=self.session,
+            role=AIOpsChatMessage.ROLE_USER,
+            content='prod SLA 怎么样',
+        )
+
+    def test_system_posture_permission_and_mcp_tool_are_disabled(self):
+        from rbac.services import get_user_effective_permissions, user_has_permissions
+
+        self.assertNotIn('ops.observability.system_posture.view', get_user_effective_permissions(self.user))
+        self.assertFalse(user_has_permissions(self.user, ['ops.observability.system_posture.view']))
+        self.assertNotIn('sxdevops.query_system_posture', {tool['name'] for tool in list_platform_mcp_tools(self.user)})
+
+    def test_query_system_posture_returns_empty_when_feature_disabled(self):
+        SystemPostureSystem.objects.create(name='交易系统核心', environment='prod', base_status=SystemPostureSystem.STATUS_CRITICAL)
+
+        result = query_system_posture(self.session, self.message, self.user, query='prod SLA 怎么样')
+
+        self.assertEqual(result['systems'], [])
+        self.assertEqual(result['sections'], [])
+        self.assertTrue(result['summary']['disabled'])
+
+    def test_mcp_stdio_command_and_environment_are_restricted(self):
+        with self.assertRaises(ValueError):
+            _validate_mcp_stdio_command('python -c "import os"')
+        with self.assertRaises(ValueError):
+            _validate_mcp_stdio_command('npx server | sh')
+        with self.assertRaises(ValueError):
+            _validate_mcp_stdio_command('npx -y evil-mcp-package')
+        self.assertEqual(_validate_mcp_stdio_command('npx -y @n9e/n9e-mcp-server stdio')[0], 'npx')
+        env = _build_safe_mcp_stdio_env({'env': {'PATH': 'malicious', 'SW_USERNAME': 'readonly'}})
+        self.assertNotEqual(env.get('PATH'), 'malicious')
+        self.assertEqual(env.get('SW_USERNAME'), 'readonly')
+
+    def test_knowledge_graph_omits_posture_nodes_when_feature_disabled(self):
+        AIOpsKnowledgeEnvironment.objects.create(name='prod', alert_environments=['prod'], posture_environments=['prod'])
+        SystemPostureEnvironment.objects.create(key='prod', name='生产态势', is_enabled=True)
+        SystemPostureSystem.objects.create(name='交易系统核心', environment='prod', base_status=SystemPostureSystem.STATUS_CRITICAL)
+
+        graph = query_knowledge_graph(self.session, self.message, self.user, environment='prod')
+        node_kinds = {node.get('kind') for node in graph.get('graph', {}).get('nodes', [])}
+
+        self.assertNotIn('posture', node_kinds)
+
+    def test_system_posture_urls_are_not_registered_when_feature_disabled(self):
+        import ops.urls
+        import sxdevops.urls
+
+        importlib.reload(ops.urls)
+        importlib.reload(sxdevops.urls)
+        clear_url_caches()
+        try:
+            with self.assertRaises(NoReverseMatch):
+                reverse('observability-system-posture')
+            with self.assertRaises(NoReverseMatch):
+                reverse('observability-system-posture-history')
+        finally:
+            importlib.reload(ops.urls)
+            importlib.reload(sxdevops.urls)
+            clear_url_caches()
 
 
 class AIOpsApiTests(TestCase):
@@ -109,21 +197,6 @@ class AIOpsApiTests(TestCase):
         self.client.credentials(HTTP_AUTHORIZATION=f'Token {token.key}')
         Host.objects.create(hostname='prod-web-01', ip_address='10.0.0.10', environment='prod', status='online')
 
-    def test_mcp_stdio_command_and_environment_are_restricted(self):
-        with self.assertRaises(ValueError):
-            _validate_mcp_stdio_command('python -c "import os"')
-        with self.assertRaises(ValueError):
-            _validate_mcp_stdio_command('npx server | sh')
-        with self.assertRaises(ValueError):
-            _validate_mcp_stdio_command('npx -y evil-mcp-package')
-        self.assertEqual(
-            _validate_mcp_stdio_command('npx -y @n9e/n9e-mcp-server stdio')[0],
-            'npx',
-        )
-        env = _build_safe_mcp_stdio_env({'env': {'PATH': 'malicious', 'SW_USERNAME': 'readonly'}})
-        self.assertNotEqual(env.get('PATH'), 'malicious')
-        self.assertEqual(env.get('SW_USERNAME'), 'readonly')
-
     def test_generated_task_rejects_dangerous_command(self):
         draft = build_task_draft(
             self.user,
@@ -136,10 +209,549 @@ class AIOpsApiTests(TestCase):
         )
         self.assertIn('error', draft)
 
+    def test_langgraph_pilot_endpoint_runs_isolated_readonly_graph(self):
+        session_response = self.client.post('/api/aiops/sessions/', {'title': 'langgraph-pilot'}, format='json')
+        self.assertEqual(session_response.status_code, 201)
+        response = self.client.post(
+            f"/api/aiops/sessions/{session_response.data['id']}/langgraph_pilot/",
+            {'content': '分析 prod 最近告警'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['pilot']['engine'], 'langgraph')
+        self.assertTrue(response.data['pilot']['checkpointed'])
+        self.assertEqual(
+            [item['node'] for item in response.data['pilot']['trace']],
+            ['scope', 'alerts', 'finalize'],
+        )
+
+    def test_default_chat_langgraph_trace_has_route_runtime_validation_and_finalize(self):
+        session_response = self.client.post('/api/aiops/sessions/', {'title': 'langgraph-chat-trace'}, format='json')
+        self.assertEqual(session_response.status_code, 201)
+        response = self.client.post(
+            f"/api/aiops/sessions/{session_response.data['id']}/send_message/",
+            {'content': '生产环境有哪些主机？'},
+            format='json',
+        )
+        trace = response.data['assistant_message']['metadata']['langgraph_trace']
+        self.assertEqual(
+            [item['node'] for item in trace],
+            ['route', 'lane_general', 'prepare', 'policy', 'chat_runtime', 'validate', 'action_guard', 'finalize'],
+        )
+        self.assertEqual(trace[2]['status'], 'completed')
+        self.assertEqual(trace[4]['execution_mode'], 'controlled_runtime_adapter')
+        self.assertEqual(response.data['assistant_message']['metadata']['langgraph_action_decision'], 'none')
+        from .langgraph_pilot import get_langgraph_chat_checkpoint
+        checkpoint = get_langgraph_chat_checkpoint(response.data['assistant_message']['metadata']['langgraph_thread_id'])
+        self.assertEqual(checkpoint['status'], 'completed')
+        self.assertEqual(checkpoint['runtime_status'], 'completed')
+        self.assertEqual(checkpoint['result']['content'], response.data['assistant_message']['content'])
+
+        from . import langgraph_pilot
+        langgraph_pilot.close_langgraph_resources()
+        restarted_checkpoint = langgraph_pilot.get_langgraph_chat_checkpoint(
+            response.data['assistant_message']['metadata']['langgraph_thread_id']
+        )
+        self.assertEqual(restarted_checkpoint['status'], 'completed')
+        self.assertEqual(restarted_checkpoint['result']['content'], response.data['assistant_message']['content'])
+
+    @mock.patch('aiops.langgraph_pilot._run_tool_call')
+    def test_incident_graph_checkpoints_alert_evidence_and_synthesis(self, mocked_tool):
+        self.ensure_prod_knowledge_environment()
+        alert = Alert.objects.create(
+            title='生产服务告警',
+            level='warning',
+            status=Alert.STATUS_ACTIVE,
+            source='prometheus',
+            message='请求错误增多',
+            environment='prod',
+            service='order-api',
+            fingerprint='incident-graph-alert',
+        )
+
+        def tool_result(session, message, user, tool_name, arguments, registry_entry=None):
+            if tool_name == 'query_alerts':
+                output = {'summary': {'count': 1}, 'alerts': [alert], 'sections': [], 'citations': []}
+            else:
+                self.assertIn(tool_name, {'query_system_posture', 'query_events', 'query_logs', 'query_traces', 'query_alert_metrics'})
+                output = {
+                    'summary': {'count': 1},
+                    'sections': [{'title': tool_name, 'items': ['日志和指标显示请求错误增多']}],
+                    'citations': [{'title': tool_name, 'path': '/alerts'}],
+                }
+            return {'tool_output': output, 'sections': output['sections'], 'citations': output['citations']}
+
+        mocked_tool.side_effect = tool_result
+        session = AIOpsChatSession.objects.create(user=self.user, title='incident-graph')
+        response = self.client.post(
+            f'/api/aiops/sessions/{session.id}/send_message/',
+            {'content': '分析 prod 服务告警的原因'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        assistant = response.data['assistant_message']
+        self.assertEqual(assistant['metadata']['execution_mode'], 'direct_alert_root_cause_fastpath', assistant['content'])
+        trace = [item['node'] for item in assistant['metadata']['langgraph_trace']]
+        self.assertEqual(trace[4:13], [
+            'incident_scope', 'incident_alert', 'incident_k8s', 'incident_posture',
+            'incident_events', 'incident_logs', 'incident_traces', 'incident_metrics', 'incident_synthesis',
+        ])
+        self.assertNotIn('chat_runtime', trace)
+        self.assertEqual(assistant['tool_calls'], [
+            'query_alert_root_cause', 'query_alerts', 'query_system_posture', 'query_events',
+            'query_logs', 'query_traces', 'query_alert_metrics',
+        ])
+        self.assertIn('请求错误增多', assistant['content'])
+        from .langgraph_pilot import get_langgraph_chat_checkpoint
+        checkpoint = get_langgraph_chat_checkpoint(assistant['metadata']['langgraph_thread_id'])
+        self.assertEqual(checkpoint['incident_alert']['id'], alert.id)
+        self.assertIn('metrics', checkpoint['incident_evidence'])
+        self.assertEqual(mocked_tool.call_count, 6)
+
+    def test_mysql_checkpoint_select_query_uses_database_collation(self):
+        from .langgraph_pilot import _SxPyMySQLSaver
+
+        if _SxPyMySQLSaver is None:
+            self.skipTest('MySQL checkpoint dependency is not installed')
+        query = _SxPyMySQLSaver._select_sql('WHERE thread_id = %(thread_id)s')
+        self.assertIn('COLLATE utf8mb4_unicode_ci', query)
+
+    @mock.patch('aiops.langgraph_pilot._run_tool_call')
+    def test_k8s_graph_checkpoints_each_evidence_stage(self, mocked_tool):
+        self.ensure_ecommerce_knowledge_environment()
+
+        def tool_result(session, message, user, tool_name, arguments, registry_entry=None):
+            sections = [{'title': tool_name, 'items': [f'{tool_name} 已返回测试证据']}]
+            return {
+                'tool_output': {'summary': {'count': 1}, 'sections': sections, 'citations': []},
+                'sections': sections,
+                'citations': [],
+            }
+
+        mocked_tool.side_effect = tool_result
+        session = AIOpsChatSession.objects.create(user=self.user, title='k8s-graph')
+        response = self.client.post(
+            f'/api/aiops/sessions/{session.id}/send_message/',
+            {'content': '分析下电商测试环境 k8s 集群的异常工作负载'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        assistant = response.data['assistant_message']
+        self.assertEqual(assistant['metadata']['execution_mode'], 'deterministic_k8s_rca')
+        trace_nodes = [item['node'] for item in assistant['metadata']['langgraph_trace']]
+        for node in ['k8s_scope', 'k8s_resources', 'k8s_cluster', 'k8s_alerts', 'k8s_events', 'k8s_posture', 'k8s_synthesis']:
+            self.assertIn(node, trace_nodes)
+        self.assertLess(trace_nodes.index('k8s_scope'), trace_nodes.index('k8s_synthesis'))
+        self.assertLess(trace_nodes.index('k8s_resources'), trace_nodes.index('k8s_cluster'))
+        self.assertEqual(
+            assistant['tool_calls'][:4],
+            ['query_k8s_resources', 'query_k8s_cluster_summary', 'query_alerts', 'query_events'],
+        )
+        from .langgraph_pilot import get_langgraph_chat_checkpoint
+        checkpoint = get_langgraph_chat_checkpoint(assistant['metadata']['langgraph_thread_id'])
+        self.assertEqual(checkpoint['k8s_resource_type'], 'workloads')
+        self.assertEqual(set(checkpoint['k8s_evidence']), set(assistant['tool_calls']))
+
+    @mock.patch('aiops.langgraph_pilot._run_tool_call')
+    def test_change_correlation_graph_checkpoints_each_evidence_stage(self, mocked_tool):
+        self.ensure_ecommerce_knowledge_environment()
+
+        def tool_result(session, message, user, tool_name, arguments, registry_entry=None):
+            sections = [{'title': tool_name, 'items': [f'{tool_name} 已返回测试证据']}]
+            return {
+                'tool_output': {'summary': {'count': 1}, 'sections': sections, 'citations': []},
+                'sections': sections,
+                'citations': [],
+            }
+
+        mocked_tool.side_effect = tool_result
+        session = AIOpsChatSession.objects.create(user=self.user, title='change-correlation-graph')
+        response = self.client.post(
+            f'/api/aiops/sessions/{session.id}/send_message/',
+            {'content': '分析下电商测试环境订单服务最近发布后错误率升高，看看和变更有没有关系'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        assistant = response.data['assistant_message']
+        self.assertEqual(assistant['metadata']['execution_mode'], 'deterministic_change_correlation')
+        trace_nodes = [item['node'] for item in assistant['metadata']['langgraph_trace']]
+        for node in [
+            'correlation_scope',
+            'correlation_knowledge',
+            'correlation_changes',
+            'correlation_workorders',
+            'correlation_events',
+            'correlation_alerts',
+            'correlation_synthesis',
+        ]:
+            self.assertIn(node, trace_nodes)
+        self.assertEqual(
+            assistant['tool_calls'],
+            ['query_knowledge_graph', 'query_recent_changes', 'query_workorders', 'query_event_wall', 'query_alerts'],
+        )
+        from .langgraph_pilot import get_langgraph_chat_checkpoint
+        checkpoint = get_langgraph_chat_checkpoint(assistant['metadata']['langgraph_thread_id'])
+        self.assertEqual(checkpoint['correlation_environment']['name'], '电商测试环境')
+        self.assertEqual(set(checkpoint['correlation_evidence']), set(assistant['tool_calls']))
+        self.assertEqual(mocked_tool.call_count, 5)
+
+    @mock.patch('aiops.langgraph_pilot._run_tool_call')
+    def test_self_heal_graph_checkpoints_readonly_evidence_and_confirmation(self, mocked_tool):
+        self.ensure_ecommerce_knowledge_environment()
+
+        def tool_result(session, message, user, tool_name, arguments, registry_entry=None):
+            sections = [{'title': tool_name, 'items': [f'{tool_name} 已返回测试证据']}]
+            return {
+                'tool_output': {'summary': {'count': 1}, 'sections': sections, 'citations': []},
+                'sections': sections,
+                'citations': [],
+            }
+
+        mocked_tool.side_effect = tool_result
+        session = AIOpsChatSession.objects.create(user=self.user, title='self-heal-graph')
+        response = self.client.post(
+            f'/api/aiops/sessions/{session.id}/send_message/',
+            {'content': '给电商测试环境 order-service 告警推荐一套自愈方案'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        assistant = response.data['assistant_message']
+        self.assertEqual(assistant['metadata']['execution_mode'], 'deterministic_self_heal_recommendation')
+        self.assertEqual(assistant['metadata']['selected_action']['code'], 'self_heal.recommend')
+        trace_nodes = [item['node'] for item in assistant['metadata']['langgraph_trace']]
+        for node in [
+            'self_heal_scope',
+            'self_heal_alerts',
+            'self_heal_knowledge',
+            'self_heal_changes',
+            'self_heal_logs',
+            'self_heal_traces',
+            'self_heal_synthesis',
+        ]:
+            self.assertIn(node, trace_nodes)
+        self.assertEqual(
+            assistant['tool_calls'],
+            ['query_alerts', 'query_knowledge_graph', 'query_recent_changes', 'query_logs', 'query_traces'],
+        )
+        self.assertIsNone(response.data['pending_action'])
+        self.assertTrue(
+            any(item.get('type') == 'approval_form' and item.get('status') == 'waiting_confirmation'
+                for item in assistant['metadata'].get('response_blocks', []))
+        )
+        from .langgraph_pilot import get_langgraph_chat_checkpoint
+        checkpoint = get_langgraph_chat_checkpoint(assistant['metadata']['langgraph_thread_id'])
+        self.assertEqual(checkpoint['self_heal_service'], 'order-service')
+        self.assertEqual(set(checkpoint['self_heal_evidence']), set(assistant['tool_calls']))
+        self.assertEqual(mocked_tool.call_count, 5)
+
+    @override_settings(SYSTEM_POSTURE_ENABLED=True)
+    @mock.patch('aiops.services._request_model_completion')
+    @mock.patch('aiops.services._run_tool_call')
+    def test_slo_graph_resumes_without_repeating_checkpointed_evidence(self, mocked_tool, mocked_completion):
+        from .langgraph_pilot import close_langgraph_resources, get_langgraph_chat_checkpoint, run_langgraph_chat
+        from .services import ALERT_METRIC_QUERY_BUDGET, ChatJobLeaseLost
+
+        get_agent_config()
+        AIOpsModelProvider.objects.all().update(is_enabled=False)
+        self.ensure_ecommerce_knowledge_environment()
+        alert = Alert.objects.create(
+            title='order-service SLO risk', level='critical', status=Alert.STATUS_ACTIVE,
+            environment='电商测试', service='order-service', fingerprint='slo-graph-critical',
+        )
+        interrupted = False
+
+        def tool_result(session, message, user, tool_name, arguments, registry_entry=None):
+            nonlocal interrupted
+            if tool_name == 'query_dashboard_panel_data' and not interrupted:
+                interrupted = True
+                raise ChatJobLeaseLost('租约已转移')
+            sections = [{'title': tool_name, 'items': [f'{tool_name} 已返回测试证据']}]
+            output = {'summary': {'count': 1}, 'sections': sections, 'citations': []}
+            if tool_name == 'query_alerts':
+                output['alerts'] = [
+                    {'id': alert.id + 1, 'level': 'warning', 'status': Alert.STATUS_ACTIVE,
+                     'last_received_at': timezone.now().isoformat()},
+                    alert,
+                ]
+            if tool_name == 'query_alert_metrics':
+                self.assertEqual(arguments['alert_id'], alert.id)
+                self.assertEqual(arguments['budget'], ALERT_METRIC_QUERY_BUDGET)
+                output['evidence'] = [{'status': 'success', 'query': 'mock', 'series_count': 1}]
+            return {'tool_output': output, 'sections': sections, 'citations': []}
+
+        mocked_tool.side_effect = tool_result
+        session = AIOpsChatSession.objects.create(user=self.user, title='slo-graph-resume')
+        message = AIOpsChatMessage.objects.create(
+            session=session, role=AIOpsChatMessage.ROLE_USER,
+            content='分析电商测试环境 order-service 最近30分钟的 SLO 风险',
+        )
+        progress = mock.Mock()
+        with self.assertRaises(ChatJobLeaseLost):
+            run_langgraph_chat(session, message, self.user, message.content, progress_callback=progress)
+        thread_id = message.metadata['langgraph_thread_id']
+        checkpoint = get_langgraph_chat_checkpoint(thread_id)
+        self.assertEqual(checkpoint['slo_duration_minutes'], 30)
+        self.assertEqual(checkpoint['slo_service'], 'order-service')
+        self.assertEqual(set(checkpoint['slo_evidence']), {'query_system_posture', 'query_alerts', 'query_alert_metrics'})
+        self.assertEqual(checkpoint['slo_evidence']['query_alerts']['alerts'][1]['id'], alert.id)
+        self.assertEqual(checkpoint['slo_evidence']['query_alerts']['alerts'][1]['level'], 'critical')
+        self.assertEqual(checkpoint['slo_evidence']['query_alert_metrics']['evidence'][0]['status'], 'success')
+        self.assertNotEqual(checkpoint.get('status'), 'failed')
+        close_langgraph_resources()
+
+        result = run_langgraph_chat(session, message, self.user, message.content, progress_callback=progress)
+        calls = mocked_tool.call_args_list
+        tool_names = [call.args[3] for call in calls]
+        expected_tools = [
+            'query_system_posture', 'query_alerts', 'query_alert_metrics', 'query_dashboard_panel_data',
+            'query_traces', 'query_knowledge_graph', 'query_k8s_resources',
+        ]
+        self.assertEqual(result['tool_calls'], expected_tools)
+        for tool_name in expected_tools:
+            self.assertEqual(tool_names.count(tool_name), 2 if tool_name == 'query_dashboard_panel_data' else 1)
+        for call in calls:
+            arguments = call.args[4]
+            if call.args[3] in {'query_alert_metrics', 'query_dashboard_panel_data', 'query_traces'}:
+                self.assertEqual(arguments['duration_minutes'], 30)
+            if call.args[3] == 'query_traces':
+                self.assertEqual(arguments['query'], '电商测试环境 order-service')
+                self.assertTrue(arguments['errors_only'])
+                self.assertEqual(call.args[0].context['current_environment']['name'], '电商测试环境')
+        self.assertTrue(any(call.kwargs.get('tool_event', {}).get('name') == 'query_alert_metrics' for call in progress.call_args_list))
+        self.assertEqual(result['metadata']['execution_mode'], 'deterministic_slo_analysis')
+        self.assertEqual(result['metadata']['selected_action']['code'], 'slo.analysis')
+        self.assertNotIn('chat_runtime', [item['node'] for item in result['metadata']['langgraph_trace']])
+        self.assertFalse(result.get('pending_action_draft'))
+        self.assertFalse(AIOpsPendingAction.objects.filter(session=session).exists())
+        self.assertFalse(HostTask.objects.exists())
+        self.assertEqual(get_langgraph_chat_checkpoint(thread_id)['status'], 'completed')
+        replay = run_langgraph_chat(session, message, self.user, message.content)
+        self.assertEqual(replay['content'], result['content'])
+        self.assertEqual(mocked_tool.call_count, len(expected_tools) + 1)
+        mocked_completion.assert_not_called()
+
+    @mock.patch('aiops.services.execute_promql_query')
+    @mock.patch('aiops.services._request_model_completion')
+    def test_slo_graph_denied_metrics_remain_audited_without_external_query(self, mocked_completion, mocked_promql):
+        from .langgraph_pilot import get_langgraph_chat_checkpoint, run_langgraph_chat
+
+        get_agent_config()
+        AIOpsModelProvider.objects.all().update(is_enabled=False)
+        self.ensure_prod_knowledge_environment()
+        alert = Alert.objects.create(
+            title='checkout SLO risk', level='critical', status=Alert.STATUS_ACTIVE,
+            environment='prod', service='checkout', metric_name='http_requests_total',
+            labels={'service': 'checkout'},
+        )
+        role = Role.objects.create(code='slo-alert-reader', name='SLO Alert Reader')
+        role.permissions.add(*PermissionDefinition.objects.filter(code__in=[
+            'aiops.chat.view', 'aiops.chat.analyze', 'aiops.knowledge.view', 'ops.alert.view',
+        ]))
+        user = User.objects.create_user(username='slo_alert_reader', password='Passw0rd!123')
+        user.rbac_roles.add(role)
+        session = AIOpsChatSession.objects.create(user=user, title='slo-denied-metrics')
+        message = AIOpsChatMessage.objects.create(
+            session=session, role=AIOpsChatMessage.ROLE_USER, content='分析 prod checkout 最近 SLO 风险',
+        )
+
+        result = run_langgraph_chat(session, message, user, message.content)
+
+        self.assertEqual(result['metadata']['execution_mode'], 'deterministic_slo_analysis')
+        self.assertNotEqual(result['message_type'], AIOpsChatMessage.TYPE_ERROR)
+        checkpoint = get_langgraph_chat_checkpoint(result['metadata']['langgraph_thread_id'])
+        metrics = checkpoint['slo_evidence']['query_alert_metrics']
+        self.assertIn('无权查询指标', metrics['error'])
+        self.assertIn('无权查询指标', result['content'])
+        self.assertIn('query_knowledge_graph', checkpoint['slo_evidence'])
+        invocation = AIOpsToolInvocation.objects.get(session=session, tool_name='query_alert_metrics')
+        self.assertEqual(invocation.status, AIOpsToolInvocation.STATUS_FAILED)
+        self.assertEqual(invocation.request_payload['alert_id'], alert.id)
+        self.assertFalse(AIOpsPendingAction.objects.filter(session=session).exists())
+        mocked_promql.assert_not_called()
+        mocked_completion.assert_not_called()
+
+    @override_settings(SYSTEM_POSTURE_ENABLED=False)
+    @mock.patch('aiops.services._request_model_completion')
+    @mock.patch('aiops.services._run_tool_call')
+    def test_slo_graph_skips_unavailable_optional_evidence(self, mocked_tool, mocked_completion):
+        from .langgraph_pilot import get_langgraph_chat_checkpoint, run_langgraph_chat
+
+        get_agent_config()
+        AIOpsModelProvider.objects.all().update(is_enabled=False)
+        self.ensure_prod_knowledge_environment()
+        mocked_tool.return_value = {
+            'tool_output': {'summary': {'count': 0}, 'alerts': [], 'sections': [], 'citations': []},
+            'sections': [], 'citations': [],
+        }
+        session = AIOpsChatSession.objects.create(user=self.user, title='slo-optional-evidence')
+        message = AIOpsChatMessage.objects.create(
+            session=session, role=AIOpsChatMessage.ROLE_USER, content='分析 prod 最近 SLO 和 P95 情况',
+        )
+
+        result = run_langgraph_chat(session, message, self.user, message.content)
+
+        self.assertEqual(result['tool_calls'], ['query_alerts', 'query_dashboard_panel_data', 'query_knowledge_graph'])
+        self.assertEqual(mocked_tool.call_count, 3)
+        checkpoint = get_langgraph_chat_checkpoint(result['metadata']['langgraph_thread_id'])
+        self.assertEqual(checkpoint['slo_service'], '')
+        trace = {item['node']: item for item in checkpoint['trace']}
+        for node, reason in {
+            'slo_posture': 'feature_disabled', 'slo_metrics': 'alert_missing',
+            'slo_traces': 'service_missing', 'slo_workloads': 'cluster_missing',
+        }.items():
+            self.assertEqual(trace[node]['status'], 'skipped')
+            self.assertEqual(trace[node]['reason'], reason)
+        self.assertIn('链路追踪跳过', result['content'])
+        mocked_completion.assert_not_called()
+
+    @mock.patch('aiops.services._run_tool_call')
+    def test_slo_graph_requires_unique_environment_before_query(self, mocked_tool):
+        from .langgraph_pilot import run_langgraph_chat
+
+        self.ensure_prod_knowledge_environment()
+        AIOpsKnowledgeEnvironment.objects.create(name='staging', alert_environments=['staging'])
+        for question, error_code in [
+            ('分析最近 SLO 情况', 'environment_required'),
+            ('分析 prod 和 staging 的 SLO 情况', 'environment_ambiguous'),
+        ]:
+            with self.subTest(question=question):
+                session = AIOpsChatSession.objects.create(user=self.user, title='slo-environment-required')
+                message = AIOpsChatMessage.objects.create(session=session, role=AIOpsChatMessage.ROLE_USER, content=question)
+                result = run_langgraph_chat(session, message, self.user, question)
+                self.assertEqual(result['metadata']['error_code'], error_code)
+                self.assertTrue(result['metadata']['environment_required'])
+                self.assertEqual(result['tool_calls'], [])
+        mocked_tool.assert_not_called()
+
+    def test_default_chat_langgraph_action_still_obeys_analysis_only_confirmation_boundary(self):
+        session = AIOpsChatSession.objects.create(user=self.user, title='langgraph-action-boundary')
+        Host.objects.create(hostname='legacy-data-sync', ip_address='192.0.2.3', environment='prod', status='offline')
+        user_message = AIOpsChatMessage.objects.create(
+            session=session,
+            role=AIOpsChatMessage.ROLE_USER,
+            content='为 legacy-data-sync 生成巡检任务',
+            metadata={'analysis_only': True},
+        )
+        assistant_message = AIOpsChatMessage.objects.create(session=session, role=AIOpsChatMessage.ROLE_ASSISTANT, content='')
+        draft = build_task_draft(
+            self.user,
+            user_message.content,
+            {'request_summary': user_message.content, 'environment': 'prod'},
+        )
+        self.assertFalse(draft.get('error'))
+        _apply_dispatch_result_to_message(
+            session,
+            assistant_message,
+            {
+                'content': '已完成分析。',
+                'message_type': AIOpsChatMessage.TYPE_ACTION,
+                'pending_action_draft': draft,
+                'metadata': {'orchestration_engine': 'langgraph'},
+            },
+            self.user,
+            question=user_message.content,
+            analysis_only=True,
+        )
+        self.assertFalse(AIOpsPendingAction.objects.filter(session=session).exists())
+
+    @mock.patch('aiops.services._build_chat_result_legacy', side_effect=RuntimeError('simulated runtime failure'))
+    def test_default_chat_langgraph_persists_structured_failure(self, mocked_runtime):
+        from .langgraph_pilot import run_langgraph_chat
+
+        session = AIOpsChatSession.objects.create(user=self.user, title='langgraph-failure')
+        message = AIOpsChatMessage.objects.create(
+            session=session,
+            role=AIOpsChatMessage.ROLE_USER,
+            content='检查生产环境异常',
+        )
+        result = run_langgraph_chat(session, message, self.user, message.content)
+
+        self.assertEqual(result['metadata']['execution_mode'], 'langgraph_error')
+        self.assertEqual(result['metadata']['error_code'], 'langgraph_execution_error')
+        self.assertIn('simulated runtime failure', result['metadata']['error_detail'])
+        self.assertEqual(result['metadata']['langgraph_trace'][-1]['node'], 'error')
+        mocked_runtime.assert_called_once()
+
+    @mock.patch('aiops.services._dispatch_with_tool_runtime')
+    def test_lost_chat_lease_does_not_checkpoint_business_failure(self, mocked_runtime):
+        from .langgraph_pilot import get_langgraph_chat_checkpoint, run_langgraph_chat
+        from .services import ChatJobLeaseLost
+
+        mocked_runtime.side_effect = ChatJobLeaseLost('租约已转移')
+        session = AIOpsChatSession.objects.create(user=self.user, title='lost-lease-checkpoint')
+        message = AIOpsChatMessage.objects.create(
+            session=session,
+            role=AIOpsChatMessage.ROLE_USER,
+            content='检查生产环境',
+        )
+
+        with self.assertRaises(ChatJobLeaseLost):
+            run_langgraph_chat(session, message, self.user, message.content)
+
+        thread_id = message.metadata['langgraph_thread_id']
+        checkpoint = get_langgraph_chat_checkpoint(thread_id)
+        self.assertNotEqual(checkpoint.get('status'), 'failed')
+        self.assertNotEqual((checkpoint.get('result') or {}).get('metadata', {}).get('error_code'), 'langgraph_execution_error')
+
+    @mock.patch('aiops.services._build_chat_result_legacy')
+    def test_default_chat_langgraph_reuses_completed_checkpoint(self, mocked_runtime):
+        from .langgraph_pilot import run_langgraph_chat
+
+        mocked_runtime.return_value = {
+            'content': '检查完成',
+            'citations': [],
+            'tool_calls': [],
+            'message_type': AIOpsChatMessage.TYPE_TEXT,
+            'metadata': {'execution_mode': 'test'},
+        }
+        session = AIOpsChatSession.objects.create(user=self.user, title='langgraph-repeat')
+        message = AIOpsChatMessage.objects.create(session=session, role=AIOpsChatMessage.ROLE_USER, content='检查状态')
+        first = run_langgraph_chat(session, message, self.user, message.content)
+        second = run_langgraph_chat(session, message, self.user, message.content)
+
+        self.assertEqual(first['content'], second['content'])
+        self.assertEqual(first['metadata']['langgraph_thread_id'], second['metadata']['langgraph_thread_id'])
+        mocked_runtime.assert_called_once()
+
+    def test_platform_mcp_tools_respect_feature_gate_without_name_error(self):
+        tools = list_platform_mcp_tools(user=self.user)
+
+        self.assertTrue(any(item['name'] == 'sxdevops.query_knowledge_graph' for item in tools))
+        self.assertTrue(any(item['name'] == 'sxdevops.query_cmdb_items' for item in tools))
+        self.assertTrue(any(item['name'] == 'sxdevops.query_cost_report' for item in tools))
+        self.assertTrue(any(item['name'] == 'sxdevops.query_cmdb_topology' for item in tools))
+        self.assertTrue(any(item['name'] == 'sxdevops.query_cmdb_quality' for item in tools))
+        self.assertTrue(all('available' in item for item in tools))
+
     def response_results(self, response):
         if isinstance(response.data, dict) and 'results' in response.data:
             return response.data['results']
         return response.data
+
+    def create_scoped_cmdb_user(self, username='aiops-cmdb-viewer'):
+        role = Role.objects.create(code=f'{username}-role', name=f'{username} role')
+        role.permissions.add(*PermissionDefinition.objects.filter(code__in=[
+            'aiops.chat.view',
+            'aiops.chat.analyze',
+            'cmdb.ci.view',
+            'cmdb.cost.view',
+            'cmdb.topology.view',
+        ]))
+        user = User.objects.create_user(username=username, password='Passw0rd!123')
+        user.rbac_roles.add(role)
+        CIResourceAuthorization.objects.create(
+            name=f'{username} payment scope',
+            principal_type='user',
+            principal=username,
+            permission='view',
+            business_line='payment',
+            created_by='test',
+        )
+        return user
 
     def ensure_prod_knowledge_environment(self):
         AIOpsKnowledgeEnvironment.objects.create(
@@ -147,13 +759,8 @@ class AIOpsApiTests(TestCase):
             aliases=['生产', '生产环境', '线上'],
             event_environments=['prod'],
             alert_environments=['prod'],
+            posture_environments=['prod'],
         )
-
-    def test_platform_mcp_tools_respect_feature_gate_without_name_error(self):
-        tools = list_platform_mcp_tools(user=self.user)
-
-        self.assertTrue(any(item['name'] == 'sxdevops.query_knowledge_graph' for item in tools))
-        self.assertTrue(all('available' in item for item in tools))
 
     def ensure_ecommerce_knowledge_environment(self):
         cluster = K8sCluster.objects.create(
@@ -177,6 +784,7 @@ class AIOpsApiTests(TestCase):
             aliases=['电商测试', 'ecommerce-test'],
             event_environments=['ecommerce-test'],
             alert_environments=['电商测试'],
+            posture_environments=['ecommerce-test-k3s'],
             k8s_cluster_ids=[cluster.id],
             k8s_namespaces={str(cluster.id): ['production']},
             task_resource_environment_ids=[resource_env.id],
@@ -189,13 +797,24 @@ class AIOpsApiTests(TestCase):
             },
             is_enabled=True,
         )
+        SystemPostureSystem.objects.create(
+            name='电商交易核心',
+            environment='ecommerce-test-k3s',
+            base_status=SystemPostureSystem.STATUS_CRITICAL,
+            health_score=28,
+            keywords=['order-service', '订单', '订单服务'],
+            service_specs=[{'id': 'order', 'name': '订单服务'}, {'id': 'order-service', 'name': 'order-service'}],
+            dependencies=[{'id': 'postgresql', 'name': '订单数据库'}, {'id': 'kafka', 'name': 'Kafka'}],
+            core_metric={'label': '下单成功率', 'value': 93.8, 'target': 90, 'unit': '%'},
+            is_enabled=True,
+        )
         TaskResource.objects.create(
             name='tf-k3s-single-node',
             resource_type=TaskResource.RESOURCE_HOST,
             environment=resource_env,
             system=resource_system,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='203.0.113.176',
+            ip_address='120.26.213.176',
             owner='ops',
         )
         TaskResource.objects.create(
@@ -220,6 +839,7 @@ class AIOpsApiTests(TestCase):
         self.assertTrue(response.data['action_registry'])
         active_mcp_names = {item['name'] for item in response.data['active_mcp_servers']}
         self.assertIn('知识图谱 MCP', active_mcp_names)
+        self.assertIn('CMDB 资产 MCP', active_mcp_names)
         self.assertNotIn('CMDB MCP', active_mcp_names)
         active_mcp_names.update({
             '可观测性 MCP',
@@ -240,7 +860,7 @@ class AIOpsApiTests(TestCase):
         self.assertIn('query_alerts', active_tools)
         self.assertIn('query_alert_root_cause', active_tools)
         self.assertIn('query_alert_metrics', active_tools)
-        self.assertTrue(all('posture' not in tool for tool in active_tools))
+        self.assertIn('query_system_posture', active_tools)
         self.assertIn('query_grafana_promql', active_tools)
         self.assertIn('query_dashboard_panel_data', active_tools)
         self.assertIn('query_event_wall', active_tools)
@@ -252,13 +872,16 @@ class AIOpsApiTests(TestCase):
         self.assertNotIn('query_workorders', active_tools)
         self.assertNotIn('query_task_center', active_tools)
         self.assertNotIn('query_middleware_assets', active_tools)
-        self.assertNotIn('query_cmdb_items', active_tools)
-        self.assertNotIn('query_cost_report', active_tools)
+        self.assertIn('query_cmdb_items', active_tools)
+        self.assertIn('query_cost_report', active_tools)
+        self.assertIn('query_cmdb_topology', active_tools)
+        self.assertIn('query_cmdb_quality', active_tools)
         self.assertIn('answer-formatter', {item['slug'] for item in response.data['active_skills']})
+        self.assertIn('sx-cmdb-asset-cost-analysis', {item['slug'] for item in response.data['active_skills']})
         active_skills_by_slug = {item['slug']: item for item in response.data['active_skills']}
-        alert_skill = active_skills_by_slug['sx-alert-evidence-checklist']
+        alert_skill = active_skills_by_slug['sx-alert-evidence']
         self.assertIn('category', alert_skill)
-        self.assertIn('alert.root_cause', alert_skill['applicable_actions'])
+        self.assertIn('troubleshoot', alert_skill['applicable_actions'])
         self.assertIn('query_alerts', alert_skill['builtin_tools'])
         self.assertIn('query_alert_metrics', alert_skill['builtin_tools'])
         self.assertTrue(alert_skill['examples'])
@@ -288,7 +911,7 @@ class AIOpsApiTests(TestCase):
             'Grafana MCP',
         }.issubset(active_mcp_names))
         self.assertTrue(any(item['name'] == 'N9E 监控 MCP' for item in response.data['active_mcp_servers']))
-        self.assertIn('回答整形器', active_skill_names)
+        self.assertIn('统一应答规范', active_skill_names)
 
     def test_skills_for_action_uses_skill_metadata_and_formatter(self):
         get_agent_config()
@@ -300,9 +923,9 @@ class AIOpsApiTests(TestCase):
         })
 
         selected_slugs = {item.slug for item in selected}
-        self.assertIn('sx-alert-evidence-checklist', selected_slugs)
-        self.assertIn('sx-k8s-alert-troubleshooting', selected_slugs)
-        self.assertIn('sx-log-pattern-analysis', selected_slugs)
+        self.assertIn('sx-alert-evidence', selected_slugs)
+        self.assertIn('sx-k8s-diagnostics', selected_slugs)
+        self.assertIn('sx-log-analysis', selected_slugs)
         self.assertIn('answer-formatter', selected_slugs)
         self.assertNotIn('sx-self-heal-risk-guard', selected_slugs)
 
@@ -329,7 +952,7 @@ class AIOpsApiTests(TestCase):
 
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.data['slug'], 'team-log-troubleshooting')
-        self.assertEqual(response.data['applicable_actions'], ['log.query_generate', 'alert.root_cause'])
+        self.assertEqual(response.data['applicable_actions'], [])
         self.assertEqual(response.data['builtin_tools'], ['query_logs'])
         self.assertEqual(response.data['output_contract']['sections'][0], '查询条件')
 
@@ -358,7 +981,7 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(alert_action['risk_level_display'], '只读')
         slo_action = next(item for item in response.data['actions'] if item['code'] == 'slo.analysis')
         self.assertEqual(slo_action['category'], '服务健康')
-        self.assertTrue(all('posture' not in tool for tool in slo_action['allowed_tools']))
+        self.assertIn('query_system_posture', slo_action['allowed_tools'])
 
     def test_action_preflight_endpoint_returns_approval_contract(self):
         get_agent_config()
@@ -1531,6 +2154,7 @@ class AIOpsApiTests(TestCase):
             status=EventSource.STATUS_DISABLED,
             config={'resource_types': ['deployment']},
         )
+        SystemPostureEnvironment.objects.create(key='posture-prod', name='生产态势', is_enabled=True)
         task_resource_env = TaskResourceGroup.objects.create(name='电商测试环境', group_type=TaskResourceGroup.GROUP_ENVIRONMENT)
         TaskResource.objects.create(
             name='trade-resource-node-01',
@@ -1547,6 +2171,7 @@ class AIOpsApiTests(TestCase):
             log_datasource_ids=[log_source.id],
             tracing_datasource_ids=[trace_source.id],
             alert_environments=['alert-prod'],
+            posture_environments=['posture-prod'],
             k8s_cluster_ids=[cluster.id],
             docker_host_ids=[docker_host.id],
             task_resource_environment_ids=[task_resource_env.id],
@@ -1575,6 +2200,14 @@ class AIOpsApiTests(TestCase):
             service='other',
             business_line='其他系统',
             environment='alert-other',
+        )
+        SystemPostureSystem.objects.create(
+            name='电商',
+            environment='posture-prod',
+            health_score=91,
+            service_specs=[{'id': 'checkout', 'name': 'checkout'}],
+            core_metric={'label': 'SLA', 'value': 99.92, 'target': 99.9, 'unit': '%'},
+            is_enabled=True,
         )
         LogEntry.objects.create(service='checkout', level='error', message='checkout failed')
         EventRecord.objects.create(
@@ -1650,6 +2283,7 @@ class AIOpsApiTests(TestCase):
         self.assertIn('external_events', {item['name'] for item in checkout_node['capabilities']})
         self.assertIn('internal_events', {item['name'] for item in checkout_node['capabilities']})
         self.assertTrue(any(node['kind'] == 'infrastructure' for node in response.data['nodes']))
+        self.assertTrue(any(node['kind'] == 'posture' for node in response.data['nodes']))
         runtime_nodes = [node for node in response.data['nodes'] if node['kind'] == 'runtime_component']
         self.assertTrue(runtime_nodes)
         self.assertIn('DB', {node.get('runtime_type') for node in runtime_nodes})
@@ -1666,6 +2300,7 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(catalog_response.status_code, 200)
         self.assertIn('event-prod', catalog_response.data['event_environments'])
         self.assertIn('alert-prod', catalog_response.data['alert_environments'])
+        self.assertIn('posture-prod', {item['key'] for item in catalog_response.data['posture_environments']})
         self.assertIn('trade-observable-link', {item['name'] for item in catalog_response.data['observability_links']})
         catalog_folder_keys = {item['key'] for item in catalog_response.data['grafana_folders']}
         self.assertIn('交易系统', catalog_folder_keys)
@@ -1697,7 +2332,7 @@ class AIOpsApiTests(TestCase):
             'status': 'Ready',
             'roles': 'control-plane',
             'version': 'v1.30.0',
-            'internal_ip': '203.0.113.176',
+            'internal_ip': '120.26.213.176',
         }]
         cache.clear()
 
@@ -2282,8 +2917,78 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertFalse(any(edge['relation'] == 'service_runtime' for edge in response.data['edges']))
 
+    def test_knowledge_graph_discovers_runtime_components_from_posture_dependencies(self):
+        AIOpsKnowledgeEnvironment.objects.create(
+            name='posture-runtime-env',
+            alert_environments=['posture-prod'],
+            posture_environments=['posture-prod'],
+            is_enabled=True,
+            created_by='aiops_user',
+            updated_by='aiops_user',
+        )
+        SystemPostureSystem.objects.create(
+            name='电商',
+            environment='posture-prod',
+            service_specs=[{'id': 'checkout', 'name': 'checkout'}],
+            dependencies=[{'id': 'order-db', 'name': '订单数据库', 'kind': '数据库', 'role': 'downstream'}],
+            is_enabled=True,
+        )
 
+        response = self.client.get('/api/aiops/knowledge-graph/', {'environment': 'posture-runtime-env'})
 
+        self.assertEqual(response.status_code, 200)
+        runtime_nodes = [node for node in response.data['nodes'] if node['kind'] == 'runtime_component']
+        self.assertTrue(any(node['label'] == '订单数据库' for node in runtime_nodes))
+        self.assertIn('system_runtime', {edge['relation'] for edge in response.data['edges']})
+
+    def test_query_system_posture_uses_configured_posture_environment(self):
+        AIOpsKnowledgeEnvironment.objects.create(
+            name='retail-prod',
+            alert_environments=['alert-prod'],
+            posture_environments=['posture-prod'],
+            is_enabled=True,
+        )
+        SystemPostureSystem.objects.create(
+            name='交易系统',
+            environment='posture-prod',
+            health_score=88,
+            core_metric={'label': 'SLA', 'value': 99.7, 'target': 99.9, 'unit': '%'},
+            is_enabled=True,
+        )
+        SystemPostureSystem.objects.create(
+            name='告警同名环境系统',
+            environment='alert-prod',
+            health_score=50,
+            is_enabled=True,
+        )
+        session = AIOpsChatSession.objects.create(user=self.user, title='posture')
+        user_message = AIOpsChatMessage.objects.create(session=session, role='user', content='retail-prod SLA 怎么样')
+
+        result = query_system_posture(session, user_message, self.user, query='retail-prod SLA 怎么样')
+
+        self.assertEqual(result['summary']['environments'], ['posture-prod'])
+        self.assertIn('交易系统', '\n'.join(result['sections'][0]['items']))
+        self.assertNotIn('告警同名环境系统', '\n'.join(result['sections'][0]['items']))
+
+    def test_query_system_posture_matches_service_specs_when_tokens_are_too_narrow(self):
+        self.ensure_ecommerce_knowledge_environment()
+        session = AIOpsChatSession.objects.create(user=self.user, title='posture-order')
+        user_message = AIOpsChatMessage.objects.create(
+            session=session,
+            role='user',
+            content='电商测试环境订单服务最近一小时有什么异常',
+        )
+
+        result = query_system_posture(
+            session,
+            user_message,
+            self.user,
+            query='电商测试环境订单服务最近一小时有什么异常',
+            analysis_scope={'services': ['order-service', '订单服务'], 'systems': ['电商交易核心']},
+        )
+
+        self.assertEqual(result['summary']['count'], 1)
+        self.assertIn('电商交易核心', '\n'.join(result['sections'][0]['items']))
 
     @mock.patch('aiops.services.execute_promql_query')
     def test_query_grafana_promql_uses_platform_backend_api(self, mocked_promql):
@@ -2406,6 +3111,106 @@ class AIOpsApiTests(TestCase):
         mocked_promql.assert_called()
         self.assertEqual(mocked_promql.call_args.kwargs['metric_datasource_id'], metric_source.id)
         self.assertTrue(mocked_promql.call_args.kwargs['prefer_metric_datasource'])
+
+    @mock.patch('aiops.services.execute_dashboard_panel_queries')
+    def test_query_dashboard_panel_data_selects_scoped_analysis_dashboard(self, mocked_panel):
+        self.ensure_ecommerce_knowledge_environment()
+        AIOpsKnowledgeEnvironment.objects.filter(name='电商测试环境').update(grafana_folder_keys=['电商测试环境'])
+        GrafanaSetting.objects.create(
+            name='scoped-grafana',
+            enabled=True,
+            dashboards=[
+                {'key': 'other-slo', 'title': 'Order SLO', 'folder': 'other'},
+                {'key': 'unrelated-dashboard', 'title': 'Host Overview', 'folder': '电商测试环境/主机监控'},
+                {'key': 'ecommerce-slo-dashboard', 'title': 'Ecommerce SLO And Infra', 'folder': '电商测试环境/应用监控'},
+            ],
+        )
+        mocked_panel.return_value = {
+            'dashboard_uid': 'ecommerce-slo-dashboard',
+            'panel_title': 'SLO',
+            'queries': [{'query': 'mock', 'series_count': 1, 'result': []}],
+        }
+        session = AIOpsChatSession.objects.create(user=self.user, title='dashboard-selection')
+        user_message = AIOpsChatMessage.objects.create(session=session, role='user', content='分析电商测试环境 SLO')
+
+        result = query_dashboard_panel_data(
+            session,
+            user_message,
+            self.user,
+            query='电商测试环境 order-service 最近30分钟 SLO 风险',
+            duration_minutes=30,
+        )
+
+        self.assertEqual(result['summary']['query_count'], 1)
+        self.assertEqual(mocked_panel.call_args.args[0], 'ecommerce-slo-dashboard')
+        invocation = AIOpsToolInvocation.objects.get(session=session, tool_name='query_dashboard_panel_data')
+        self.assertEqual(invocation.request_payload['dashboard_key'], 'ecommerce-slo-dashboard')
+        self.assertEqual(invocation.request_payload['duration_minutes'], 30)
+
+    @mock.patch('aiops.services.execute_dashboard_panel_queries')
+    def test_dashboard_analysis_does_not_select_or_query_outside_environment(self, mocked_panel):
+        self.ensure_prod_knowledge_environment()
+        GrafanaSetting.objects.create(name='other-grafana', dashboards=[{
+            'key': 'other-slo', 'title': 'SLO Overview', 'folder': 'other',
+        }])
+        session = AIOpsChatSession.objects.create(user=self.user, title='dashboard-scope')
+        message = AIOpsChatMessage.objects.create(session=session, role='user', content='prod SLO')
+        automatic = query_dashboard_panel_data(session, message, self.user, query='prod SLO')
+        self.assertTrue(automatic['summary']['selection_required'])
+        explicit = query_dashboard_panel_data(session, message, self.user, query='prod SLO', dashboard_key='other-slo')
+        self.assertIn('范围', explicit['summary']['error'])
+        limited = User.objects.create_user(username='panel-denied', password='Passw0rd!123')
+        denied = query_dashboard_panel_data(session, message, limited, query='prod SLO')
+        self.assertEqual(denied['sections'], [])
+        self.assertEqual(AIOpsToolInvocation.objects.filter(session=session, status=AIOpsToolInvocation.STATUS_FAILED).count(), 3)
+        mocked_panel.assert_not_called()
+
+    @mock.patch('aiops.services.execute_dashboard_panel_queries')
+    @mock.patch('aiops.services.execute_promql_query')
+    def test_slo_graph_collects_scoped_alert_metrics_and_dashboard(self, mocked_promql, mocked_panel):
+        from .langgraph_pilot import get_langgraph_chat_checkpoint, run_langgraph_chat
+
+        get_agent_config()
+        AIOpsModelProvider.objects.all().update(is_enabled=False)
+        self.ensure_ecommerce_knowledge_environment()
+        AIOpsKnowledgeEnvironment.objects.filter(name='电商测试环境').update(grafana_folder_keys=['commerce'])
+        GrafanaSetting.objects.create(name='commerce-grafana', dashboards=[{
+            'key': 'commerce-slo', 'title': 'Commerce SLO', 'folder': 'commerce/app',
+        }])
+        alert = Alert.objects.create(
+            title='order-service error rate high', level='critical', status=Alert.STATUS_ACTIVE,
+            environment='电商测试', service='order-service', metric_name='http_requests_total',
+            labels={'service': 'order-service'},
+        )
+        Alert.objects.create(
+            title='out-of-scope order-service alert', level='critical', status=Alert.STATUS_ACTIVE,
+            environment='other', service='order-service', metric_name='http_requests_total',
+        )
+        Alert.objects.create(
+            title='unassigned order-service alert', level='critical', status=Alert.STATUS_ACTIVE,
+            environment='', service='order-service', metric_name='http_requests_total',
+        )
+        mocked_promql.return_value = {'series_count': 1, 'result': [{
+            'metric': {'service': 'order-service'}, 'values': [[1710000000, '1'], [1710000060, '3']],
+        }], 'sample': []}
+        mocked_panel.return_value = {'panel_title': 'Checkout Success Rate', 'queries': [
+            {'query': 'checkout_success', 'series_count': 1, 'result': []},
+        ]}
+        session = AIOpsChatSession.objects.create(user=self.user, title='slo-full-evidence')
+        message = AIOpsChatMessage.objects.create(
+            session=session, role='user', content='分析电商测试环境 order-service 最近30分钟的 SLO 风险',
+        )
+
+        result = run_langgraph_chat(session, message, self.user, message.content)
+
+        checkpoint = get_langgraph_chat_checkpoint(result['metadata']['langgraph_thread_id'])
+        self.assertEqual([item['id'] for item in checkpoint['slo_evidence']['query_alerts']['alerts']], [alert.id])
+        self.assertEqual(checkpoint['slo_evidence']['query_alert_metrics']['summary']['alert_id'], alert.id)
+        self.assertGreater(mocked_promql.call_count, 0)
+        self.assertLessEqual(mocked_promql.call_count, 6)
+        self.assertEqual(mocked_panel.call_args.args[0], 'commerce-slo')
+        self.assertEqual(mocked_panel.call_args.kwargs['variables'], {'namespace': 'production'})
+        self.assertIn('Checkout Success Rate', result['content'])
 
     @mock.patch('aiops.services.execute_promql_query')
     def test_query_alert_root_cause_includes_metric_evidence_package(self, mocked_promql):
@@ -2674,8 +3479,9 @@ class AIOpsApiTests(TestCase):
 
     @mock.patch('aiops.services.query_logs')
     @mock.patch('aiops.services.query_events')
+    @mock.patch('aiops.services.query_system_posture')
     @mock.patch('aiops.services.query_alert_metrics')
-    def test_query_alert_root_cause_survives_missing_metric_permission(self, mocked_metrics, mocked_events, mocked_logs):
+    def test_query_alert_root_cause_survives_missing_metric_permission(self, mocked_metrics, mocked_posture, mocked_events, mocked_logs):
         self.ensure_prod_knowledge_environment()
         alert = Alert.objects.create(
             title='prod checkout no metric permission',
@@ -2695,6 +3501,7 @@ class AIOpsApiTests(TestCase):
         alert_only_role.permissions.add(alert_perm)
         limited_user.rbac_roles.add(alert_only_role)
         mocked_metrics.return_value = {'summary': {'error': '当前账号无权查询指标。'}, 'sections': [], 'citations': []}
+        mocked_posture.return_value = {'summary': {'count': 0, 'critical': 0, 'warning': 0}, 'sections': [], 'citations': [], 'systems': []}
         mocked_events.return_value = {'summary': {'count': 0}, 'sections': [], 'citations': [], 'events': []}
         mocked_logs.return_value = {'summary': {'count': 0}, 'sections': [], 'citations': [], 'logs': []}
         session = AIOpsChatSession.objects.create(user=limited_user, title='alert-rca-no-metric-permission')
@@ -3058,13 +3865,15 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(mcp_response.status_code, 200)
         self.assertEqual(skill_response.status_code, 200)
         self.assertTrue(any(item['name'] == '知识图谱 MCP' and item['server_type'] == AIOpsMCPServer.SERVER_PLATFORM_BUILTIN for item in mcp_response.data))
+        self.assertTrue(any(item['name'] == 'CMDB 资产 MCP' and item['server_type'] == AIOpsMCPServer.SERVER_PLATFORM_BUILTIN for item in mcp_response.data))
         self.assertFalse(any(item['name'] == 'CMDB MCP' for item in mcp_response.data))
         self.assertTrue(any(item['name'] == 'N9E 监控 MCP' for item in mcp_response.data))
         self.assertTrue(any(item['name'] == 'SkyWalking MCP' and item['server_type'] == AIOpsMCPServer.SERVER_STDIO for item in mcp_response.data))
         self.assertTrue(any(item['name'] == 'Grafana MCP' and item['server_type'] == AIOpsMCPServer.SERVER_HTTP for item in mcp_response.data))
-        alert_skill = next(item for item in skill_response.data if item['slug'] == 'sx-alert-evidence-checklist')
-        self.assertIn('alert.root_cause', alert_skill['applicable_actions'])
+        alert_skill = next(item for item in skill_response.data if item['slug'] == 'sx-alert-evidence')
+        self.assertIn('troubleshoot', alert_skill['applicable_actions'])
         self.assertIn('query_alerts', alert_skill['builtin_tools'])
+        self.assertTrue(any(item['slug'] == 'sx-cmdb-asset-cost-analysis' for item in skill_response.data))
         self.assertTrue(any(item['slug'] == 'answer-formatter' for item in skill_response.data))
 
     @mock.patch('aiops.views.test_model_provider_connection')
@@ -3831,7 +4640,7 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(all_status_result['summary']['deployment_count'], 2)
 
     def test_query_hosts_filters_prod_offline_hosts(self):
-        Host.objects.create(hostname='legacy-data-sync', ip_address='10.20.30.20', environment='prod', status='offline', business_line='交易系统')
+        Host.objects.create(hostname='legacy-data-sync', ip_address='192.0.2.3', environment='prod', status='offline', business_line='交易系统')
         Host.objects.create(hostname='feature-x-dev-01', ip_address='10.20.40.20', environment='dev', status='offline', business_line='交易系统')
         session = AIOpsChatSession.objects.create(user=self.user, title='offline-hosts')
         user_message = AIOpsChatMessage.objects.create(session=session, role='user', content='生产环境有哪些离线主机？')
@@ -3851,14 +4660,14 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='203.0.113.176',
+            ip_address='120.26.213.176',
         )
         TaskResource.objects.create(
             name='supply-node',
             resource_type=TaskResource.RESOURCE_HOST,
             environment=other_env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='203.0.113.177',
+            ip_address='120.26.213.177',
         )
         session = AIOpsChatSession.objects.create(user=self.user, title='task-resource-base')
         user_message = AIOpsChatMessage.objects.create(session=session, role='user', content='电商测试环境下的全部主机')
@@ -3883,7 +4692,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='203.0.113.176',
+            ip_address='120.26.213.176',
         )
         session = AIOpsChatSession.objects.create(user=self.user, title='query-hosts-compat')
         user_message = AIOpsChatMessage.objects.create(session=session, role='user', content='电商测试环境有哪些主机')
@@ -3903,14 +4712,14 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=ecommerce_env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='203.0.113.176',
+            ip_address='120.26.213.176',
         )
         TaskResource.objects.create(
             name='supply-node',
             resource_type=TaskResource.RESOURCE_HOST,
             environment=supply_env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='203.0.113.177',
+            ip_address='120.26.213.177',
         )
         AIOpsKnowledgeEnvironment.objects.create(
             name='电商测试环境',
@@ -3937,7 +4746,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=ecommerce_env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='203.0.113.176',
+            ip_address='120.26.213.176',
         )
         AIOpsKnowledgeEnvironment.objects.create(
             name='电商测试环境',
@@ -4143,6 +4952,34 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(response.status_code, 201)
         self.assertEqual(AIOpsChatSession.objects.get(pk=session_id).messages.count(), 2)
 
+    def test_chat_session_title_can_be_renamed(self):
+        session = AIOpsChatSession.objects.create(user=self.user, title='旧标题')
+
+        response = self.client.post(
+            f'/api/aiops/sessions/{session.id}/rename/',
+            {'title': 'WE 平台联调环境 Nacos 访问地址排查'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['title'], 'WE 平台联调环境 Nacos 访问地址排查')
+        session.refresh_from_db()
+        self.assertEqual(session.title, 'WE 平台联调环境 Nacos 访问地址排查')
+        self.assertTrue(EventRecord.objects.filter(action='rename_session', resource_id=str(session.id)).exists())
+
+    def test_chat_session_rename_rejects_blank_title(self):
+        session = AIOpsChatSession.objects.create(user=self.user, title='保留标题')
+
+        response = self.client.post(
+            f'/api/aiops/sessions/{session.id}/rename/',
+            {'title': '   '},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        session.refresh_from_db()
+        self.assertEqual(session.title, '保留标题')
+
     def test_send_message_returns_error_when_no_model_available(self):
         get_agent_config()
         AIOpsModelProvider.objects.all().update(is_enabled=False)
@@ -4244,6 +5081,9 @@ class AIOpsApiTests(TestCase):
         assistant_message = response.data['assistant_message']
         self.assertEqual(response.status_code, 201)
         self.assertEqual(assistant_message['metadata']['execution_mode'], 'direct_alerts_fastpath')
+        self.assertEqual(assistant_message['metadata']['orchestration_engine'], 'langgraph')
+        self.assertTrue(assistant_message['metadata']['langgraph_checkpointed'])
+        self.assertTrue(assistant_message['metadata']['langgraph_thread_id'])
         self.assertEqual(assistant_message['metadata']['alert_filters']['status'], Alert.STATUS_ACTIVE)
         self.assertEqual(assistant_message['metadata']['alert_filters']['date_filter'], 'today')
         self.assertIn('query_alerts', assistant_message['tool_calls'])
@@ -4352,6 +5192,7 @@ class AIOpsApiTests(TestCase):
         assistant_message = response.data['assistant_message']
         self.assertEqual(response.status_code, 201)
         self.assertEqual(assistant_message['metadata']['execution_mode'], 'deterministic_alert_environment_analysis')
+        self.assertTrue(assistant_message['metadata']['langgraph_analysis_checkpointed'])
         self.assertEqual(assistant_message['metadata']['alert_filters']['date_filter'], 'last_hour')
         self.assertEqual(assistant_message['metadata']['alert_filters']['status'], '')
         self.assertIn('query_alerts', assistant_message['tool_calls'])
@@ -4681,12 +5522,17 @@ class AIOpsApiTests(TestCase):
 
         analysis = _infer_alert_root_cause(
             alert,
+            posture_result={
+                'summary': {'critical': 1, 'warning': 0},
+                'systems': [{'name': '电商交易系统', 'core_metric': {'value': 97.2, 'target': 99.9}}],
+            },
             event_result={'events': [{'title': 'api-gateway rollout', 'result': 'failed'}]},
             log_result={'logs': [{'level': 'error', 'message': 'api-gateway upstream timeout'}]},
             trace_result={'summary': {'match_count': 1, 'error_match_count': 1}, 'traces': [{'trace_id': 'trace-632'}]},
         )
 
         joined = '\n'.join((analysis.get('evidence') or []) + (analysis.get('causes') or []))
+        self.assertIn('系统态势', joined)
         self.assertIn('事件中心', joined)
         self.assertIn('日志中心', joined)
         self.assertIn('链路追踪', joined)
@@ -4776,7 +5622,7 @@ class AIOpsApiTests(TestCase):
             ('帮我分析下电商测试环境最新一条告警的原因', 'direct_alert_root_cause_fastpath', {'query_alert_root_cause'}),
             ('帮我分析下电商测试环境告警', 'deterministic_alert_environment_analysis', {'query_alerts', 'query_alert_metrics'}),
             ('分析生产电商测试环境 api-gateway 最近异常的根因', 'deterministic_service_rca', {'query_alerts', 'query_logs', 'query_traces'}),
-            ('分析下最近电商测试环境的SLO情况', 'deterministic_slo_analysis', {'query_alerts'}),
+            ('分析下最近电商测试环境的SLO情况', 'deterministic_slo_analysis', {'query_system_posture', 'query_alerts'}),
             ('分析下电商测试环境 k8s 集群的异常工作负载', 'deterministic_k8s_rca', {'query_k8s_resources', 'query_k8s_cluster_summary', 'query_alerts'}),
             ('帮我分析电商测试环境 api-gateway 最近错误日志的原因', 'direct_logs_fastpath', {'query_logs'}),
             ('分析下 api-gateway 最近发布是否导致电商测试环境异常', 'deterministic_change_correlation', {'query_knowledge_graph', 'query_alerts'}),
@@ -4969,6 +5815,41 @@ class AIOpsApiTests(TestCase):
         mocked_completion.assert_not_called()
 
     @mock.patch('aiops.services._request_model_completion')
+    def test_send_message_direct_posture_fastpath_does_not_require_llm(self, mocked_completion):
+        get_agent_config()
+        AIOpsModelProvider.objects.all().update(is_enabled=False)
+        AIOpsKnowledgeEnvironment.objects.create(
+            name='prod',
+            aliases=['生产'],
+            posture_environments=['prod-posture'],
+            is_enabled=True,
+        )
+        SystemPostureSystem.objects.create(
+            name='checkout',
+            environment='prod-posture',
+            health_score=92,
+            core_metric={'label': 'SLA', 'value': 99.95, 'target': 99.9, 'unit': '%'},
+            is_enabled=True,
+        )
+        session_response = self.client.post('/api/aiops/sessions/', {'title': 'direct-posture'}, format='json')
+        session_id = session_response.data['id']
+        AIOpsChatSession.objects.filter(pk=session_id).update(context={'current_environment': {'name': 'prod'}})
+
+        response = self.client.post(
+            f'/api/aiops/sessions/{session_id}/send_message/',
+            {'content': '这个环境 SLA 怎么样'},
+            format='json',
+        )
+
+        assistant_message = response.data['assistant_message']
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(assistant_message['metadata']['execution_mode'], 'direct_posture_fastpath')
+        self.assertEqual(assistant_message['metadata']['selected_action']['code'], 'slo.analysis')
+        self.assertTrue(assistant_message['metadata']['action_trace']['hit'])
+        self.assertIn('query_system_posture', assistant_message['tool_calls'])
+        self.assertIn('checkout', assistant_message['content'])
+        self.assertIn('99.95', assistant_message['content'])
+        mocked_completion.assert_not_called()
 
     @mock.patch('aiops.services.run_log_provider_query')
     @mock.patch('aiops.services._request_model_completion')
@@ -5761,6 +6642,7 @@ class AIOpsApiTests(TestCase):
 
         response = self.client.post(
             f'/api/aiops/sessions/{session_id}/send_message/',
+            {'content': '查看电商测试环境 ???? monitoring ?????? svc grafana'},
             format='json',
         )
 
@@ -6010,6 +6892,7 @@ class AIOpsApiTests(TestCase):
         self.assertIn('query_k8s_cluster_summary', assistant_message['tool_calls'])
         self.assertIn('query_alerts', assistant_message['tool_calls'])
         self.assertIn('query_events', assistant_message['tool_calls'])
+        self.assertIn('query_system_posture', assistant_message['tool_calls'])
         self.assertIn('nginx-deployment', assistant_message['content'])
         self.assertIn('order deployment failed', assistant_message['content'])
         mocked_completion.assert_not_called()
@@ -6044,11 +6927,13 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(metadata['execution_mode'], 'deterministic_slo_analysis')
         self.assertEqual(metadata['selected_action']['code'], 'slo.analysis')
         self.assertTrue(metadata['action_trace']['hit'])
+        self.assertIn('query_system_posture', assistant_message['tool_calls'])
         self.assertIn('query_alerts', assistant_message['tool_calls'])
         self.assertIn('query_dashboard_panel_data', assistant_message['tool_calls'])
-        self.assertIn('query_traces', assistant_message['tool_calls'])
+        self.assertNotIn('query_traces', assistant_message['tool_calls'])
         self.assertIn('query_knowledge_graph', assistant_message['tool_calls'])
         self.assertIn('下单成功率', assistant_message['content'])
+        self.assertIn('链路追踪跳过', assistant_message['content'])
         mocked_completion.assert_not_called()
 
     @mock.patch('aiops.services._request_model_completion')
@@ -6100,7 +6985,9 @@ class AIOpsApiTests(TestCase):
         assistant_message = response.data['assistant_message']
         self.assertEqual(response.status_code, 201)
         self.assertEqual(assistant_message['metadata']['execution_mode'], 'deterministic_service_rca')
+        self.assertTrue(assistant_message['metadata']['langgraph_analysis_checkpointed'])
         self.assertIn('query_alerts', assistant_message['tool_calls'])
+        self.assertIn('query_system_posture', assistant_message['tool_calls'])
         self.assertIn('query_logs', assistant_message['tool_calls'])
         self.assertIn('query_traces', assistant_message['tool_calls'])
         self.assertIn('query_events', assistant_message['tool_calls'])
@@ -6646,12 +7533,68 @@ class AIOpsApiTests(TestCase):
         mocked_completion.assert_not_called()
 
     def test_recover_masked_suggested_question(self):
+        self.assertIn(recover_masked_suggested_question('????????????????????'), DEFAULT_SUGGESTED_QUESTIONS)
         self.assertEqual(
+            recover_masked_suggested_question('????????????????????? ERROR/WARN ?????????'),
             '电商测试环境订单服务最近一小时 ERROR/WARN 日志有什么共同模式',
         )
 
-    @mock.patch('aiops.views.start_async_chat_processing')
-    def test_send_message_async_returns_placeholder_assistant(self, mocked_start_async):
+    @mock.patch('aiops.views.dispatch_chat')
+    def test_chat_role_can_send_message(self, mocked_dispatch_chat):
+        demo_user = User.objects.create_user(username='chat-operator', password='Chat#123456')
+        role = Role.objects.create(code='chat-reader', name='Chat Reader')
+        role.permissions.add(PermissionDefinition.objects.get(code='aiops.chat.view'))
+        role.users.add(demo_user)
+        demo_client = APIClient()
+        demo_token = Token.objects.create(user=demo_user)
+        demo_client.credentials(HTTP_AUTHORIZATION=f'Token {demo_token.key}')
+
+        session_response = demo_client.post('/api/aiops/sessions/', {'title': 'demo-ai-chat'}, format='json')
+        self.assertEqual(session_response.status_code, 201)
+        session = AIOpsChatSession.objects.get(pk=session_response.data['id'])
+        assistant_message = AIOpsChatMessage.objects.create(
+            session=session,
+            role=AIOpsChatMessage.ROLE_ASSISTANT,
+            content='demo_ai answer',
+        )
+        mocked_dispatch_chat.return_value = (assistant_message, None)
+
+        response = demo_client.post(
+            f"/api/aiops/sessions/{session_response.data['id']}/send_message/",
+            {'content': 'demo ai question'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data['assistant_message']['content'], 'demo_ai answer')
+        mocked_dispatch_chat.assert_called_once()
+
+    def test_demo_ai_account_does_not_mirror_admin_sessions(self):
+        admin_user, _ = User.objects.get_or_create(username='admin', defaults={'email': 'admin@example.com'})
+        admin_user.set_password('Admin@123456')
+        admin_user.save(update_fields=['password'])
+        User.objects.create_user(username='demo', password='Demo#123')
+        demo_ai_user = User.objects.create_user(username='demo_ai', password='Demo#123')
+        role = Role.objects.create(code='chat-reader', name='Chat Reader')
+        role.permissions.add(PermissionDefinition.objects.get(code='aiops.chat.view'))
+        role.users.add(demo_ai_user)
+        AIOpsChatSession.objects.create(user=admin_user, title='admin source chat')
+
+        demo_client = APIClient()
+        demo_token = Token.objects.create(user=demo_ai_user)
+        demo_client.credentials(HTTP_AUTHORIZATION=f'Token {demo_token.key}')
+
+        bootstrap_response = demo_client.get('/api/aiops/bootstrap/')
+        sessions_response = demo_client.get('/api/aiops/sessions/')
+
+        self.assertEqual(bootstrap_response.status_code, 200)
+        self.assertEqual(sessions_response.status_code, 200)
+        self.assertFalse(
+            AIOpsChatSession.objects.filter(user=demo_ai_user, mirror_source__isnull=False).exists()
+        )
+        self.assertEqual(AIOpsChatSession.objects.filter(user=demo_ai_user).count(), 0)
+
+    def test_send_message_async_returns_placeholder_assistant(self):
         session_response = self.client.post('/api/aiops/sessions/', {'title': 'async-chat'}, format='json')
         self.assertEqual(session_response.status_code, 201)
         session_id = session_response.data['id']
@@ -6663,7 +7606,217 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(response.status_code, 201)
         self.assertEqual(AIOpsChatSession.objects.get(pk=session_id).messages.count(), 2)
         self.assertEqual(response.data['assistant_message']['metadata']['processing_status'], 'pending')
-        mocked_start_async.assert_called_once()
+        self.assertEqual(response.data['assistant_message']['metadata']['orchestration_engine'], 'langgraph')
+        self.assertTrue(response.data['assistant_message']['metadata']['langgraph_thread_id'])
+        self.assertEqual(response.data['assistant_message']['metadata']['langgraph_resume_status'], 'queued')
+        job = AIOpsChatJob.objects.get(assistant_message_id=response.data['assistant_message']['id'])
+        self.assertEqual(job.status, AIOpsChatJob.STATUS_QUEUED)
+        self.assertEqual(job.thread_id, response.data['assistant_message']['metadata']['langgraph_thread_id'])
+
+    def test_resume_async_chat_processing_is_idempotent_for_completed_message(self):
+        session = AIOpsChatSession.objects.create(user=self.user, title='resume-complete')
+        user_message = AIOpsChatMessage.objects.create(session=session, role=AIOpsChatMessage.ROLE_USER, content='已完成问题')
+        assistant_message = AIOpsChatMessage.objects.create(
+            session=session,
+            role=AIOpsChatMessage.ROLE_ASSISTANT,
+            content='已完成',
+            metadata={
+                'processing_status': 'completed',
+                'orchestration_engine': 'langgraph',
+                'langgraph_user_message_id': user_message.id,
+                'langgraph_resume_status': 'completed',
+            },
+        )
+        job = AIOpsChatJob.objects.create(
+            assistant_message=assistant_message,
+            user_message=user_message,
+            thread_id='completed-test-thread',
+            status=AIOpsChatJob.STATUS_COMPLETED,
+        )
+        self.assertIsNone(resume_async_chat_processing(assistant_message.id))
+        job.refresh_from_db()
+        self.assertEqual(job.status, AIOpsChatJob.STATUS_COMPLETED)
+
+    def test_resume_interrupted_async_chats_selects_only_expired_jobs(self):
+        session = AIOpsChatSession.objects.create(user=self.user, title='resume-pending')
+        user_message = AIOpsChatMessage.objects.create(session=session, role=AIOpsChatMessage.ROLE_USER, content='待恢复问题')
+        assistant_message = AIOpsChatMessage.objects.create(
+            session=session,
+            role=AIOpsChatMessage.ROLE_ASSISTANT,
+            content='正在分析',
+            metadata={
+                'processing_status': 'pending',
+                'orchestration_engine': 'langgraph',
+                'langgraph_user_message_id': user_message.id,
+                'langgraph_resume_status': 'failed',
+            },
+        )
+        job = AIOpsChatJob.objects.create(
+            assistant_message=assistant_message,
+            user_message=user_message,
+            thread_id='expired-test-thread',
+            status=AIOpsChatJob.STATUS_RUNNING,
+            lease_until=timezone.now() - timedelta(minutes=1),
+        )
+        resumed = resume_interrupted_async_chats(limit=5)
+        self.assertEqual(resumed, [assistant_message.id])
+        job.refresh_from_db()
+        self.assertEqual(job.status, AIOpsChatJob.STATUS_QUEUED)
+
+    def test_claim_async_chat_job_claims_once(self):
+        session = AIOpsChatSession.objects.create(user=self.user, title='claim-job')
+        user_message = AIOpsChatMessage.objects.create(session=session, role=AIOpsChatMessage.ROLE_USER, content='排队问题')
+        assistant_message = AIOpsChatMessage.objects.create(session=session, role=AIOpsChatMessage.ROLE_ASSISTANT, content='排队中')
+        job = AIOpsChatJob.objects.create(
+            assistant_message=assistant_message,
+            user_message=user_message,
+            thread_id='claim-test-thread',
+        )
+        claimed = claim_async_chat_job()
+        self.assertEqual(claimed.pk, job.pk)
+        self.assertEqual(claimed.status, AIOpsChatJob.STATUS_RUNNING)
+        self.assertEqual(claimed.attempt_count, 1)
+        self.assertIsNone(claim_async_chat_job())
+
+    @mock.patch('aiops.services._run_async_chat_worker')
+    def test_process_async_chat_job_marks_completed_message(self, mocked_worker):
+        session = AIOpsChatSession.objects.create(user=self.user, title='process-job')
+        user_message = AIOpsChatMessage.objects.create(session=session, role=AIOpsChatMessage.ROLE_USER, content='处理问题')
+        assistant_message = AIOpsChatMessage.objects.create(session=session, role=AIOpsChatMessage.ROLE_ASSISTANT, content='排队中')
+        AIOpsChatJob.objects.create(
+            assistant_message=assistant_message,
+            user_message=user_message,
+            thread_id='process-test-thread',
+        )
+
+        def finish_message(*args, **kwargs):
+            assistant_message.metadata = {'processing_status': 'completed'}
+            assistant_message.save(update_fields=['metadata'])
+
+        mocked_worker.side_effect = finish_message
+        job = process_async_chat_job(claim_async_chat_job())
+        self.assertEqual(job.status, AIOpsChatJob.STATUS_COMPLETED)
+        job.refresh_from_db()
+        self.assertIsNone(job.lease_until)
+        self.assertIsNone(job.claim_token)
+        mocked_worker.assert_called_once()
+
+    @mock.patch('aiops.services._run_async_chat_worker')
+    def test_process_async_chat_job_keeps_error_message_failed(self, mocked_worker):
+        session = AIOpsChatSession.objects.create(user=self.user, title='failed-job')
+        user_message = AIOpsChatMessage.objects.create(session=session, role=AIOpsChatMessage.ROLE_USER, content='失败问题')
+        assistant_message = AIOpsChatMessage.objects.create(session=session, role=AIOpsChatMessage.ROLE_ASSISTANT, content='排队中')
+        AIOpsChatJob.objects.create(
+            assistant_message=assistant_message,
+            user_message=user_message,
+            thread_id='failed-test-thread',
+        )
+
+        def fail_message(*args, **kwargs):
+            assistant_message.message_type = AIOpsChatMessage.TYPE_ERROR
+            assistant_message.metadata = {'processing_status': 'completed', 'error_detail': 'runtime failed'}
+            assistant_message.save(update_fields=['message_type', 'metadata'])
+
+        mocked_worker.side_effect = fail_message
+        job = process_async_chat_job(claim_async_chat_job())
+        self.assertEqual(job.status, AIOpsChatJob.STATUS_FAILED)
+        self.assertEqual(job.error_message, 'runtime failed')
+
+    @mock.patch('aiops.services._build_chat_result')
+    def test_stale_async_worker_does_not_overwrite_new_owner(self, mocked_result):
+        session = AIOpsChatSession.objects.create(user=self.user, title='stale-job')
+        user_message = AIOpsChatMessage.objects.create(session=session, role=AIOpsChatMessage.ROLE_USER, content='检查状态')
+        assistant_message = AIOpsChatMessage.objects.create(
+            session=session,
+            role=AIOpsChatMessage.ROLE_ASSISTANT,
+            content='排队中',
+            metadata={'processing_status': 'pending'},
+        )
+        job = AIOpsChatJob.objects.create(
+            assistant_message=assistant_message,
+            user_message=user_message,
+            thread_id='stale-job-thread',
+        )
+        claimed = claim_async_chat_job()
+        new_claim_token = uuid.uuid4()
+
+        def replace_owner(*args, **kwargs):
+            AIOpsChatJob.objects.filter(pk=job.pk).update(
+                claim_token=new_claim_token,
+                lease_until=timezone.now() + timedelta(seconds=120),
+            )
+            return {
+                'content': '过期 worker 的结果',
+                'citations': [],
+                'tool_calls': [],
+                'message_type': AIOpsChatMessage.TYPE_TEXT,
+                'metadata': {},
+            }
+
+        mocked_result.side_effect = replace_owner
+        process_async_chat_job(claimed)
+
+        job.refresh_from_db()
+        assistant_message.refresh_from_db()
+        self.assertEqual(job.status, AIOpsChatJob.STATUS_RUNNING)
+        self.assertEqual(job.claim_token, new_claim_token)
+        self.assertEqual(assistant_message.content, '排队中')
+        self.assertNotEqual((assistant_message.metadata or {}).get('processing_status'), 'completed')
+
+    def test_replayed_chat_result_reuses_existing_pending_action(self):
+        session = AIOpsChatSession.objects.create(user=self.user, title='replay-action')
+        Host.objects.create(hostname='replay-host', ip_address='10.20.30.40', environment='prod', status='offline')
+        assistant_message = AIOpsChatMessage.objects.create(session=session, role=AIOpsChatMessage.ROLE_ASSISTANT, content='')
+        draft = build_task_draft(
+            self.user,
+            '为 replay-host 生成巡检任务',
+            {'request_summary': '为 replay-host 生成巡检任务', 'environment': 'prod'},
+        )
+        self.assertFalse(draft.get('error'))
+        action = create_pending_action_from_draft(session, assistant_message, draft)
+        result = {
+            'content': '已生成任务草稿。',
+            'message_type': AIOpsChatMessage.TYPE_ACTION,
+            'pending_action_draft': draft,
+            'metadata': {'orchestration_engine': 'langgraph'},
+        }
+
+        _, replayed_action = _apply_dispatch_result_to_message(
+            session, assistant_message, result, self.user, question='为 replay-host 生成巡检任务'
+        )
+
+        self.assertEqual(replayed_action.id, action.id)
+        self.assertEqual(AIOpsPendingAction.objects.filter(message=assistant_message).count(), 1)
+
+    @mock.patch('aiops.services._build_chat_result_legacy')
+    def test_async_chat_job_runs_langgraph_and_persists_answer(self, mocked_runtime):
+        from .services import start_async_chat_processing
+
+        mocked_runtime.return_value = {
+            'content': '生产环境检查完成。',
+            'citations': [],
+            'tool_calls': [],
+            'message_type': AIOpsChatMessage.TYPE_TEXT,
+            'metadata': {'execution_mode': 'test_async_runtime'},
+        }
+        session = AIOpsChatSession.objects.create(user=self.user, title='async-graph-job')
+        user_message = AIOpsChatMessage.objects.create(session=session, role=AIOpsChatMessage.ROLE_USER, content='检查生产环境')
+        assistant_message = AIOpsChatMessage.objects.create(
+            session=session,
+            role=AIOpsChatMessage.ROLE_ASSISTANT,
+            content='正在分析',
+            metadata={'processing_status': 'pending'},
+        )
+        queued_job = start_async_chat_processing(session, user_message, self.user, assistant_message)
+        self.assertEqual(queued_job.status, AIOpsChatJob.STATUS_QUEUED)
+
+        processed_job = process_async_chat_job(claim_async_chat_job())
+        assistant_message.refresh_from_db()
+        self.assertEqual(processed_job.status, AIOpsChatJob.STATUS_COMPLETED)
+        self.assertEqual(assistant_message.content, '生产环境检查完成。')
+        self.assertEqual(assistant_message.metadata['orchestration_engine'], 'langgraph')
+        self.assertEqual(assistant_message.metadata['langgraph_resume_status'], 'completed')
+        mocked_runtime.assert_called_once()
 
     @mock.patch('aiops.views.start_async_chat_processing')
     def test_chat_session_and_async_message_persist_page_context(self, mocked_start_async):
@@ -6705,42 +7858,67 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(response.data['assistant_message']['metadata']['page_context']['hints']['namespace'], 'production')
         mocked_start_async.assert_called_once()
 
-    def test_demo_account_send_message_is_temporarily_disabled(self):
+    def test_legacy_demo_account_requires_chat_permission(self):
         demo_user = User.objects.create_user(username='demo', password='Demo#123')
         demo_client = APIClient()
         demo_token = Token.objects.create(user=demo_user)
         demo_client.credentials(HTTP_AUTHORIZATION=f'Token {demo_token.key}')
 
         session_response = demo_client.post('/api/aiops/sessions/', {'title': 'demo-chat'}, format='json')
-        self.assertEqual(session_response.status_code, 201)
+        self.assertEqual(session_response.status_code, 403)
+        session = AIOpsChatSession.objects.create(user=demo_user, title='legacy-chat')
 
         response = demo_client.post(
-            f"/api/aiops/sessions/{session_response.data['id']}/send_message/",
+            f'/api/aiops/sessions/{session.id}/send_message/',
             {'content': '请分析当前未确认的严重告警风险'},
             format='json',
         )
 
         self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.data['detail'], '演示账号问答权限已临时关闭，如需体验请联系作者：592095766@qq.com')
+        self.assertIn('aiops.chat.view', response.data['detail'])
 
     @mock.patch('aiops.views.start_async_chat_processing')
-    def test_demo_account_send_message_async_is_temporarily_disabled(self, mocked_start_async):
+    def test_chat_role_can_send_message_async(self, mocked_start_async):
+        demo_user = User.objects.create_user(username='chat-operator', password='Chat#123456')
+        role = Role.objects.create(code='chat-reader', name='Chat Reader')
+        role.permissions.add(PermissionDefinition.objects.get(code='aiops.chat.view'))
+        role.users.add(demo_user)
+        demo_client = APIClient()
+        demo_token = Token.objects.create(user=demo_user)
+        demo_client.credentials(HTTP_AUTHORIZATION=f'Token {demo_token.key}')
+
+        session_response = demo_client.post('/api/aiops/sessions/', {'title': 'demo-ai-chat-async'}, format='json')
+        self.assertEqual(session_response.status_code, 201)
+
+        response = demo_client.post(
+            f"/api/aiops/sessions/{session_response.data['id']}/send_message_async/",
+            {'content': 'demo ai async question'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data['assistant_message']['metadata']['processing_status'], 'pending')
+        mocked_start_async.assert_called_once()
+
+    @mock.patch('aiops.views.start_async_chat_processing')
+    def test_legacy_demo_account_requires_async_chat_permission(self, mocked_start_async):
         demo_user = User.objects.create_user(username='demo', password='Demo#123')
         demo_client = APIClient()
         demo_token = Token.objects.create(user=demo_user)
         demo_client.credentials(HTTP_AUTHORIZATION=f'Token {demo_token.key}')
 
         session_response = demo_client.post('/api/aiops/sessions/', {'title': 'demo-chat-async'}, format='json')
-        self.assertEqual(session_response.status_code, 201)
+        self.assertEqual(session_response.status_code, 403)
+        session = AIOpsChatSession.objects.create(user=demo_user, title='legacy-chat-async')
 
         response = demo_client.post(
-            f"/api/aiops/sessions/{session_response.data['id']}/send_message_async/",
+            f'/api/aiops/sessions/{session.id}/send_message_async/',
             {'content': '当前未确认的严重告警有哪些？'},
             format='json',
         )
 
         self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.data['detail'], '演示账号问答权限已临时关闭，如需体验请联系作者：592095766@qq.com')
+        self.assertIn('aiops.chat.view', response.data['detail'])
         mocked_start_async.assert_not_called()
 
     @mock.patch('aiops.services._request_model_completion')
@@ -6791,7 +7969,7 @@ class AIOpsApiTests(TestCase):
         session_response = self.client.post('/api/aiops/sessions/', {'title': '任务生成'}, format='json')
         session_id = session_response.data['id']
         AIOpsChatSession.objects.filter(pk=session_id).update(context={'current_environment': {'name': 'prod'}})
-        Host.objects.create(hostname='legacy-data-sync', ip_address='10.20.30.20', environment='prod', status='offline')
+        Host.objects.create(hostname='legacy-data-sync', ip_address='192.0.2.3', environment='prod', status='offline')
         response = self.client.post(
             f'/api/aiops/sessions/{session_id}/send_message/',
             {'content': '为 legacy-data-sync 生成巡检任务'},
@@ -6802,7 +7980,7 @@ class AIOpsApiTests(TestCase):
 
     def test_confirm_pending_action_returns_editable_task_draft(self):
         self.ensure_prod_knowledge_environment()
-        Host.objects.create(hostname='legacy-data-sync', ip_address='10.20.30.20', environment='prod', status='offline')
+        Host.objects.create(hostname='legacy-data-sync', ip_address='192.0.2.3', environment='prod', status='offline')
         session = AIOpsChatSession.objects.create(user=self.user, title='task-draft-confirm')
         assistant_message = AIOpsChatMessage.objects.create(session=session, role='assistant', content='task draft')
         draft = build_task_draft(
@@ -6812,18 +7990,48 @@ class AIOpsApiTests(TestCase):
         )
         action = create_pending_task_action_from_draft(session, assistant_message, draft)
 
+        from .langgraph_pilot import _action_graph_config, get_langgraph_action_graph, start_action_confirmation
+        pending_state = start_action_confirmation(action.id)
+        self.assertEqual(pending_state.values['status'], 'awaiting_confirmation')
+        self.assertEqual(pending_state.next, ('confirmation',))
+
         response = self.client.post(f'/api/aiops/actions/{action.id}/confirm/', {}, format='json')
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data['task_draft']['name'], draft['name'])
         self.assertEqual(response.data['task_draft']['trigger_source'], HostTask.TRIGGER_SOURCE_AIOPS)
         self.assertFalse(HostTask.objects.filter(trigger_source=HostTask.TRIGGER_SOURCE_AIOPS).exists())
+        completed_state = get_langgraph_action_graph().get_state(_action_graph_config(action))
+        self.assertEqual(completed_state.values['status'], 'completed')
+        self.assertEqual(completed_state.values['result']['name'], draft['name'])
 
         repeat_response = self.client.post(f'/api/aiops/actions/{action.id}/confirm/', {}, format='json')
 
         self.assertEqual(repeat_response.status_code, 200)
         self.assertEqual(repeat_response.data['task_draft']['name'], draft['name'])
         self.assertFalse(HostTask.objects.filter(trigger_source=HostTask.TRIGGER_SOURCE_AIOPS).exists())
+
+    def test_action_graph_rejects_other_user_without_consuming_confirmation(self):
+        session = AIOpsChatSession.objects.create(user=self.user, title='approval-owner')
+        assistant_message = AIOpsChatMessage.objects.create(session=session, role='assistant', content='draft')
+        action = AIOpsPendingAction.objects.create(
+            session=session,
+            message=assistant_message,
+            action_type=AIOpsPendingAction.ACTION_EXECUTE_HOST_TASK,
+            title='待确认任务',
+            action_payload={'name': '待确认任务'},
+        )
+        other_user = User.objects.create_user(username='other-approver', password='Passw0rd!123')
+        other_user.rbac_roles.add(Role.objects.get(code='platform-admin'))
+        self.client.force_authenticate(user=other_user)
+
+        response = self.client.post(f'/api/aiops/actions/{action.id}/confirm/', {}, format='json')
+
+        self.assertEqual(response.status_code, 400)
+        action.refresh_from_db()
+        self.assertEqual(action.status, AIOpsPendingAction.STATUS_PENDING)
+        from .langgraph_pilot import _action_graph_config, get_langgraph_action_graph
+        self.assertFalse(get_langgraph_action_graph().get_state(_action_graph_config(action)).values)
 
     @mock.patch('aiops.services._request_model_completion')
     def test_send_message_returns_error_when_model_does_not_call_tools(self, mocked_completion):
@@ -6876,7 +8084,7 @@ class AIOpsApiTests(TestCase):
 
     def test_analysis_only_blocks_pending_action_creation(self):
         session = AIOpsChatSession.objects.create(user=self.user, title='analysis-only')
-        Host.objects.create(hostname='legacy-data-sync', ip_address='10.20.30.20', environment='prod', status='offline')
+        Host.objects.create(hostname='legacy-data-sync', ip_address='192.0.2.3', environment='prod', status='offline')
         user_message = AIOpsChatMessage.objects.create(
             session=session,
             role=AIOpsChatMessage.ROLE_USER,
@@ -7159,7 +8367,7 @@ class AIOpsApiTests(TestCase):
         config.default_provider = provider
         config.save(update_fields=['default_provider'])
 
-        host = Host.objects.create(hostname='k8s-node-01', ip_address='10.30.1.11', environment='prod', status='online')
+        host = Host.objects.create(hostname='k8s-node-01', ip_address='192.0.2.4', environment='prod', status='online')
         Alert.objects.create(
             title='payment-worker Deployment 副本不可用',
             level='critical',
@@ -7297,7 +8505,7 @@ class AIOpsApiTests(TestCase):
         self.assertIn('建议操作：', issue)
 
     def test_query_cmdb_items_returns_ip_for_natural_language_query(self):
-        ci_type = CIType.objects.create(name='应用服务')
+        ci_type = CIType.objects.create(name='AIOps IP 查询应用服务', code='AIOPS_IP_LOOKUP_APP')
         ci = ConfigItem.objects.create(
             name='order-service',
             ci_type=ci_type,
@@ -7318,10 +8526,1086 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(len(result['items']), 1)
         self.assertEqual(result['items'][0]['id'], ci.id)
         self.assertEqual(result['items'][0]['ip_address'], '10.10.1.100')
-        self.assertIn('10.10.1.100', result['sections'][0]['items'][0])
+        self.assertIn('10.10.1.100', result['sections'][1]['items'][0])
+
+    def test_query_cmdb_items_returns_nacos_access_address(self):
+        ci_type, _ = CIType.objects.get_or_create(code='NACOS', defaults={'name': 'Nacos'})
+        business = ResourceNode.objects.create(name='WE平台', node_type='biz')
+        integration = ResourceNode.objects.create(name='联调环境', node_type='env', parent=business)
+        ci = ConfigItem.objects.create(
+            name='nacos-console',
+            ci_type=ci_type,
+            business_node=business,
+            business_line='WE平台',
+            environment_node=integration,
+            environment='联调环境',
+            status='active',
+            attributes={'endpoint': 'http://nacos.example.com:8848/nacos'},
+        )
+        session = AIOpsChatSession.objects.create(user=self.user, title='cmdb-nacos-address')
+        user_message = AIOpsChatMessage.objects.create(
+            session=session,
+            role='user',
+            content='WE平台联调环境nacos访问地址是什么',
+        )
+
+        result = query_cmdb_items(
+            session,
+            user_message,
+            self.user,
+            query='WE平台联调环境nacos访问地址是什么',
+            limit=3,
+        )
+
+        self.assertEqual(result['summary']['count'], 1)
+        self.assertEqual(result['items'][0]['id'], ci.id)
+        self.assertEqual(result['items'][0]['access_address'], 'http://nacos.example.com:8848/nacos')
+        self.assertIn('http://nacos.example.com:8848/nacos', result['sections'][1]['items'][0])
+
+    def test_query_cmdb_items_understands_colloquial_access_address_question(self):
+        ci_type, _ = CIType.objects.get_or_create(code='NACOS', defaults={'name': 'Nacos'})
+        business = ResourceNode.objects.create(name='WE平台', node_type='biz')
+        integration = ResourceNode.objects.create(name='联调', node_type='env', parent=business)
+        ci = ConfigItem.objects.create(
+            name='联调环境nacos',
+            ci_type=ci_type,
+            business_node=business,
+            business_line='WE平台',
+            environment_node=integration,
+            environment='联调',
+            status='active',
+            attributes={'access_address': 'https://nacos-uat.example.com'},
+        )
+        session = AIOpsChatSession.objects.create(user=self.user, title='cmdb-nacos-colloquial-address')
+        user_message = AIOpsChatMessage.objects.create(
+            session=session,
+            role='user',
+            content='we平台联调环境nacos访问地址是啥',
+        )
+
+        result = query_cmdb_items(
+            session,
+            user_message,
+            self.user,
+            query='we平台联调环境nacos访问地址是啥',
+            limit=3,
+        )
+
+        self.assertEqual(result['summary']['count'], 1)
+        self.assertEqual(result['summary']['tokens'], ['nacos'])
+        self.assertEqual(result['items'][0]['id'], ci.id)
+        self.assertEqual(result['items'][0]['access_address'], 'https://nacos-uat.example.com')
+
+    @mock.patch('aiops.services._provider_is_ready', return_value=True)
+    @mock.patch('aiops.services._request_model_completion')
+    def test_cmdb_query_arguments_use_llm_for_colloquial_language(self, request_completion, _provider_ready):
+        ci_type, _ = CIType.objects.get_or_create(code='NACOS', defaults={'name': 'Nacos'})
+        business = ResourceNode.objects.create(name='WE平台', node_type='biz')
+        integration = ResourceNode.objects.create(name='联调', node_type='env', parent=business)
+        ConfigItem.objects.create(
+            name='联调环境nacos',
+            ci_type=ci_type,
+            business_node=business,
+            business_line='WE平台',
+            environment_node=integration,
+            environment='联调',
+            status='active',
+            attributes={'access_address': 'https://nacos-uat.example.com'},
+        )
+        request_completion.return_value = {
+            'choices': [{
+                'message': {
+                    'tool_calls': [{
+                        'function': {
+                            'name': 'extract_cmdb_query',
+                            'arguments': json.dumps({
+                        'business_line': 'WE平台',
+                        'intent': 'asset_query',
+                        'environment': '联调',
+                        'ci_type': 'Nacos',
+                        'status': '',
+                        'admin_user': '',
+                        'attribute_names': ['访问地址'],
+                        'search_terms': ['nacos'],
+                        'use_previous_context': False,
+                        'confidence': 0.97,
+                            }, ensure_ascii=False),
+                        },
+                    }],
+                },
+            }],
+        }
+        session = AIOpsChatSession.objects.create(user=self.user, title='cmdb-colloquial-llm')
+        message = AIOpsChatMessage.objects.create(session=session, role='user', content='we联调那套nacos从哪儿进啊')
+        provider = mock.Mock(default_model='test-model')
+
+        arguments = _enrich_cmdb_query_arguments(
+            {'query': message.content, 'environment': '', 'business_line': '', 'ci_type': '', 'status': '', 'admin_user': '', 'limit': 10},
+            provider,
+            message.content,
+            self.user,
+            session=session,
+            user_message=message,
+        )
+        result = query_cmdb_items(session, message, self.user, **{
+            key: arguments[key]
+            for key in ['query', 'environment', 'business_line', 'ci_type', 'status', 'admin_user', 'attribute_names', 'search_terms', 'limit']
+        })
+
+        self.assertEqual(arguments['understanding_source'], 'catalog')
+        self.assertEqual(arguments['attribute_names'], ['访问地址'])
+        self.assertEqual(arguments['search_terms'], [])
+        self.assertEqual(result['summary']['count'], 1)
+        self.assertEqual(result['items'][0]['access_address'], 'https://nacos-uat.example.com')
+
+    def test_cmdb_grounded_query_understands_colloquial_entry_question(self):
+        ci_type, _ = CIType.objects.get_or_create(code='NACOS', defaults={'name': 'Nacos'})
+        business = ResourceNode.objects.create(name='WE平台', node_type='biz')
+        integration = ResourceNode.objects.create(name='联调', node_type='env', parent=business)
+        ConfigItem.objects.create(
+            name='联调环境nacos',
+            ci_type=ci_type,
+            business_node=business,
+            business_line='WE平台',
+            environment_node=integration,
+            environment='联调',
+            attributes={'access_address': 'https://nacos-uat.example.com'},
+        )
+
+        parsed = _cmdb_grounded_query_arguments('we联调那套nacos从哪儿进啊', self.user)
+
+        self.assertEqual(parsed['business_line'], 'WE平台')
+        self.assertEqual(parsed['environment'], '联调')
+        self.assertEqual(parsed['ci_type'], 'Nacos')
+        self.assertEqual(parsed['attribute_names'], ['访问地址'])
+        self.assertEqual(parsed['search_terms'], [])
+
+    @mock.patch('aiops.services._provider_is_ready', return_value=True)
+    @mock.patch('aiops.services._request_model_completion')
+    def test_cmdb_query_arguments_reject_values_outside_authorized_catalog(self, request_completion, _provider_ready):
+        ci_type = CIType.objects.create(name='授权应用', code='AUTHORIZED_APP')
+        ConfigItem.objects.create(name='authorized-app', ci_type=ci_type, business_line='授权业务', admin_user='owner')
+        request_completion.return_value = {
+            'choices': [{
+                'message': {
+                    'tool_calls': [{
+                        'function': {
+                            'name': 'extract_cmdb_query',
+                            'arguments': json.dumps({
+                        'business_line': '未授权业务',
+                        'intent': 'asset_query',
+                        'environment': '不存在环境',
+                        'ci_type': '不存在分类',
+                        'status': '',
+                        'admin_user': 'root',
+                        'attribute_names': ['密码', '版本'],
+                        'search_terms': ['authorized-app'],
+                        'use_previous_context': False,
+                        'confidence': 0.99,
+                            }, ensure_ascii=False),
+                        },
+                    }],
+                },
+            }],
+        }
+        session = AIOpsChatSession.objects.create(user=self.user, title='cmdb-catalog-validation')
+        message = AIOpsChatMessage.objects.create(session=session, role='user', content='帮我看看那个应用版本')
+
+        arguments = _enrich_cmdb_query_arguments(
+            {'query': message.content, 'environment': '', 'business_line': '', 'ci_type': '', 'status': '', 'admin_user': '', 'limit': 10},
+            mock.Mock(default_model='test-model'),
+            message.content,
+            self.user,
+            session=session,
+            user_message=message,
+        )
+
+        self.assertEqual(arguments['business_line'], '')
+        self.assertEqual(arguments['environment'], '')
+        self.assertEqual(arguments['ci_type'], '')
+        self.assertEqual(arguments['admin_user'], '')
+        self.assertEqual(arguments['attribute_names'], ['版本'])
+
+    @mock.patch('aiops.services._run_answer_formatter', return_value={'used': False, 'fell_back': False, 'attempts': 0})
+    @mock.patch('aiops.services._provider_is_ready', return_value=True)
+    @mock.patch('aiops.services.get_active_provider')
+    @mock.patch('aiops.services._request_model_completion')
+    def test_cmdb_direct_query_retries_rules_after_llm_zero_result(
+        self,
+        request_completion,
+        get_provider,
+        _provider_ready,
+        _answer_formatter,
+    ):
+        ci_type = CIType.objects.create(name='回退 Nacos', code='FALLBACK_NACOS')
+        ConfigItem.objects.create(
+            name='fallback-nacos',
+            ci_type=ci_type,
+            status='active',
+            attributes={'access_address': 'https://fallback-nacos.example.com'},
+        )
+        request_completion.return_value = {
+            'choices': [{
+                'message': {
+                    'content': json.dumps({
+                        'intent': 'asset_query',
+                        'business_line': '',
+                        'environment': '',
+                        'ci_type': '',
+                        'status': '',
+                        'admin_user': '',
+                        'attribute_names': ['访问地址'],
+                        'search_terms': ['模型误提取词'],
+                        'use_previous_context': False,
+                        'confidence': 0.91,
+                    }, ensure_ascii=False),
+                },
+            }],
+        }
+        provider = mock.Mock(default_model='test-model')
+        get_provider.return_value = provider
+        session = AIOpsChatSession.objects.create(user=self.user, title='cmdb-llm-rule-fallback')
+        question = 'fallback-nacos 访问地址是什么'
+        message = AIOpsChatMessage.objects.create(session=session, role='user', content=question)
+
+        result = _dispatch_with_tool_runtime(session, message, self.user, question)
+
+        self.assertEqual(result['metadata']['execution_mode'], 'direct_cmdb_query')
+        self.assertIn('https://fallback-nacos.example.com', result['content'])
+        self.assertEqual(AIOpsToolInvocation.objects.filter(session=session, tool_name='query_cmdb_items').count(), 1)
+
+    def test_query_cmdb_items_understands_compact_business_environment_question(self):
+        ci_type = CIType.objects.create(name='AIOps 算法服务器', code='AIOPS_ALGORITHM_SERVER')
+        algorithm = ResourceNode.objects.create(name='算法', node_type='biz')
+        production_environment = ResourceNode.objects.create(name='生产', node_type='env', parent=algorithm)
+        development_environment = ResourceNode.objects.create(name='开发', node_type='env', parent=algorithm)
+        production = ConfigItem.objects.create(
+            name='algorithm-prod-01', ci_type=ci_type, business_node=algorithm, business_line='算法',
+            environment_node=production_environment, environment='prod', status='active',
+        )
+        ConfigItem.objects.create(
+            name='algorithm-dev-01', ci_type=ci_type, business_node=algorithm, business_line='算法',
+            environment_node=development_environment, environment='dev', status='active',
+        )
+        ConfigItem.objects.create(
+            name='trade-prod-01', ci_type=ci_type, business_line='交易', environment='prod', status='active',
+        )
+        session = AIOpsChatSession.objects.create(user=self.user, title='cmdb-compact-scope')
+        message = AIOpsChatMessage.objects.create(
+            session=session,
+            role='user',
+            content='查询下cmdb里算法生产环境有哪些资产',
+        )
+
+        result = query_cmdb_items(
+            session,
+            message,
+            self.user,
+            query='查询下cmdb里算法生产环境有哪些资产',
+        )
+
+        self.assertEqual(result['summary']['environment'], '生产')
+        self.assertEqual(result['summary']['environment_node_ids'], [production_environment.id])
+        self.assertEqual(result['summary']['business_line'], '算法')
+        self.assertEqual(result['summary']['tokens'], [])
+        self.assertEqual([item['id'] for item in result['items']], [production.id])
+
+    def test_query_cmdb_items_uses_environment_node_tool_argument(self):
+        ci_type = CIType.objects.create(name='AIOps 环境参数服务器', code='AIOPS_ENV_ARGUMENT_SERVER')
+        algorithm = ResourceNode.objects.create(name='算法', node_type='biz')
+        production_environment = ResourceNode.objects.create(name='生产', node_type='env', parent=algorithm)
+        testing_environment = ResourceNode.objects.create(name='测试', node_type='env', parent=algorithm)
+        production = ConfigItem.objects.create(
+            name='algorithm-prod-argument', ci_type=ci_type, business_node=algorithm, business_line='算法',
+            environment_node=production_environment, environment='prod', status='active',
+        )
+        ConfigItem.objects.create(
+            name='algorithm-test-argument', ci_type=ci_type, business_node=algorithm, business_line='算法',
+            environment_node=testing_environment, environment='test', status='active',
+        )
+        session = AIOpsChatSession.objects.create(user=self.user, title='cmdb-environment-argument')
+        message = AIOpsChatMessage.objects.create(session=session, role='user', content='算法有哪些资产')
+
+        result = query_cmdb_items(
+            session,
+            message,
+            self.user,
+            query='算法有哪些资产',
+            environment='生产',
+        )
+
+        self.assertEqual(result['summary']['environment'], '生产')
+        self.assertEqual([item['id'] for item in result['items']], [production.id])
+
+    def test_query_cmdb_items_reads_custom_environment_nodes_without_knowledge_environment(self):
+        ci_type = CIType.objects.create(name='AIOps 自定义环境服务器', code='AIOPS_CUSTOM_ENV_SERVER')
+        algorithm = ResourceNode.objects.create(name='算法', node_type='biz')
+        integration = ResourceNode.objects.create(name='联调环境', node_type='env', parent=algorithm)
+        staging = ResourceNode.objects.create(name='预发环境', node_type='env', parent=algorithm)
+        integration_asset = ConfigItem.objects.create(
+            name='algorithm-integration-01', ci_type=ci_type, business_node=algorithm, business_line='算法',
+            environment_node=integration, environment='integration', status='active',
+        )
+        staging_asset = ConfigItem.objects.create(
+            name='algorithm-staging-01', ci_type=ci_type, business_node=algorithm, business_line='算法',
+            environment_node=staging, environment='staging', status='active',
+        )
+        month = timezone.localdate().strftime('%Y-%m')
+        CostRecord.objects.create(ci=integration_asset, month=month, amount=Decimal('880.00'), provider='aliyun')
+        CostRecord.objects.create(ci=staging_asset, month=month, amount=Decimal('1660.00'), provider='aliyun')
+        session = AIOpsChatSession.objects.create(
+            user=self.user,
+            title='cmdb-custom-environment',
+            context={'current_environment': {'name': 'unrelated-aiops-environment'}},
+        )
+        message = AIOpsChatMessage.objects.create(session=session, role='user', content='查询 CMDB 算法联调环境资产')
+
+        integration_result = query_cmdb_items(
+            session,
+            message,
+            self.user,
+            query='查询 CMDB 算法联调环境有哪些资产',
+        )
+        all_environments_result = query_cmdb_items(
+            session,
+            message,
+            self.user,
+            query='查询 CMDB 算法有哪些资产',
+        )
+        cost_result = query_cost_report(
+            session,
+            message,
+            self.user,
+            query='分析 CMDB 算法联调环境本月成本',
+        )
+        topology_result = query_cmdb_topology(
+            session,
+            message,
+            self.user,
+            query='查询 CMDB 算法联调环境资产拓扑',
+        )
+        quality_result = query_cmdb_quality(
+            session,
+            message,
+            self.user,
+            query='分析 CMDB 算法联调环境数据质量',
+        )
+        overview_result = query_cmdb_insights(
+            session,
+            message,
+            self.user,
+            query='查询 CMDB 算法联调环境总览',
+            topic='overview',
+        )
+
+        self.assertEqual(integration_result['summary']['environment'], '联调环境')
+        self.assertEqual(integration_result['summary']['environment_node_ids'], [integration.id])
+        self.assertEqual([item['id'] for item in integration_result['items']], [integration_asset.id])
+        self.assertEqual(all_environments_result['summary']['environment'], '')
+        self.assertEqual({item['id'] for item in all_environments_result['items']}, {integration_asset.id, staging_asset.id})
+        self.assertEqual(cost_result['summary']['environment'], '联调环境')
+        self.assertEqual(cost_result['summary']['total_monthly_cost'], 880.0)
+        self.assertEqual(topology_result['summary']['matched_count'], 1)
+        self.assertEqual(topology_result['summary']['environment'], '联调环境')
+        self.assertEqual(quality_result['summary']['total'], 1)
+        self.assertEqual(quality_result['summary']['environment'], '联调环境')
+        self.assertEqual(overview_result['summary']['count'], 1)
+        self.assertEqual(overview_result['summary']['environment'], '联调环境')
+
+    def test_query_cmdb_items_reuses_previous_assets_for_attribute_followup(self):
+        ci_type = CIType.objects.create(name='AIOps 连续追问云主机', code='AIOPS_FOLLOWUP_HOST')
+        business = ResourceNode.objects.create(name='连续追问业务', node_type='biz')
+        production_environment = ResourceNode.objects.create(name='生产', node_type='env', parent=business)
+        development_environment = ResourceNode.objects.create(name='开发', node_type='env', parent=business)
+        first = ConfigItem.objects.create(
+            name='followup-host-01', ci_type=ci_type, environment_node=production_environment, environment='prod',
+            attributes={'instance_type': 'ecs.g7.large', 'api_token': 'hidden'},
+        )
+        second = ConfigItem.objects.create(
+            name='followup-host-02', ci_type=ci_type, environment_node=production_environment, environment='prod',
+            attributes={'instance_type': 'ecs.g7.xlarge', 'api_token': 'hidden'},
+        )
+        development = ConfigItem.objects.create(
+            name='followup-host-dev', ci_type=ci_type, environment_node=development_environment, environment='dev',
+        )
+        session = AIOpsChatSession.objects.create(user=self.user, title='cmdb-followup')
+        first_message = AIOpsChatMessage.objects.create(session=session, role='user', content='查询生产环境 AIOps 连续追问云主机')
+
+        initial = query_cmdb_items(
+            session, first_message, self.user,
+            query='查询生产环境 AIOps 连续追问云主机', environment='prod', ci_type=ci_type.code,
+        )
+        followup_message = AIOpsChatMessage.objects.create(session=session, role='user', content='它们的配置呢')
+        followup = query_cmdb_items(session, followup_message, self.user, query='它们的配置呢')
+
+        self.assertEqual({item['id'] for item in initial['items']}, {first.id, second.id})
+        self.assertEqual({item['id'] for item in followup['items']}, {first.id, second.id})
+        self.assertEqual(followup['items'][0]['attributes'].keys(), {'instance_type'})
+        self.assertNotIn('api_token', json.dumps(followup, ensure_ascii=False))
+
+        scoped_message = AIOpsChatMessage.objects.create(session=session, role='user', content='开发环境资产有多少')
+        scoped = query_cmdb_items(session, scoped_message, self.user, query='开发环境资产有多少')
+
+        self.assertEqual({item['id'] for item in scoped['items']}, {development.id})
+
+    def test_cmdb_version_followup_reuses_previous_asset_context(self):
+        ci_type = CIType.objects.create(name='AIOps 连续追问中间件', code='AIOPS_FOLLOWUP_MIDDLEWARE')
+        ci = ConfigItem.objects.create(
+            name='followup-nacos',
+            ci_type=ci_type,
+            status='active',
+            attributes={
+                'endpoint': 'http://nacos.example.com:8848/nacos',
+                'version': '2.4.2',
+            },
+        )
+        session = AIOpsChatSession.objects.create(user=self.user, title='cmdb-version-followup')
+        initial_message = AIOpsChatMessage.objects.create(session=session, role='user', content='nacos 访问地址是什么')
+        query_cmdb_items(session, initial_message, self.user, query='nacos 访问地址是什么')
+        empty_message = AIOpsChatMessage.objects.create(session=session, role='user', content='不存在的资产是什么')
+        empty_result = query_cmdb_items(session, empty_message, self.user, query='不存在的资产是什么')
+        followup_message = AIOpsChatMessage.objects.create(session=session, role='user', content='版本是什么')
+
+        result = _dispatch_with_tool_runtime(session, followup_message, self.user, '版本是什么')
+
+        self.assertEqual(empty_result['summary']['count'], 0)
+        self.assertEqual(result['metadata']['execution_mode'], 'direct_cmdb_query')
+        self.assertEqual(result['tool_calls'], ['query_cmdb_items'])
+        self.assertIn('2.4.2', result['content'])
+        self.assertIn(str(ci.id), str(session.context.get('cmdb_assistant_context', {}).get('last_item_ids', [])))
+
+    @mock.patch('aiops.services._run_answer_formatter', return_value={'used': False, 'fell_back': False, 'attempts': 0})
+    @mock.patch('aiops.services._provider_is_ready', return_value=True)
+    @mock.patch('aiops.services.get_active_provider')
+    @mock.patch('aiops.services._request_model_completion')
+    def test_cmdb_colloquial_followup_uses_semantic_context(
+        self,
+        request_completion,
+        get_provider,
+        _provider_ready,
+        _answer_formatter,
+    ):
+        ci_type = CIType.objects.create(name='语义追问 Nacos', code='SEMANTIC_FOLLOWUP_NACOS')
+        ci = ConfigItem.objects.create(
+            name='semantic-followup-nacos',
+            ci_type=ci_type,
+            status='active',
+            attributes={'access_address': 'https://semantic-nacos.example.com'},
+        )
+        session = AIOpsChatSession.objects.create(user=self.user, title='cmdb-semantic-followup')
+        initial_message = AIOpsChatMessage.objects.create(session=session, role='user', content='semantic-followup-nacos')
+        query_cmdb_items(session, initial_message, self.user, query='semantic-followup-nacos')
+        followup_message = AIOpsChatMessage.objects.create(session=session, role='user', content='我咋进去来着')
+        provider = mock.Mock(default_model='test-model')
+        get_provider.return_value = provider
+        request_completion.return_value = {
+            'choices': [{
+                'message': {
+                    'content': json.dumps({
+                        'intent': 'asset_query',
+                        'business_line': '',
+                        'environment': '',
+                        'ci_type': '',
+                        'status': '',
+                        'admin_user': '',
+                        'attribute_names': ['访问地址'],
+                        'search_terms': [],
+                        'use_previous_context': True,
+                        'confidence': 0.96,
+                    }, ensure_ascii=False),
+                },
+            }],
+        }
+
+        result = _dispatch_with_tool_runtime(session, followup_message, self.user, followup_message.content)
+
+        self.assertEqual(result['metadata']['execution_mode'], 'direct_cmdb_query')
+        self.assertEqual(result['tool_calls'], ['query_cmdb_items'])
+        self.assertIn('https://semantic-nacos.example.com', result['content'])
+        self.assertEqual(session.context['cmdb_assistant_context']['last_item_ids'], [ci.id])
+        request_completion.assert_not_called()
+
+    def test_cmdb_sensitive_attribute_question_explains_restriction_and_keeps_context(self):
+        ci_type = CIType.objects.create(name='AIOps 凭据保护中间件', code='AIOPS_CREDENTIAL_PROTECTED')
+        ci = ConfigItem.objects.create(
+            name='protected-nacos',
+            ci_type=ci_type,
+            attributes={'version': '2.4.2', 'password': 'must-not-leak'},
+        )
+        session = AIOpsChatSession.objects.create(user=self.user, title='cmdb-sensitive-followup')
+        initial_message = AIOpsChatMessage.objects.create(session=session, role='user', content='protected-nacos')
+        query_cmdb_items(session, initial_message, self.user, query='protected-nacos')
+        sensitive_message = AIOpsChatMessage.objects.create(session=session, role='user', content='账号密码是什么')
+
+        restricted = query_cmdb_items(session, sensitive_message, self.user, query='账号密码是什么')
+
+        self.assertEqual(restricted['summary']['reason'], 'sensitive_attribute_protected')
+        self.assertIn('未返回密码', '\n'.join(restricted['sections'][0]['items']))
+        self.assertNotIn('must-not-leak', json.dumps(restricted, ensure_ascii=False))
+        session.refresh_from_db()
+        self.assertEqual(session.context['cmdb_assistant_context']['last_item_ids'], [ci.id])
+
+    def test_query_cmdb_insights_returns_authorized_expiry_reminders(self):
+        ci_type = CIType.objects.create(name='AIOps 到期资产', code='AIOPS_EXPIRY_ASSET')
+        ConfigItem.objects.create(
+            name='expiry-host-01', ci_type=ci_type, environment='prod',
+            attributes={'service_expiry_date': (timezone.localdate() + timedelta(days=10)).isoformat()},
+        )
+        session = AIOpsChatSession.objects.create(user=self.user, title='cmdb-expiry')
+        message = AIOpsChatMessage.objects.create(session=session, role='user', content='未来 30 天哪些资产到期')
+
+        result = query_cmdb_insights(session, message, self.user, query='未来 30 天哪些资产到期', topic='expiry', days=30)
+
+        self.assertEqual(result['summary']['count'], 1)
+        self.assertIn('expiry-host-01', result['sections'][0]['items'][0])
+
+    def test_confirm_cmdb_asset_action_validates_dynamic_fields_and_writes_audit(self):
+        ci_type = CIType.objects.create(name='AIOps 表单云主机', code='AIOPS_FORM_HOST')
+        business_node = ResourceNode.objects.create(name='支付业务', node_type='biz')
+        environment_node = ResourceNode.objects.create(name='联调环境', node_type='env', parent=business_node)
+        CIField.objects.create(
+            ci_type=ci_type, name='实例规格', code='instance_type', field_type='string', required=True,
+        )
+        session = AIOpsChatSession.objects.create(user=self.user, title='cmdb-create')
+        message = AIOpsChatMessage.objects.create(session=session, role='assistant', content='请填写资产表单')
+        draft_result = build_cmdb_asset_draft(session, message, self.user, question='帮我新增一台 AIOps 表单云主机')
+        action = create_pending_action_from_draft(session, message, draft_result['pending_action_draft'])
+
+        with self.assertRaisesRegex(ValueError, '实例规格'):
+            confirm_action(action, self.user, payload={'form_values': {
+                'name': 'aiops-form-host-01', 'ci_type': ci_type.id,
+                'business_node': business_node.id, 'environment_node': environment_node.id,
+                'attributes': {},
+            }})
+        action.refresh_from_db()
+        self.assertEqual(action.status, AIOpsPendingAction.STATUS_PENDING)
+
+        response = self.client.post(f'/api/aiops/actions/{action.id}/confirm/', {'form_values': {
+            'name': 'aiops-form-host-01', 'ci_type': ci_type.id,
+            'business_node': business_node.id, 'environment_node': environment_node.id,
+            'admin_user': 'ops', 'status': 'active',
+            'attributes': {'instance_type': 'ecs.g7.large', 'api_token': 'must-not-write'},
+        }}, format='json')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['action_type'], AIOpsPendingAction.ACTION_CREATE_CMDB_ASSET)
+        self.assertEqual(response.data['asset']['name'], 'aiops-form-host-01')
+        created = ConfigItem.objects.get(name='aiops-form-host-01')
+        self.assertEqual(created.business_node_id, business_node.id)
+        self.assertEqual(created.environment_node_id, environment_node.id)
+        self.assertEqual(created.business_line, '支付业务')
+        self.assertEqual(created.environment, '联调环境')
+        self.assertEqual(created.attributes, {'instance_type': 'ecs.g7.large'})
+        self.assertTrue(CIChangeLog.objects.filter(ci=created, action='create', source='aiops_assistant').exists())
+        self.assertTrue(EventRecord.objects.filter(action='create_cmdb_asset_from_aiops', resource_id=str(created.id)).exists())
+        action.refresh_from_db()
+        self.assertEqual(action.status, AIOpsPendingAction.STATUS_EXECUTED)
+
+    def test_cmdb_asset_create_question_directly_returns_resource_node_form(self):
+        business_node = ResourceNode.objects.create(name='订单业务', node_type='biz')
+        integration = ResourceNode.objects.create(name='联调环境', node_type='env', parent=business_node)
+        ResourceNode.objects.create(name='预发环境', node_type='env', parent=business_node)
+        CIType.objects.create(name='AIOps 新增资产云主机', code='AIOPS_CREATE_ASSET_HOST')
+        session = AIOpsChatSession.objects.create(user=self.user, title='cmdb-create-direct-form')
+        question = '帮我新增一台 CMDB 资产'
+        message = AIOpsChatMessage.objects.create(session=session, role='user', content=question)
+
+        result = _dispatch_with_tool_runtime(session, message, self.user, question)
+
+        draft = result['pending_action_draft']
+        base_fields = {field['code']: field for field in draft['form_schema']['base_fields']}
+        self.assertFalse(result['metadata'].get('environment_required'))
+        self.assertEqual(result['metadata']['execution_mode'], 'direct_cmdb_query')
+        self.assertEqual(result['tool_calls'], ['create_cmdb_asset_draft'])
+        self.assertEqual(draft['action_type'], AIOpsPendingAction.ACTION_CREATE_CMDB_ASSET)
+        self.assertEqual(base_fields['business_node']['field_type'], 'select')
+        self.assertEqual(base_fields['environment_node']['depends_on'], 'business_node')
+        self.assertIn({'value': business_node.id, 'label': '订单业务'}, base_fields['business_node']['options'])
+        self.assertIn(
+            {'value': integration.id, 'label': '联调环境', 'parent_value': business_node.id},
+            base_fields['environment_node']['options'],
+        )
+
+    def test_cmdb_component_create_wording_bypasses_knowledge_environment(self):
+        business_node = ResourceNode.objects.create(name='算法业务', node_type='biz')
+        environment = ResourceNode.objects.create(name='算法测试环境', node_type='env', parent=business_node)
+        CIType.objects.get_or_create(code='POSTGRESQL', defaults={'name': 'PostgreSQL'})
+        session = AIOpsChatSession.objects.create(user=self.user, title='cmdb-component-create')
+        question = 'cmdb 帮我在算法测试环境添加一个 pgssql'
+        message = AIOpsChatMessage.objects.create(session=session, role='user', content=question)
+
+        result = _dispatch_with_tool_runtime(session, message, self.user, question)
+
+        draft = result['pending_action_draft']
+        postgresql_type = CIType.objects.get(code='POSTGRESQL')
+        type_options = next(
+            field['options']
+            for field in draft['form_schema']['base_fields']
+            if field['code'] == 'ci_type'
+        )
+        self.assertFalse(result['metadata'].get('environment_required'))
+        self.assertEqual(result['metadata']['execution_mode'], 'direct_cmdb_query')
+        self.assertEqual(result['tool_calls'], ['create_cmdb_asset_draft'])
+        self.assertEqual(draft['form_values']['business_node'], business_node.id)
+        self.assertEqual(draft['form_values']['environment_node'], environment.id)
+        self.assertEqual(draft['form_values']['ci_type'], postgresql_type.id)
+        self.assertEqual(draft['classification']['ci_type_name'], 'PostgreSQL')
+        self.assertNotIn('NAT 网关', {item['label'] for item in type_options})
+
+    @mock.patch('aiops.services._provider_is_ready', return_value=True)
+    @mock.patch('aiops.services.get_active_provider')
+    @mock.patch('aiops.services._request_model_completion')
+    def test_cmdb_asset_type_uses_llm_classification(self, request_completion, get_provider, _provider_ready):
+        postgresql_type, _ = CIType.objects.get_or_create(code='POSTGRESQL', defaults={'name': 'PostgreSQL'})
+        provider = mock.Mock(default_model='test-model')
+        get_provider.return_value = provider
+        request_completion.return_value = {
+            'choices': [{
+                'message': {
+                    'content': json.dumps({'ci_type_id': postgresql_type.id, 'confidence': 0.98}),
+                },
+            }],
+        }
+        session = AIOpsChatSession.objects.create(user=self.user, title='cmdb-llm-classification')
+        message = AIOpsChatMessage.objects.create(session=session, role='user', content='cmdb 帮我添加一个 pgsql')
+
+        result = build_cmdb_asset_draft(
+            session,
+            message,
+            self.user,
+            question=message.content,
+        )
+
+        draft = result['pending_action_draft']
+        self.assertEqual(draft['form_values']['ci_type'], postgresql_type.id)
+        self.assertEqual(draft['classification']['source'], 'llm')
+        self.assertIn('已自动识别资产分类：PostgreSQL。', result['sections'][0]['items'])
+        request_completion.assert_called_once()
+
+    def test_explicit_cmdb_general_question_bypasses_knowledge_environment(self):
+        session = AIOpsChatSession.objects.create(user=self.user, title='cmdb-general-question')
+        question = 'CMDB 可以管理什么'
+        message = AIOpsChatMessage.objects.create(session=session, role='user', content=question)
+
+        result = _dispatch_with_tool_runtime(session, message, self.user, question)
+
+        self.assertFalse(result['metadata'].get('environment_required'))
+        self.assertEqual(result['metadata']['execution_mode'], 'direct_cmdb_query')
+        self.assertEqual(result['tool_calls'], ['query_cmdb_items'])
+
+    def test_bootstrap_question_environments_exclude_disabled_configs(self):
+        AIOpsKnowledgeEnvironment.objects.create(name='可选测试环境', aliases=['scope-test'])
+        AIOpsKnowledgeEnvironment.objects.create(name='停用测试环境', is_enabled=False)
+
+        response = self.client.get('/api/aiops/bootstrap/')
+
+        self.assertEqual(response.status_code, 200)
+        options = {item['name']: item for item in response.data['environment_options']}
+        self.assertIn('可选测试环境', options)
+        self.assertEqual(options['可选测试环境']['aliases'], ['scope-test'])
+        self.assertNotIn('停用测试环境', options)
+        self.assertEqual(set(options['可选测试环境']), {'name', 'aliases'})
+
+    @mock.patch('aiops.views.start_async_chat_processing')
+    def test_chat_categories_preserve_preselected_environment(self, mocked_start):
+        categories = ['troubleshoot', 'alert.root_cause', 'log.query_generate', 'k8s.diagnose', 'slo.analysis',
+                      'change.correlation', 'self_heal.recommend', 'host_task.generate', 'cmdb']
+        for category in categories:
+            with self.subTest(category=category):
+                session = AIOpsChatSession.objects.create(user=self.user, title=category)
+                response = self.client.post(
+                    f'/api/aiops/sessions/{session.id}/send_message_async/',
+                    {
+                        'content': '查看当前情况',
+                        'question_category': category,
+                        'page_context': {'page': 'aiops', 'hints': {'selected_environment': '预选测试环境', 'environment': '预选测试环境'}},
+                    },
+                    format='json',
+                )
+                self.assertEqual(response.status_code, 201)
+                self.assertEqual(response.data['user_message']['metadata']['question_category'], category)
+                self.assertEqual(response.data['assistant_message']['metadata']['question_category'], category)
+                session.refresh_from_db()
+                self.assertEqual(session.context['page_context']['hints']['selected_environment'], '预选测试环境')
+        self.assertEqual(mocked_start.call_count, len(categories))
+
+    def test_troubleshoot_scope_selects_action_by_intent_in_both_runtimes(self):
+        from .langgraph_pilot import _chat_route_node
+        from .services import _resolve_question_category_action
+
+        session = AIOpsChatSession.objects.create(user=self.user)
+        examples = [
+            ('排查当前异常', 'alert.root_cause', 'general'),
+            ('分析当前环境最新严重告警的根因', 'alert.root_cause', 'general'),
+            ('看看当前工作负载', 'k8s.diagnose', 'k8s'),
+            ('排查 Pod 重启并给些排查建议', 'k8s.diagnose', 'k8s'),
+            ('排查 Pod 恢复失败的根因', 'k8s.diagnose', 'k8s'),
+            ('分析服务恢复失败原因', 'alert.root_cause', 'general'),
+            ('给 Pod 重启故障推荐恢复方案', 'self_heal.recommend', 'self_heal'),
+            ('继续给恢复建议', 'self_heal.recommend', 'self_heal'),
+            ('这个故障怎么处理', 'self_heal.recommend', 'self_heal'),
+        ]
+        for question, code, route in examples:
+            with self.subTest(question=question):
+                action = _resolve_question_category_action('troubleshoot', question, user=self.user)
+                self.assertEqual(action['code'], code)
+                message = AIOpsChatMessage.objects.create(
+                    session=session, role='user', content=question,
+                    metadata={'question_category': 'troubleshoot', 'page_context': {'page': 'cmdb.assets'}},
+                )
+                routed = _chat_route_node({'session_id': session.id, 'message_id': message.id,
+                                           'user_id': self.user.id, 'question': question})
+                self.assertEqual(routed['route'], route)
+                self.assertEqual(routed['requested_action'], code)
+
+    @mock.patch('aiops.services._request_model_completion')
+    def test_troubleshoot_scope_returns_diagnosis_and_recovery_answers(self, mocked_completion):
+        get_agent_config()
+        AIOpsModelProvider.objects.all().update(is_enabled=False)
+        self.ensure_ecommerce_knowledge_environment()
+        actions = {item['code']: item for item in list_action_registry(user=self.user, include_unavailable=False)}
+        for question, code in [
+            ('分析当前环境最新严重告警的根因', 'alert.root_cause'),
+            ('排查当前环境 Pod 重启和资源不足的原因', 'k8s.diagnose'),
+            ('给当前环境最新告警推荐一套恢复方案', 'self_heal.recommend'),
+        ]:
+            with self.subTest(action=code):
+                session = AIOpsChatSession.objects.create(user=self.user, context={'last_item_ids': [1]})
+                response = self.client.post(
+                    f'/api/aiops/sessions/{session.id}/send_message/',
+                    {'content': question, 'question_category': 'troubleshoot',
+                     'page_context': {'page': 'cmdb.assets', 'hints': {'selected_environment': '电商测试环境'}}},
+                    format='json',
+                )
+                self.assertEqual(response.status_code, 201)
+                self.assert_action_example_answer_is_useful(actions[code], response.data['assistant_message'])
+                self.assertFalse(session.pending_actions.exists())
+        mocked_completion.assert_not_called()
+
+    @mock.patch('aiops.views.start_async_chat_processing')
+    def test_troubleshoot_scope_preserves_action_permissions(self, mocked_start):
+        from .langgraph_pilot import _chat_route_node
+
+        user = self.create_scoped_cmdb_user('troubleshoot-reader')
+        client = APIClient()
+        client.force_authenticate(user=user)
+        session = AIOpsChatSession.objects.create(user=user)
+        for endpoint in ['send_message', 'send_message_async']:
+            response = client.post(
+                f'/api/aiops/sessions/{session.id}/{endpoint}/',
+                {'content': '推荐一套恢复方案', 'question_category': 'troubleshoot'}, format='json',
+            )
+            self.assertEqual(response.status_code, 400)
+            self.assertIn('question_category', response.data)
+        mocked_start.assert_not_called()
+        self.assertFalse(session.messages.exists())
+        message = AIOpsChatMessage.objects.create(
+            session=session, role='user', content='推荐一套恢复方案',
+            metadata={'question_category': 'troubleshoot'},
+        )
+        state = {'session_id': session.id, 'message_id': message.id, 'user_id': user.id, 'question': message.content}
+        self.assertEqual(_chat_route_node(state)['route'], 'general')
+        result = _dispatch_with_tool_runtime(session, message, user, message.content)
+        self.assertIn('无权使用', result['content'])
+        self.assertFalse(AIOpsToolInvocation.objects.filter(message=message).exists())
+
+        response = client.post(
+            f'/api/aiops/sessions/{session.id}/send_message_async/',
+            {'content': '排查当前服务异常', 'question_category': 'troubleshoot'}, format='json',
+        )
+        self.assertEqual(response.status_code, 201)
+        mocked_start.assert_called_once()
+
+    def test_troubleshoot_scope_requires_environment_before_diagnosis(self):
+        for question in ['排查服务异常', '分析 Pod 异常', '推荐恢复方案']:
+            with self.subTest(question=question):
+                session = AIOpsChatSession.objects.create(user=self.user)
+                message = AIOpsChatMessage.objects.create(
+                    session=session, role='user', content=question,
+                    metadata={'question_category': 'troubleshoot'},
+                )
+                result = _dispatch_with_tool_runtime(session, message, self.user, question)
+                self.assertTrue(result['metadata']['environment_required'])
+                self.assertFalse(AIOpsToolInvocation.objects.filter(message=message).exists())
+
+    def test_explicit_action_scope_overrides_cmdb_and_unrelated_question(self):
+        self.ensure_prod_knowledge_environment()
+        session = AIOpsChatSession.objects.create(user=self.user, context={
+            'page_context': {'page': 'cmdb.assets', 'hints': {'selected_environment': 'prod'}},
+            'last_item_ids': [1],
+        })
+        question = '查看 CMDB 资产和最新告警'
+        message = AIOpsChatMessage.objects.create(
+            session=session, role='user', content=question,
+            metadata={'question_category': 'log.query_generate'},
+        )
+
+        result = _dispatch_with_tool_runtime(session, message, self.user, question)
+
+        self.assertEqual(result['metadata']['selected_action']['code'], 'log.query_generate')
+        self.assertNotEqual(result['metadata']['execution_mode'], 'direct_cmdb_query')
+        self.assertFalse(any('cmdb' in tool for tool in result['tool_calls']))
+
+    def test_explicit_action_routes_follow_selection_for_ambiguous_question(self):
+        from .langgraph_pilot import _chat_after_policy, _chat_route_node, _slo_scope_node
+
+        self.ensure_prod_knowledge_environment()
+        session = AIOpsChatSession.objects.create(user=self.user, context={
+            'page_context': {'hints': {'selected_environment': 'prod'}},
+        })
+        routes = {
+            'alert.root_cause': 'general', 'log.query_generate': 'general',
+            'k8s.diagnose': 'k8s', 'slo.analysis': 'slo',
+            'change.correlation': 'correlation', 'self_heal.recommend': 'self_heal',
+            'host_task.generate': 'action',
+        }
+        for code, route in routes.items():
+            with self.subTest(action=code):
+                message = AIOpsChatMessage.objects.create(
+                    session=session, role='user', content='看看当前情况',
+                    metadata={'question_category': code, 'page_context': {'page': 'cmdb.assets'}},
+                )
+                state = {'session_id': session.id, 'message_id': message.id,
+                         'user_id': self.user.id, 'question': message.content}
+                routed = _chat_route_node(state)
+                self.assertEqual(routed['route'], route)
+                if code == 'k8s.diagnose':
+                    self.assertEqual(_chat_after_policy({**state, **routed}), 'k8s_scope')
+                if code == 'slo.analysis':
+                    self.assertEqual(_slo_scope_node({**state, **routed})['slo_action']['code'], code)
+
+    @mock.patch('aiops.services._request_model_completion')
+    def test_explicit_action_categories_return_selected_action_answers(self, mocked_completion):
+        get_agent_config()
+        AIOpsModelProvider.objects.all().update(is_enabled=False)
+        self.ensure_ecommerce_knowledge_environment()
+        for action in list_action_registry(user=self.user, include_unavailable=False):
+            with self.subTest(action=action['code']):
+                session = AIOpsChatSession.objects.create(user=self.user)
+                response = self.client.post(
+                    f'/api/aiops/sessions/{session.id}/send_message/',
+                    {
+                        'content': action['suggested_questions'][0],
+                        'question_category': action['code'],
+                        'page_context': {'page': 'cmdb.assets', 'hints': {'selected_environment': '电商测试环境'}},
+                    }, format='json',
+                )
+                self.assertEqual(response.status_code, 201)
+                self.assert_action_example_answer_is_useful(action, response.data['assistant_message'])
+        mocked_completion.assert_not_called()
+
+    @mock.patch('aiops.views.start_async_chat_processing')
+    def test_explicit_action_rejects_missing_permission_before_queueing(self, mocked_start):
+        user = self.create_scoped_cmdb_user('scope-action-reader')
+        client = APIClient()
+        client.force_authenticate(user=user)
+        session = AIOpsChatSession.objects.create(user=user)
+
+        for endpoint in ['send_message', 'send_message_async']:
+            response = client.post(
+                f'/api/aiops/sessions/{session.id}/{endpoint}/',
+                {'content': '查看当前情况', 'question_category': 'host_task.generate'}, format='json',
+            )
+            self.assertEqual(response.status_code, 400)
+            self.assertIn('question_category', response.data)
+        mocked_start.assert_not_called()
+        self.assertFalse(session.messages.exists())
+        bootstrap = client.get('/api/aiops/bootstrap/')
+        self.assertNotIn('host_task.generate', [item['code'] for item in bootstrap.data['action_registry']])
+
+        message = AIOpsChatMessage.objects.create(
+            session=session, role='user', content='查看当前情况',
+            metadata={'question_category': 'host_task.generate'},
+        )
+        result = _dispatch_with_tool_runtime(session, message, user, message.content)
+        self.assertIn('无权使用', result['content'])
+        self.assertFalse(AIOpsToolInvocation.objects.filter(message=message).exists())
+
+    def test_cmdb_scope_routes_cost_topology_and_quality_without_environment(self):
+        from .services import _cmdb_tool_for_question
+
+        for question, tool in [
+            ('分析本月 CMDB 资源成本和趋势', 'query_cost_report'),
+            ('查看 CMDB 资产拓扑和上下游关系', 'query_cmdb_topology'),
+            ('检查 CMDB 资产数据质量', 'query_cmdb_quality'),
+        ]:
+            with self.subTest(question=question):
+                self.assertEqual(_cmdb_tool_for_question(question, question_category='cmdb'), tool)
+
+    def test_preselected_environment_overrides_question_and_previous_session(self):
+        from .services import _resolve_chat_environment
+
+        AIOpsKnowledgeEnvironment.objects.create(name='预选测试环境')
+        AIOpsKnowledgeEnvironment.objects.create(name='旧测试环境')
+        session = AIOpsChatSession.objects.create(user=self.user, context={
+            'current_environment': {'name': '旧测试环境'},
+            'page_context': {'hints': {'selected_environment': '预选测试环境'}},
+        })
+
+        result = _resolve_chat_environment(session, '查看旧测试环境最近的告警')
+
+        self.assertEqual(result['status'], 'resolved')
+        self.assertEqual(result['source'], 'selected_environment')
+        self.assertEqual(result['environment']['name'], '预选测试环境')
+        AIOpsKnowledgeEnvironment.objects.filter(name='预选测试环境').update(is_enabled=False)
+        self.assertEqual(_resolve_chat_environment(session, '查看旧测试环境最近的告警')['status'], 'missing')
+
+    def test_cost_category_queries_authorized_costs_without_environment(self):
+        session = AIOpsChatSession.objects.create(user=self.user, title='cost-category')
+        response = self.client.post(
+            f'/api/aiops/sessions/{session.id}/send_message/',
+            {'content': '看看有哪些优化空间', 'question_category': 'cost'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        metadata = response.data['assistant_message']['metadata']
+        self.assertFalse(metadata.get('environment_required'))
+        self.assertEqual(metadata['cmdb_tool'], 'query_cost_report')
+        self.assertEqual(metadata['langgraph_route'], 'cmdb')
+
+    def test_selected_monitoring_category_overrides_cmdb_page_default(self):
+        from .services import _cmdb_tool_for_question
+
+        self.assertEqual(_cmdb_tool_for_question('查看当前告警', page_context={'page': 'cmdb.assets'}, question_category='monitoring'), '')
+
+    def test_cmdb_question_category_forces_direct_cmdb_scope(self):
+        session = AIOpsChatSession.objects.create(user=self.user, title='cmdb-category')
+        question = '帮我看看当前资源情况'
+        message = AIOpsChatMessage.objects.create(
+            session=session,
+            role='user',
+            content=question,
+            metadata={'question_category': 'cmdb'},
+        )
+
+        result = _dispatch_with_tool_runtime(session, message, self.user, question)
+
+        self.assertFalse(result['metadata'].get('environment_required'))
+        self.assertEqual(result['metadata']['question_category'], 'cmdb')
+        self.assertEqual(result['metadata']['cmdb_tool'], 'query_cmdb_items')
+
+    def test_chat_api_accepts_cmdb_question_category(self):
+        session = AIOpsChatSession.objects.create(user=self.user, title='cmdb-category-api')
+
+        response = self.client.post(
+            f'/api/aiops/sessions/{session.id}/send_message/',
+            {'content': '帮我看看当前资源情况', 'question_category': 'cmdb'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data['user_message']['metadata']['question_category'], 'cmdb')
+        self.assertEqual(response.data['assistant_message']['metadata']['execution_mode'], 'direct_cmdb_query')
+        self.assertEqual(response.data['assistant_message']['metadata']['question_category'], 'cmdb')
+        self.assertEqual(response.data['assistant_message']['metadata']['langgraph_route'], 'cmdb')
+        trace = response.data['assistant_message']['metadata']['langgraph_trace']
+        self.assertIn('cmdb_fastpath', [item['node'] for item in trace])
+        self.assertNotIn('chat_runtime', [item['node'] for item in trace])
+        from .langgraph_pilot import get_langgraph_chat_checkpoint
+        checkpoint = get_langgraph_chat_checkpoint(response.data['assistant_message']['metadata']['langgraph_thread_id'])
+        self.assertEqual(checkpoint['result']['content'], response.data['assistant_message']['content'])
+
+    @mock.patch('aiops.services._runtime_tool_is_available', return_value=False)
+    def test_graph_cmdb_lane_falls_back_when_tool_unavailable(self, mocked_available):
+        session = AIOpsChatSession.objects.create(user=self.user, title='cmdb-fallback')
+
+        response = self.client.post(
+            f'/api/aiops/sessions/{session.id}/send_message/',
+            {'content': 'CMDB 有哪些资产？'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        trace = response.data['assistant_message']['metadata']['langgraph_trace']
+        self.assertEqual(next(item for item in trace if item['node'] == 'cmdb_fastpath')['status'], 'skipped')
+        self.assertIn('chat_runtime', [item['node'] for item in trace])
+        mocked_available.assert_called()
+
+    def test_cmdb_aiops_tools_enforce_resource_scope_and_hide_sensitive_attributes(self):
+        user = self.create_scoped_cmdb_user()
+        ci_type = CIType.objects.create(name='AIOps 授权云主机', code='AIOPS_SCOPED_HOST')
+        app_type = CIType.objects.create(name='AIOps 授权应用服务', code='AIOPS_SCOPED_APP')
+        payment_app = ConfigItem.objects.create(
+            name='pay-app-aiops', ci_type=app_type, business_line='payment', environment='prod', admin_user='owner',
+        )
+        payment_host = ConfigItem.objects.create(
+            name='pay-host-aiops',
+            ci_type=ci_type,
+            business_line='payment',
+            environment='prod',
+            admin_user='ops',
+            attributes={
+                'ip_address': '10.60.1.8',
+                'instance_type': 'ecs.g6.large',
+                'api_token': 'must-not-leak',
+                'connection': {'username': 'ops', 'password': 'must-not-leak'},
+                'avg_cpu_usage': 8,
+                'avg_memory_usage': 12,
+            },
+        )
+        hr_host = ConfigItem.objects.create(
+            name='hr-host-aiops',
+            ci_type=ci_type,
+            business_line='hr',
+            environment='prod',
+            attributes={'ip_address': '10.70.1.8', 'avg_cpu_usage': 5, 'avg_memory_usage': 10},
+        )
+        CIRelation.objects.create(source=payment_app, target=payment_host, relation_type='runs_on')
+        CIRelation.objects.create(source=payment_app, target=hr_host, relation_type='depends_on')
+        month = timezone.localdate().strftime('%Y-%m')
+        CostRecord.objects.create(ci=payment_host, month=month, amount=Decimal('1200.00'), provider='aliyun')
+        CostRecord.objects.create(ci=hr_host, month=month, amount=Decimal('9000.00'), provider='aliyun')
+        session = AIOpsChatSession.objects.create(user=user, title='scoped-cmdb')
+        message = AIOpsChatMessage.objects.create(session=session, role='user', content='查询 CMDB 资产')
+
+        assets = query_cmdb_items(session, message, user, query='查询 CMDB payment 业务资产')
+        resource_search = query_resources(session, message, user, query='查询 CMDB 资产')
+        costs = query_cost_report(session, message, user, query='分析 CMDB 本月成本')
+        unauthorized_costs = query_cost_report(session, message, user, query='分析 hr 业务本月成本')
+        topology = query_cmdb_topology(session, message, user, query='查看 CMDB 资产拓扑')
+        quality = query_cmdb_quality(session, message, user, query='分析 CMDB 数据质量')
+
+        self.assertEqual({item['name'] for item in assets['items']}, {'pay-app-aiops', 'pay-host-aiops'})
+        serialized_host = next(item for item in assets['items'] if item['name'] == 'pay-host-aiops')
+        self.assertNotIn('api_token', serialized_host['attributes'])
+        self.assertNotIn('password', serialized_host['attributes']['connection'])
+        self.assertNotIn('hr-host-aiops', json.dumps(resource_search, ensure_ascii=False, default=str))
+        self.assertEqual(costs['summary']['total_monthly_cost'], 1200.0)
+        self.assertEqual(unauthorized_costs['summary']['total_monthly_cost'], 0.0)
+        self.assertNotIn('hr-host-aiops', json.dumps(costs, ensure_ascii=False, default=str))
+        self.assertEqual(topology['summary']['relation_count'], 1)
+        self.assertNotIn('hr-host-aiops', json.dumps(topology, ensure_ascii=False, default=str))
+        self.assertEqual(quality['summary']['total'], 2)
+
+    def test_cmdb_query_bypasses_unrelated_knowledge_environment_requirement(self):
+        user = self.create_scoped_cmdb_user(username='aiops-cmdb-direct')
+        ci_type = CIType.objects.create(name='AIOps 直查云主机', code='AIOPS_DIRECT_HOST')
+        ci = ConfigItem.objects.create(
+            name='pay-direct-host',
+            ci_type=ci_type,
+            business_line='payment',
+            environment='prod',
+            attributes={'monthly_cost': 680},
+        )
+        previous_month = (timezone.localdate().replace(day=1) - timedelta(days=1)).strftime('%Y-%m')
+        CostRecord.objects.create(ci=ci, month=previous_month, amount=Decimal('680.00'), provider='aliyun')
+        session = AIOpsChatSession.objects.create(user=user, title='direct-cmdb-no-environment')
+        question = '分析 CMDB payment 业务上月成本'
+        message = AIOpsChatMessage.objects.create(session=session, role='user', content=question)
+
+        result = _dispatch_with_tool_runtime(session, message, user, question)
+
+        self.assertEqual(result['metadata']['execution_mode'], 'direct_cmdb_query')
+        self.assertEqual(result['metadata']['cmdb_tool'], 'query_cost_report')
+        self.assertEqual(result['tool_calls'], ['query_cost_report'])
+        self.assertIn(f'月份：{previous_month}', result['content'])
+        self.assertIn('系统：payment', result['content'])
+        self.assertIn('680.00 元', result['content'])
+        self.assertEqual(result['metadata']['analysis_scope']['scope'], 'cmdb_authorized')
 
     def test_generate_task_draft_requires_explicit_target_host(self):
-        Host.objects.create(hostname='legacy-data-sync', ip_address='10.20.30.20', environment='prod', status='offline')
+        Host.objects.create(hostname='legacy-data-sync', ip_address='192.0.2.3', environment='prod', status='offline')
 
         exact_draft = build_task_draft(self.user, '为 legacy-data-sync 生成巡检任务', {'request_summary': '为 legacy-data-sync 生成巡检任务'})
         self.assertEqual(exact_draft['host_count'], 1)
@@ -7331,7 +9615,7 @@ class AIOpsApiTests(TestCase):
         self.assertIn('error', generic_draft)
 
     def test_service_inspection_task_draft_exposes_shell_script(self):
-        Host.objects.create(hostname='legacy-data-sync', ip_address='10.20.30.20', environment='prod', status='offline')
+        Host.objects.create(hostname='legacy-data-sync', ip_address='192.0.2.3', environment='prod', status='offline')
 
         draft = build_task_draft(
             self.user,
@@ -7352,7 +9636,7 @@ class AIOpsApiTests(TestCase):
         self.assertIn('systemctl status "$SERVICE_NAME" --no-pager', draft['payload']['command'])
 
     def test_confirm_action_converts_legacy_service_status_to_editable_shell_script(self):
-        host = Host.objects.create(hostname='legacy-data-sync', ip_address='10.20.30.20', environment='prod', status='offline')
+        host = Host.objects.create(hostname='legacy-data-sync', ip_address='192.0.2.3', environment='prod', status='offline')
         session = AIOpsChatSession.objects.create(user=self.user, title='legacy-service-status')
         assistant_message = AIOpsChatMessage.objects.create(session=session, role='assistant', content='已生成服务巡检任务')
         legacy_payload = {
@@ -7384,7 +9668,7 @@ class AIOpsApiTests(TestCase):
         self.assertIn('SERVICE_NAME="redis"', action.action_payload['payload']['command'])
 
     def test_playbook_task_draft_title_describes_request(self):
-        Host.objects.create(hostname='legacy-data-sync', ip_address='10.20.30.20', environment='prod', status='offline')
+        Host.objects.create(hostname='legacy-data-sync', ip_address='192.0.2.3', environment='prod', status='offline')
 
         draft = build_task_draft(
             self.user,
@@ -7403,7 +9687,7 @@ class AIOpsApiTests(TestCase):
         self.assertIn('重启 nginx', draft['name'])
 
     def test_confirm_action_repairs_legacy_generic_playbook_title(self):
-        host = Host.objects.create(hostname='legacy-data-sync', ip_address='10.20.30.20', environment='prod', status='offline')
+        host = Host.objects.create(hostname='legacy-data-sync', ip_address='192.0.2.3', environment='prod', status='offline')
         session = AIOpsChatSession.objects.create(user=self.user, title='legacy-playbook-title')
         assistant_message = AIOpsChatMessage.objects.create(session=session, role='assistant', content='已生成任务草稿')
         legacy_payload = {
@@ -7455,7 +9739,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='203.0.113.176',
+            ip_address='120.26.213.176',
             ssh_user='root',
         )
         AIOpsKnowledgeEnvironment.objects.create(
@@ -7709,7 +9993,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='203.0.113.188',
+            ip_address='120.26.213.188',
             ssh_user='root',
         )
         shell_script = 'df -h\nfree -m'
@@ -7738,7 +10022,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='203.0.113.190',
+            ip_address='120.26.213.190',
             ssh_user='root',
         )
         question = '帮我在电商测试环境安装 Redis'
@@ -7774,7 +10058,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='203.0.113.193',
+            ip_address='120.26.213.193',
             ssh_user='root',
         )
         question = '帮我在个人测试环境的机器上安装helm命令行工具'
@@ -7810,7 +10094,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='203.0.113.194',
+            ip_address='120.26.213.194',
             ssh_user='root',
         )
         session = AIOpsChatSession.objects.create(user=self.user, title='helm-cli-install')
@@ -7848,7 +10132,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='203.0.113.192',
+            ip_address='120.26.213.192',
             ssh_user='root',
         )
         session = AIOpsChatSession.objects.create(user=self.user, title='install-tool')
@@ -8030,7 +10314,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='203.0.113.191',
+            ip_address='120.26.213.191',
             ssh_user='root',
         )
         question = '帮我生成 Ansible Playbook 在电商测试环境安装 nginx'
@@ -8064,7 +10348,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='203.0.113.193',
+            ip_address='120.26.213.193',
             ssh_user='root',
         )
         question = '帮我在电商测试环境安装 nginx'
@@ -8096,7 +10380,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='203.0.113.194',
+            ip_address='120.26.213.194',
             ssh_user='root',
         )
         question = '帮我给电商测试环境写个 Shell 脚本重启 nginx'
@@ -8125,7 +10409,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='203.0.113.195',
+            ip_address='120.26.213.195',
             ssh_user='root',
         )
         question = '帮我给电商测试环境生成 Ansible Playbook 重启 nginx'
@@ -8153,7 +10437,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='203.0.113.189',
+            ip_address='120.26.213.189',
             ssh_user='root',
         )
         session = AIOpsChatSession.objects.create(user=self.user, title='legacy-shell-script')
@@ -8192,7 +10476,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='203.0.113.190',
+            ip_address='120.26.213.190',
             ssh_user='root',
         )
         AIOpsKnowledgeEnvironment.objects.create(
@@ -8228,7 +10512,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='203.0.113.196',
+            ip_address='120.26.213.196',
             ssh_user='root',
         )
         AIOpsKnowledgeEnvironment.objects.create(
@@ -8246,6 +10530,7 @@ class AIOpsApiTests(TestCase):
             format='json',
         )
 
+        self.assertIsNotNone(response.data['pending_action'], response.data['assistant_message']['content'])
         payload = response.data['pending_action']['action_payload']
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.data['assistant_message']['metadata']['execution_mode'], 'deterministic_task_generation')
@@ -8273,6 +10558,7 @@ class AIOpsApiTests(TestCase):
         )
 
         assistant_message = response.data['assistant_message']
+        self.assertIsNotNone(response.data['pending_action'], assistant_message['content'])
         payload = response.data['pending_action']['action_payload']
         self.assertEqual(response.status_code, 201)
         self.assertEqual(assistant_message['metadata']['execution_mode'], 'deterministic_task_generation')
@@ -8611,7 +10897,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='203.0.113.176',
+            ip_address='120.26.213.176',
             ssh_user='root',
         )
         session = AIOpsChatSession.objects.create(user=self.user, title='resource-task')
@@ -8645,7 +10931,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='203.0.113.176',
+            ip_address='120.26.213.176',
             ssh_user='root',
         )
         session = AIOpsChatSession.objects.create(user=self.user, title='resource-task-dedupe')
@@ -8679,7 +10965,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='203.0.113.176',
+            ip_address='120.26.213.176',
             ssh_user='root',
         )
         TaskResource.objects.create(
@@ -8687,7 +10973,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=TaskResourceGroup.objects.create(name='供应链测试环境', group_type=TaskResourceGroup.GROUP_ENVIRONMENT),
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='203.0.113.177',
+            ip_address='120.26.213.177',
             ssh_user='root',
         )
         AIOpsKnowledgeEnvironment.objects.create(
@@ -8714,7 +11000,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='203.0.113.176',
+            ip_address='120.26.213.176',
             ssh_user='root',
         )
         AIOpsKnowledgeEnvironment.objects.create(
@@ -8739,7 +11025,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='203.0.113.176',
+            ip_address='120.26.213.176',
             ssh_user='root',
         )
         AIOpsKnowledgeEnvironment.objects.create(
@@ -9063,3 +11349,36 @@ class AIOpsApiTests(TestCase):
         self.assertIn('[REDACTED]', broken['message'])
         self.assertNotIn('secret-value', broken['message'])
         self.assertIn('query_alerts', response.data['assistant_message']['tool_calls'])
+
+
+class AIOpsCleanupNewSessionsCommandTests(TestCase):
+    def test_cleanup_new_sessions_only_deletes_target_sessions(self):
+        demo_user = User.objects.create_user(username='chat-user')
+        other_user = User.objects.create_user(username='other-chat-user')
+
+        doomed = AIOpsChatSession.objects.create(user=demo_user, title='新会话')
+        AIOpsChatMessage.objects.create(session=doomed, role=AIOpsChatMessage.ROLE_USER, content='hello')
+        AIOpsChatMessage.objects.create(session=doomed, role=AIOpsChatMessage.ROLE_ASSISTANT, content='world')
+
+        keep_named = AIOpsChatSession.objects.create(user=demo_user, title='排障会话')
+        keep_other_user = AIOpsChatSession.objects.create(user=other_user, title='新会话')
+
+        stdout = StringIO()
+        call_command('cleanup_aiops_new_sessions', '--username', 'chat-user', stdout=stdout)
+
+        self.assertFalse(AIOpsChatSession.objects.filter(pk=doomed.pk).exists())
+        self.assertEqual(AIOpsChatMessage.objects.filter(session=doomed).count(), 0)
+        self.assertTrue(AIOpsChatSession.objects.filter(pk=keep_named.pk).exists())
+        self.assertTrue(AIOpsChatSession.objects.filter(pk=keep_other_user.pk).exists())
+        self.assertIn('deleted_sessions=1', stdout.getvalue())
+
+    def test_cleanup_new_sessions_dry_run_does_not_delete(self):
+        demo_user = User.objects.create_user(username='chat-user')
+        doomed = AIOpsChatSession.objects.create(user=demo_user, title='新会话')
+        AIOpsChatMessage.objects.create(session=doomed, role=AIOpsChatMessage.ROLE_USER, content='hello')
+
+        stdout = StringIO()
+        call_command('cleanup_aiops_new_sessions', '--username', 'chat-user', '--dry-run', stdout=stdout)
+
+        self.assertTrue(AIOpsChatSession.objects.filter(pk=doomed.pk).exists())
+        self.assertIn('[dry-run] matched_sessions=1', stdout.getvalue())

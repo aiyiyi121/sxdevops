@@ -8,6 +8,7 @@ class CloudCredential(models.Model):
         ('huawei', '华为云'),
         ('baidu', '百度智能云'),
         ('aws', 'AWS'),
+        ('vsphere', 'VMware vSphere / ESXi'),
     ]
     AUTH_MODE_CHOICES = [
         ('aksk', 'AK/SK'),

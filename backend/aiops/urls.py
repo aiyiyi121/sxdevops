@@ -2,6 +2,7 @@ from django.urls import include, path, re_path
 from rest_framework.routers import DefaultRouter
 
 from . import views
+from .remediation_views import action_verification
 
 
 router = DefaultRouter()
@@ -11,6 +12,7 @@ router.register('admin/mcp-servers', views.AIOpsMCPServerViewSet, basename='aiop
 router.register('admin/skills', views.AIOpsSkillViewSet, basename='aiops-skill')
 router.register('knowledge-environments', views.AIOpsKnowledgeEnvironmentViewSet, basename='aiops-knowledge-environment')
 router.register('admin/audit/sessions', views.AIOpsAuditSessionViewSet, basename='aiops-audit-session')
+router.register('admin/audit/executions', views.AIOpsAuditExecutionViewSet, basename='aiops-audit-execution')
 router.register('admin/audit/tool-invocations', views.AIOpsToolInvocationViewSet, basename='aiops-audit-tool')
 router.register('admin/audit/model-invocations', views.AIOpsModelInvocationViewSet, basename='aiops-audit-model')
 router.register('admin/audit/actions', views.AIOpsPendingActionViewSet, basename='aiops-audit-action')
@@ -20,6 +22,9 @@ router.register('review-knowledge', views.AIOpsReviewKnowledgeViewSet, basename=
 
 urlpatterns = [
     path('bootstrap/', views.bootstrap, name='aiops-bootstrap'),
+    path('capabilities/', views.capabilities, name='aiops-capabilities'),
+    path('admin/capabilities/', views.admin_capabilities, name='aiops-admin-capabilities'),
+    path('admin/capabilities/<str:code>/', views.capability_skills, name='aiops-capability-skills'),
     path('knowledge-graph/', views.knowledge_graph, name='aiops-knowledge-graph'),
     path('admin/actions/', views.action_registry, name='aiops-action-registry'),
     path('admin/actions/preflight/', views.action_preflight, name='aiops-action-preflight'),
@@ -43,5 +48,6 @@ urlpatterns = [
     ),
     path('actions/<int:pk>/confirm/', views.confirm_pending_action, name='aiops-confirm-action'),
     path('actions/<int:pk>/cancel/', views.cancel_pending_action, name='aiops-cancel-action'),
+    path('actions/<int:pk>/verification/', action_verification, name='aiops-action-verification'),
     path('', include(router.urls)),
 ]

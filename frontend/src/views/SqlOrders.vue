@@ -73,57 +73,67 @@
       </template>
     </div>
 
-    <el-dialog v-model="submitVisible" title="提交变更工单" width="90%" style="max-width:700px;" top="5vh" append-to-body destroy-on-close>
-      <el-form :model="form" label-width="100px">
-        <el-form-item label="工单标题">
-          <el-input v-model="form.title" placeholder="简要说明变更目的" />
-        </el-form-item>
-        <el-form-item label="数据源">
-          <el-select v-model="form.datasource" placeholder="选择数据源" style="width:100%"
+    <el-dialog :close-on-click-modal="false" class="workbench-edit-dialog" v-model="submitVisible" title="提交变更工单" width="90%" style="max-width:700px;" top="5vh" append-to-body destroy-on-close>
+      <el-form class="workbench-editor-form--sectioned" label-position="top" :model="form" label-width="100px">
+        <section class="workbench-editor-section">
+          <div class="workbench-editor-heading"><span class="workbench-editor-step">01</span><h3>变更信息</h3></div>
+          <div class="workbench-editor-grid">
+            <el-form-item label="工单标题">
+              <el-input v-model="form.title" placeholder="简要说明变更目的" />
+            </el-form-item>
+            <el-form-item label="数据源">
+              <el-select v-model="form.datasource" placeholder="选择数据源" style="width:100%"
             @change="onDatasourceChange">
-            <el-option v-for="ds in datasources" :key="ds.id" :label="ds.name" :value="ds.id">
-              <span>{{ ds.name }}</span>
-              <span style="color:var(--text-secondary); margin-left:8px; font-size:12px;">
+                <el-option v-for="ds in datasources" :key="ds.id" :label="ds.name" :value="ds.id">
+                  <span>{{ ds.name }}</span>
+                  <span style="color:var(--text-secondary); margin-left:8px; font-size:12px;">
                 {{ getDatasourceTypeLabel(ds.db_type) }} / {{ ds.host }}:{{ ds.port }}
-              </span>
-            </el-option>
-          </el-select>
-        </el-form-item>
-        <el-form-item label="目标数据库">
-          <el-select v-model="form.database" placeholder="选择数据库" style="width:100%"
+                  </span>
+                </el-option>
+              </el-select>
+            </el-form-item>
+            <el-form-item label="目标数据库">
+              <el-select v-model="form.database" placeholder="选择数据库" style="width:100%"
             :loading="dbLoading" filterable>
-            <el-option v-for="db in databases" :key="db" :label="db" :value="db" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="变更类型">
-          <el-radio-group v-model="form.sql_type">
-            <el-radio value="DML">{{ currentDatasourceType === 'mongodb' ? 'DML (insert/update/delete)' : 'DML (INSERT/UPDATE/DELETE)' }}</el-radio>
-            <el-radio value="DDL">{{ currentDatasourceType === 'mongodb' ? 'DDL (create/drop/index)' : 'DDL (CREATE/ALTER/DROP)' }}</el-radio>
-          </el-radio-group>
-        </el-form-item>
-        <el-form-item label="执行内容">
-          <div class="sql-editor-wrapper">
-            <textarea v-model="form.sql_content" class="sql-editor"
+                <el-option v-for="db in databases" :key="db" :label="db" :value="db" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="变更类型">
+              <el-radio-group v-model="form.sql_type">
+                <el-radio value="DML">{{ currentDatasourceType === 'mongodb' ? 'DML (insert/update/delete)' : 'DML (INSERT/UPDATE/DELETE)' }}</el-radio>
+                <el-radio value="DDL">{{ currentDatasourceType === 'mongodb' ? 'DDL (create/drop/index)' : 'DDL (CREATE/ALTER/DROP)' }}</el-radio>
+              </el-radio-group>
+            </el-form-item>
+          </div>
+        </section>
+        <section class="workbench-editor-section workbench-editor-section--tinted">
+          <div class="workbench-editor-heading"><span class="workbench-editor-step">02</span><h3>执行内容与检查</h3></div>
+          <div>
+            <el-form-item label="执行内容">
+              <div class="sql-editor-wrapper">
+                <textarea v-model="form.sql_content" class="sql-editor"
               :placeholder="contentPlaceholder" rows="10"></textarea>
-          </div>
-          <div class="content-hint">{{ orderHint }}</div>
-        </el-form-item>
-        <el-form-item label="提交人">
-          <el-input v-model="form.submitter" style="width:200px" disabled />
-        </el-form-item>
+              </div>
+              <div class="content-hint">{{ orderHint }}</div>
+            </el-form-item>
+            <el-form-item label="提交人">
+              <el-input v-model="form.submitter" style="width:200px" disabled />
+            </el-form-item>
 
-        <el-form-item label="预检查" v-if="checkResults.length">
-          <div class="check-results">
-            <div v-for="(r, i) in checkResults" :key="i"
+            <el-form-item label="预检查" v-if="checkResults.length">
+              <div class="check-results">
+                <div v-for="(r, i) in checkResults" :key="i"
               class="check-item" :class="r.level">
-              <el-tag :type="checkTagType(r.level)" size="small" style="margin-right:8px;">
+                  <el-tag :type="checkTagType(r.level)" size="small" style="margin-right:8px;">
                 {{ r.level === 'error' ? '错误' : r.level === 'warning' ? '警告' : '建议' }}
-              </el-tag>
-              <span class="check-rule">{{ r.rule_name }}</span>
-              <span class="check-msg">{{ r.message }}</span>
-            </div>
+                  </el-tag>
+                  <span class="check-rule">{{ r.rule_name }}</span>
+                  <span class="check-msg">{{ r.message }}</span>
+                </div>
+              </div>
+            </el-form-item>
           </div>
-        </el-form-item>
+        </section>
       </el-form>
       <template #footer>
         <el-button @click="handlePreCheck" :loading="checking">
@@ -187,9 +197,9 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="reviewVisible" :title="reviewAction === 'approve' ? '审核通过' : '审核驳回'"
+    <el-dialog top="5vh" :close-on-click-modal="false" class="workbench-edit-dialog" v-model="reviewVisible" :title="reviewAction === 'approve' ? '审核通过' : '审核驳回'"
       width="90%" style="max-width:480px;" append-to-body destroy-on-close>
-      <el-form label-width="80px">
+      <el-form label-position="top" label-width="80px">
         <el-form-item label="审核人">
           <el-input v-model="reviewForm.reviewer" style="width:200px" disabled />
         </el-form-item>

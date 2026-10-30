@@ -1,0 +1,7 @@
+interface:
+  display_name: "RBAC Integration"
+  short_description: "SXDevOps RBAC feature integration guide"
+  default_prompt: "Use $sxdevops-rbac-feature-integration when a SXDevOps feature needs backend permission mapping, route guards, menu gating, or role updates."
+
+policy:
+  allow_implicit_invocation: true

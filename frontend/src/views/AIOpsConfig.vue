@@ -1,15 +1,12 @@
 <template>
-  <div class="fade-in aiops-config-page">
+  <div class="fade-in aiops-config-page workbench-page-shell">
     <section class="hero panel">
       <div class="hero-copy">
         <div class="hero-title-row">
           <span class="hero-icon"><el-icon><ChatDotSquare /></el-icon></span>
           <h2>智能体配置</h2>
-          <p class="page-inline-desc">统一管理智能助手的策略、Action、Skill、MCP 与模型提供商。</p>
+          <p class="page-inline-desc">统一管理智能助手的策略、问答类型、Skill、MCP 与模型提供商。</p>
         </div>
-      </div>
-      <div class="hero-actions">
-        <el-button size="small" :loading="loading.page" @click="loadAll">刷新</el-button>
       </div>
     </section>
 
@@ -22,7 +19,7 @@
         </el-tab-pane>
         <el-tab-pane name="actions">
           <template #label>
-            <span class="tab-label"><el-icon><Promotion /></el-icon>Action</span>
+            <span class="tab-label"><el-icon><Promotion /></el-icon>问答类型</span>
           </template>
         </el-tab-pane>
         <el-tab-pane name="skills">
@@ -46,80 +43,17 @@
           </template>
         </el-tab-pane>
       </el-tabs>
+      <el-button size="small" :loading="loading.page" class="config-refresh-button" @click="refreshConfig">刷新</el-button>
     </section>
 
     <section class="panel">
       <template v-if="activeTab === 'strategy'">
-        <div class="section-toolbar strategy-actions">
-          <div class="toolbar-head">
-            <span class="toolbar-title">智能体策略</span>
-            <span class="toolbar-desc">统一配置默认模型、欢迎语与运行安全开关</span>
-          </div>
-          <el-button size="small" type="primary" :loading="saving.config" @click="saveConfig">保存策略</el-button>
-        </div>
-        <div class="config-grid">
-          <div class="config-section config-section--main surface-card">
-            <div class="section-title">基础策略</div>
-            <el-form :model="configForm" label-width="118px">
-              <el-form-item label="默认提供商">
-                <el-select v-model="configForm.default_provider_id" clearable style="width:100%">
-                  <el-option
-                    v-for="provider in providers"
-                    :key="provider.id"
-                    :label="providerOptionLabel(provider)"
-                    :value="provider.id"
-                    :disabled="!provider.runtime_ready"
-                  />
-                </el-select>
-              </el-form-item>
-              <el-form-item label="欢迎语">
-                <el-input v-model="configForm.welcome_message" />
-              </el-form-item>
-              <el-form-item label="建议问题">
-                <el-select v-model="configForm.suggested_questions" multiple filterable allow-create default-first-option style="width:100%" />
-              </el-form-item>
-              <el-form-item label="启用 MCP">
-                <el-select v-model="configForm.enabled_mcp_server_ids" multiple collapse-tags collapse-tags-tooltip style="width:100%">
-                  <el-option v-for="item in mcpServers" :key="item.id" :label="item.name" :value="item.id" />
-                </el-select>
-              </el-form-item>
-              <el-form-item label="启用 Skill">
-                <el-select v-model="configForm.enabled_skill_ids" multiple collapse-tags collapse-tags-tooltip style="width:100%">
-                  <el-option v-for="item in skills" :key="item.id" :label="item.name" :value="item.id" />
-                </el-select>
-              </el-form-item>
-              <el-form-item label="系统提示语">
-                <el-input v-model="configForm.system_prompt" type="textarea" :rows="8" />
-              </el-form-item>
-            </el-form>
-          </div>
-          <div class="config-section config-section--runtime surface-card">
-            <div class="section-title">运行生效项</div>
-            <div class="runtime-note">这些配置会被聊天入口或后端任务生成逻辑直接读取。</div>
-            <div class="switch-list">
-              <div class="switch-item">
-                <div class="switch-copy">
-                  <span>启用智能助手</span>
-                  <small>关闭后聊天入口不可用，已有会话仍保留。</small>
-                </div>
-                <el-switch v-model="configForm.is_enabled" />
-              </div>
-              <div class="switch-item">
-                <div class="switch-copy">
-                  <span>允许生成待执行任务</span>
-                  <small>关闭后只返回分析结果，不创建待确认任务。</small>
-                </div>
-                <el-switch v-model="configForm.allow_action_execution" />
-              </div>
-            </div>
-            <el-form :model="configForm" label-width="126px" class="runtime-form">
-              <el-form-item label="模型上下文消息数">
-                <el-input-number v-model="configForm.max_history_messages" :min="4" :max="40" />
-                <div class="runtime-field-tip">仅限制每次发送给模型的最近用户/助手消息数，不影响会话历史展示。</div>
-              </el-form-item>
-            </el-form>
-          </div>
-        </div>
+        <AgentStrategyPanel
+          :config="configForm" :capabilities="capabilityList"
+          :provider="providers.find(item => item.id === defaultProviderId) || configuredDefaultProvider"
+          :dirty="configDirty" :saving="saving.config" :loading="loading.page" :can-manage="canManageCapabilities"
+          @save="saveConfig" @reset="resetConfigChanges" @providers="activeTab = 'providers'"
+        />
       </template>
 
       <template v-else-if="activeTab === 'orchestration'">
@@ -182,7 +116,9 @@
             </el-table-column>
             <el-table-column prop="title" label="任务标题" min-width="180" show-overflow-tooltip />
             <el-table-column prop="source_agent" label="来源" width="130" />
-            <el-table-column prop="action_code" label="Action" min-width="160" />
+            <el-table-column label="问答类型" min-width="160">
+              <template #default="{ row }">{{ formatCapabilityName(row.action_code) }}</template>
+            </el-table-column>
             <el-table-column prop="agent_mode" label="模式" width="110" />
             <el-table-column prop="status_display" label="状态" width="110" />
             <el-table-column prop="created_at" label="创建时间" min-width="170" />
@@ -291,10 +227,10 @@
             <span class="toolbar-title">模型供应商</span>
             <span class="toolbar-desc">
               管理外部 LLM 接入配置与默认模型。
-              <strong class="provider-strategy-reminder">模型供应商保存并测试通过后，请到智能体策略中选择默认供应商，智能助手才会使用该模型。</strong>
+              <strong class="provider-strategy-reminder">配置完成后，在列表中设为默认供应商，智能助手将使用该供应商的默认模型。</strong>
             </span>
           </div>
-          <el-button size="small" type="primary" @click="openProviderDialog()">新增提供商</el-button>
+          <el-button v-if="canManageCapabilities" size="small" type="primary" @click="openProviderDialog()">新增提供商</el-button>
         </div>
         <el-table :data="providers" stripe class="console-table">
           <el-table-column prop="name" label="名称" min-width="180" />
@@ -318,9 +254,16 @@
               <el-tag size="small" :type="row.is_enabled ? 'success' : 'info'">{{ row.is_enabled ? '启用' : '停用' }}</el-tag>
             </template>
           </el-table-column>
+          <el-table-column label="默认供应商" width="150" align="center">
+            <template #default="{ row }">
+              <el-tag v-if="defaultProviderId === row.id" size="small" type="primary" effect="plain">当前默认</el-tag>
+              <el-button v-else-if="canManageCapabilities" size="small" :disabled="!row.runtime_ready || selectingProviderId !== null" :loading="selectingProviderId === row.id" @click="handleSetDefaultProvider(row)">设为默认</el-button>
+              <span v-else class="muted-text">--</span>
+            </template>
+          </el-table-column>
           <el-table-column label="操作" width="220" fixed="right">
             <template #default="{ row }">
-              <div class="table-actions">
+              <div v-if="canManageCapabilities" class="table-actions">
                 <el-button link type="primary" @click="openProviderDialog(row)">编辑</el-button>
                 <el-button link type="success" @click="handleTestProvider(row)">测试</el-button>
                 <el-button link type="danger" @click="handleDeleteProvider(row)">删除</el-button>
@@ -333,52 +276,54 @@
       <template v-else-if="activeTab === 'mcp'">
         <div class="section-toolbar">
           <div class="toolbar-head">
-            <span class="toolbar-title">外部 MCP 接入</span>
+            <span class="toolbar-title">MCP 接入目录</span>
             <span class="toolbar-desc">管理平台内置与外部 MCP 的接入、鉴权和运行边界</span>
           </div>
-          <el-button size="small" type="primary" @click="openMcpDialog()">新增 MCP</el-button>
+          <el-button v-if="canManageCapabilities" size="small" type="primary" @click="openMcpDialog()">新增 MCP</el-button>
         </div>
-        <el-table :data="mcpServers" stripe class="console-table">
-          <el-table-column prop="name" label="名称" min-width="150" />
-          <el-table-column label="类型" width="110">
-            <template #default="{ row }">
-              <el-tag size="small" effect="plain" :class="['type-tag', `type-tag--${row.server_type || 'http'}`]">
-                {{ formatMcpType(row.server_type) }}
-              </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column prop="endpoint_or_command" label="地址或命令" min-width="240" show-overflow-tooltip />
-          <el-table-column label="启用工具" min-width="220" show-overflow-tooltip>
-            <template #default="{ row }">{{ formatEnabledTools(row.tool_whitelist) }}</template>
-          </el-table-column>
-          <el-table-column label="运行保护" width="110">
-            <template #default="{ row }">
-              <el-tag size="small" :type="mcpRuntimeMode(row).type">{{ mcpRuntimeMode(row).label }}</el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column label="启用" width="100">
-            <template #default="{ row }">
-              <el-tag size="small" :type="row.is_enabled ? 'success' : 'info'">{{ row.is_enabled ? '是' : '否' }}</el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column label="操作" width="248" fixed="right">
-            <template #default="{ row }">
-              <div class="table-actions">
-                <el-button link type="primary" @click="openMcpDialog(row)">编辑</el-button>
-                <el-button link type="success" @click="handleTestMcp(row)">测试</el-button>
-                <el-button link @click="handleListMcpTools(row)">工具</el-button>
-                <el-button link type="danger" :disabled="row.is_builtin" @click="handleDeleteMcp(row)">删除</el-button>
+        <div class="action-summary-row">
+          <div v-for="item in mcpOverview" :key="item.label" class="action-summary-item">
+            <span>{{ item.label }}</span>
+            <strong>{{ item.value }}</strong>
+          </div>
+        </div>
+        <div class="action-library">
+          <div v-for="server in mcpServers" :key="server.id" class="action-package-row">
+            <div class="action-package-main">
+              <div class="action-package-title-row">
+                <span class="action-package-name">{{ server.name }}</span>
+                <el-tag size="small" effect="plain" :class="['type-tag', `type-tag--${server.server_type || 'http'}`]">{{ formatMcpType(server.server_type) }}</el-tag>
+                <el-tag v-if="server.server_type !== 'platform_builtin'" size="small" effect="plain" :type="mcpRuntimeMode(server).type">{{ mcpRuntimeMode(server).label }}</el-tag>
+                <el-tag size="small" effect="plain" :type="server.is_enabled ? 'success' : 'info'">{{ server.is_enabled ? '启用' : '停用' }}</el-tag>
               </div>
-            </template>
-          </el-table-column>
-        </el-table>
+              <div class="action-package-desc">{{ server.description || '暂无描述' }}</div>
+              <div v-if="server.endpoint_or_command" class="action-package-desc mcp-package-endpoint">地址或命令：{{ server.endpoint_or_command }}</div>
+            </div>
+            <div class="action-package-side">
+              <button v-if="canManageCapabilities" type="button" class="action-package-stat stat-detail-button" @click="handleListMcpTools(server)">
+                <span>启用工具</span>
+                <strong>{{ (server.tool_whitelist || []).length }}</strong>
+              </button>
+              <div v-else class="action-package-stat">
+                <span>启用工具</span>
+                <strong>{{ (server.tool_whitelist || []).length }}</strong>
+              </div>
+              <div v-if="canManageCapabilities" class="table-actions">
+                <el-button link type="primary" @click="openMcpDialog(server)">编辑</el-button>
+                <el-button link type="success" @click="handleTestMcp(server)">测试</el-button>
+                <el-button link type="danger" :disabled="server.is_builtin" @click="handleDeleteMcp(server)">删除</el-button>
+              </div>
+            </div>
+          </div>
+          <el-empty v-if="!mcpServers.length" description="暂无 MCP 接入" :image-size="64" />
+        </div>
       </template>
 
       <template v-else-if="activeTab === 'skills'">
         <div class="section-toolbar">
           <div class="toolbar-head">
             <span class="toolbar-title">Skill 能力包</span>
-            <span class="toolbar-desc">Skill = 能力包，用于声明专业方法和工具依赖，最终可用工具仍会经过 MCP 可用性、用户 RBAC 和 Action 安全策略过滤</span>
+            <span class="toolbar-desc">Skill 是可复用的方法包，由问答类型统一挂载；拆分后保留专业边界并复用公共方法，请核对启用状态与适用角色</span>
           </div>
           <div class="toolbar-actions">
             <el-button size="small" @click="openSkillMarketDialog">Skill 市场</el-button>
@@ -428,10 +373,11 @@
                   </div>
                   <div class="skill-package-desc">{{ skill.description || '暂无描述' }}</div>
                   <div class="skill-package-tags">
-                    <el-tag v-for="action in skill.applicable_actions || []" :key="`${skill.slug}-${action}`" size="small" effect="plain">
-                      适用：{{ formatActionName(action) }}
+                    <el-tag v-if="skillCapabilityNames(skill).length > 1" size="small" effect="plain" type="success">{{ skillCapabilityNames(skill).length }} 项能力复用</el-tag>
+                    <el-tag v-for="capability in skillCapabilityNames(skill)" :key="`${skill.slug}-${capability.code}`" size="small" effect="plain">
+                      归属：{{ capability.name }}
                     </el-tag>
-                    <span v-if="!(skill.applicable_actions || []).length" class="muted-text">未绑定 Action</span>
+                    <span v-if="!skillCapabilityNames(skill).length" class="muted-text">暂未挂载到问答类型</span>
                   </div>
                 </div>
                 <div class="skill-package-side">
@@ -457,276 +403,168 @@
       <template v-else-if="activeTab === 'actions'">
         <div class="section-toolbar">
           <div class="toolbar-head">
-            <span class="toolbar-title">Action Registry</span>
-            <span class="toolbar-desc">Action = 任务入口，用于把用户问题路由到任务类型，并决定上下文、预检、风险、输出结构和默认加载的 Skill</span>
+            <span class="toolbar-title">问答类型目录</span>
+            <span class="toolbar-desc">统一配置问答类型和可复用 Skill，执行操作仍需确认并遵循权限和安全策略</span>
           </div>
-          <span class="audit-hint">已内置 {{ actionOverview.total }} 个 P0 action</span>
+          <span class="audit-hint">已配置 {{ capabilityOverview.total }} 项问答类型</span>
         </div>
         <div class="action-summary-row">
           <div class="action-summary-item">
-            <span>动作总数</span>
-            <strong>{{ actionOverview.total }}</strong>
+            <span>问答类型总数</span>
+            <strong>{{ capabilityOverview.total }}</strong>
           </div>
           <div class="action-summary-item">
-            <span>可用动作</span>
-            <strong>{{ actionOverview.available }}</strong>
+            <span>可用类型</span>
+            <strong>{{ capabilityOverview.available }}</strong>
           </div>
           <div class="action-summary-item">
-            <span>待预检</span>
-            <strong>{{ actionOverview.preflight }}</strong>
+            <span>需知识图谱环境</span>
+            <strong>{{ capabilityOverview.environment }}</strong>
           </div>
           <div class="action-summary-item">
-            <span>分组</span>
-            <strong>{{ actionGroups.length }}</strong>
+            <span>已关联 Skill</span>
+            <strong>{{ capabilityOverview.mountedSkills }}</strong>
           </div>
         </div>
         <div class="action-library">
-          <div v-for="group in actionGroups" :key="group.category" class="action-group">
-            <div class="action-group-head">
-              <div class="toolbar-head">
-                <span class="action-group-title">{{ group.category }}</span>
-                <span class="toolbar-desc">{{ group.items.length }} 个 Action</span>
-              </div>
-            </div>
-            <div class="action-package-list">
-              <div v-for="action in group.items" :key="action.code" class="action-package-row">
+          <div v-for="capability in capabilityList" :key="capability.code" class="action-package-row">
                 <div class="action-package-main">
                   <div class="action-package-title-row">
-                    <span class="action-package-name">{{ action.display_name || action.code }}</span>
-                    <span class="action-package-code">{{ action.code }}</span>
-                    <el-tag size="small" effect="plain" :type="actionModeTagType(action.agent_mode)">
-                      {{ formatActionMode(action.agent_mode) }}
+                    <span class="action-package-name">{{ capability.display_name || capability.code }}</span>
+                    <span class="action-package-code">{{ capability.code }}</span>
+                    <el-tag size="small" effect="plain" :type="actionModeTagType(capability.agent_mode)">
+                      {{ formatActionMode(capability.agent_mode) }}
                     </el-tag>
-                    <el-tag size="small" effect="plain" :type="actionRiskTagType(action.risk_level)">
-                      {{ actionRiskLabel(action.risk_level) }}
+                    <el-tag size="small" effect="plain" :type="actionRiskTagType(capability.risk_level)">
+                      {{ actionRiskLabel(capability.risk_level) }}
                     </el-tag>
-                    <el-tag size="small" effect="plain" :type="action.preflight_required ? 'warning' : 'success'">
-                      {{ action.preflight_required ? '需预检' : '免预检' }}
+                    <el-tag size="small" effect="plain" :type="capability.requires_environment ? 'warning' : 'success'">
+                      {{ capability.requires_environment ? '需知识图谱环境' : '免预选' }}
                     </el-tag>
-                    <el-tooltip :content="action.available_reason || 'action 可用'" placement="top" :disabled="action.available !== false">
-                      <el-tag size="small" effect="plain" :type="actionAvailabilityTagType(action.available)">
-                        {{ actionAvailabilityLabel(action.available) }}
+                    <el-tooltip :content="capability.available_reason || '问答类型可用'" placement="top" :disabled="capability.available !== false">
+                      <el-tag size="small" effect="plain" :type="actionAvailabilityTagType(capability.available)">
+                        {{ actionAvailabilityLabel(capability.available) }}
                       </el-tag>
                     </el-tooltip>
                   </div>
-                  <div class="action-package-desc">{{ action.description || '暂无描述' }}</div>
+                  <div class="action-package-desc">{{ capability.summary || capability.description || '暂无描述' }}</div>
                   <div class="action-package-tags">
-                    <el-tag v-for="context in action.required_context || []" :key="`${action.code}-ctx-${context}`" size="small" effect="plain">
+                    <el-tag v-for="context in capability.required_context || []" :key="`${capability.code}-ctx-${context}`" size="small" effect="plain">
                       上下文：{{ context }}
                     </el-tag>
-                    <span v-if="!(action.required_context || []).length" class="muted-text">未要求前置上下文</span>
+                    <el-tag v-for="legacyCode in capability.legacy_action_codes || []" :key="`${capability.code}-legacy-${legacyCode}`" size="small" effect="plain" type="info">
+                      兼容：{{ legacyCode }}
+                    </el-tag>
+                    <span v-if="!(capability.required_context || []).length" class="muted-text">未要求前置上下文</span>
                   </div>
                 </div>
                 <div class="action-package-side">
-                  <button type="button" class="action-package-stat stat-detail-button" @click="openActionStatDetail(action, 'examples')">
+                  <button type="button" class="action-package-stat stat-detail-button" @click="openCapabilityStatDetail(capability, 'examples')">
                     <span>示例</span>
-                    <strong>{{ (action.suggested_questions || []).length }}</strong>
+                    <strong>{{ (capability.suggested_questions || []).length }}</strong>
                   </button>
-                  <button type="button" class="action-package-stat stat-detail-button" @click="openActionStatDetail(action, 'skills')">
-                    <span>Skill</span>
-                    <strong>{{ actionSkillCount(action) }}</strong>
+                  <button type="button" class="action-package-stat stat-detail-button" @click="openCapabilityStatDetail(capability, 'skills')">
+                    <span>已挂载 Skill</span>
+                    <strong>{{ capabilitySkillCount(capability) }}</strong>
+                    <small>当前可用 {{ capabilityAvailableSkillCount(capability) }}</small>
                   </button>
-                  <button type="button" class="action-package-stat stat-detail-button" @click="openActionStatDetail(action, 'outputs')">
+                  <button type="button" class="action-package-stat stat-detail-button" @click="openCapabilityStatDetail(capability, 'outputs')">
                     <span>输出</span>
-                    <strong>{{ (action.output_blocks || []).length }}</strong>
+                    <strong>{{ (capability.output_blocks || []).length }}</strong>
                   </button>
+                  <el-button v-if="canManageCapabilities" link type="primary" @click="openCapabilityDialog(capability)">管理 Skill</el-button>
                 </div>
-              </div>
-            </div>
           </div>
         </div>
       </template>
 
     </section>
 
-    <el-dialog v-model="providerDialogVisible" :title="providerForm.id ? '编辑提供商' : '新增提供商'" width="min(880px, 94vw)" destroy-on-close append-to-body>
-      <el-form :model="providerForm" label-width="102px">
-        <el-form-item label="名称"><el-input v-model="providerForm.name" /></el-form-item>
-        <el-form-item label="类型"><el-select v-model="providerForm.provider_type" style="width:100%"><el-option label="OpenAI Compatible" value="openai_compatible" /></el-select></el-form-item>
-        <el-form-item label="供应商预设">
-          <el-select v-model="providerForm.provider_preset" filterable clearable placeholder="选择 DeepSeek / 豆包 / 千问 / Kimi 等预设" style="width:100%" @change="applyProviderPreset">
-            <el-option v-for="item in providerPresets" :key="item.key" :label="item.name" :value="item.key">
-              <span>{{ item.name }}</span>
-              <span class="provider-preset-option">动态获取模型</span>
-            </el-option>
-          </el-select>
-        </el-form-item>
-        <div v-if="selectedProviderPresetDetail" class="provider-preset-card">
-          <strong>{{ selectedProviderPresetDetail.name }}</strong>
-          <span>{{ selectedProviderPresetDetail.notes }}</span>
-          <a v-if="selectedProviderPresetDetail.docs_url" :href="selectedProviderPresetDetail.docs_url" target="_blank" rel="noreferrer">查看官方文档</a>
-        </div>
-        <el-form-item label="Base URL"><el-input v-model="providerForm.base_url" /></el-form-item>
-        <el-form-item label="API Key"><el-input v-model="providerForm.api_key" type="password" show-password :placeholder="providerApiKeyPlaceholder" /></el-form-item>
-        <div class="model-discovery-strip">
-          <el-button size="small" :loading="saving.models" :disabled="!providerForm.id" @click="handleListProviderModels">
-            拉取模型列表
-          </el-button>
-          <span v-if="!providerForm.id" class="model-discovery-hint">新增提供商请先保存后再拉取模型。</span>
-          <span v-else-if="providerModelRecommendation" class="model-discovery-hint">
-            推荐 {{ providerModelRecommendation.model }}
-            <el-tag size="small" :type="providerModelRecommendation.supports_tool_calling ? 'success' : 'warning'">
-              {{ providerModelRecommendation.supports_tool_calling ? 'Tool Calling 可用' : '已验证文本' }}
-            </el-tag>
-            <el-button link type="primary" @click="applyRecommendedModel">一键填入</el-button>
-          </span>
-          <span v-else-if="providerModels.length" class="model-discovery-hint">已拉取 {{ providerModels.length }} 个模型，可在下方选择。</span>
-        </div>
-        <div class="dialog-grid">
-          <el-form-item label="默认模型">
-            <el-select v-model="providerForm.default_model" filterable allow-create default-first-option style="width:100%">
-              <el-option v-for="item in providerModels" :key="item.id" :label="formatProviderModelLabel(item)" :value="item.id" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="备用模型">
-            <el-select v-model="providerForm.backup_model" filterable allow-create default-first-option clearable style="width:100%">
-              <el-option v-for="item in providerModels" :key="item.id" :label="formatProviderModelLabel(item)" :value="item.id" />
-            </el-select>
-          </el-form-item>
-        </div>
-        <div class="provider-inline-grid provider-runtime-grid">
-          <el-form-item label="温度"><el-input-number v-model="providerForm.temperature" class="provider-compact-number" :min="0" :max="2" :step="0.1" :controls="false" /></el-form-item>
-          <el-form-item label="最大 Tokens"><el-input-number v-model="providerForm.max_tokens" class="provider-compact-number provider-compact-number--wide" :min="100" :max="16000" :step="100" :controls="false" /></el-form-item>
-          <el-form-item label="超时">
-            <div class="provider-unit-input">
-              <el-input-number v-model="providerForm.timeout_seconds" class="provider-compact-number" :min="5" :max="120" :controls="false" />
-              <span>s</span>
-            </div>
-          </el-form-item>
-        </div>
-        <div class="provider-inline-grid provider-inline-grid--three provider-billing-grid">
-          <el-form-item label="计费币种">
-            <el-segmented v-model="providerForm.price_currency" :options="providerCurrencyOptions" />
-          </el-form-item>
-          <el-form-item label="输入单价">
-            <div class="price-input-row">
-              <el-input-number v-model="providerForm.input_token_price_per_1m" class="provider-price-input" :min="0" :precision="2" :step="0.01" :controls="false" />
-              <span>{{ providerPriceUnitLabel }}</span>
-            </div>
-          </el-form-item>
-          <el-form-item label="输出单价">
-            <div class="price-input-row">
-              <el-input-number v-model="providerForm.output_token_price_per_1m" class="provider-price-input" :min="0" :precision="2" :step="0.01" :controls="false" />
-              <span>{{ providerPriceUnitLabel }}</span>
-            </div>
-          </el-form-item>
-        </div>
-        <div class="dialog-grid">
-          <el-form-item label="启用"><el-switch v-model="providerForm.is_enabled" /></el-form-item>
-        </div>
-      </el-form>
-      <template #footer>
-        <el-button @click="providerDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="saving.provider" @click="saveProvider">保存</el-button>
-      </template>
-    </el-dialog>
+    <ModelProviderDialog v-model="providerDialogVisible" :provider="editingProvider" :presets="providerPresets" @saved="reloadProviders" />
 
-    <el-dialog v-model="mcpDialogVisible" :title="mcpForm.id ? '编辑 MCP' : '新增 MCP'" width="680px" destroy-on-close append-to-body>
-      <el-form :model="mcpForm" label-width="102px">
-        <el-form-item label="名称"><el-input v-model="mcpForm.name" /></el-form-item>
-        <el-form-item label="类型"><el-select v-model="mcpForm.server_type" style="width:100%"><el-option label="HTTP" value="http" /><el-option label="STDIO" value="stdio" /><el-option label="平台内置" value="platform_builtin" /></el-select></el-form-item>
-        <el-form-item label="地址或命令"><el-input v-model="mcpForm.endpoint_or_command" /></el-form-item>
-        <el-form-item label="描述"><el-input v-model="mcpForm.description" type="textarea" :rows="3" /></el-form-item>
-        <el-form-item label="鉴权配置"><el-input v-model="mcpForm.auth_config_text" type="textarea" :rows="5" placeholder='例如：{"headers":{"Authorization":"Bearer xxx"},"env":{"TOKEN":"xxx"}}' /></el-form-item>
-        <div v-if="mcpForm.server_type !== 'platform_builtin'" class="mcp-guard-card">
-          <strong>外部 MCP 运行保护</strong>
-          <span>默认只读过滤 create/update/delete/run 等写入工具；STDIO 只继承安全系统环境变量，业务凭据请显式放入 auth_config.env。</span>
+    <AgentAssetDialog v-model="mcpDialogVisible" :title="mcpForm.id ? '编辑 MCP' : '新增 MCP'" save-label="保存 MCP" :form="mcpForm" :rules="mcpRules" :saving="saving.mcp" @save="saveMcp" @invalid="fields => { if (fields?.auth_config_text) mcpAdvanced = ['auth'] }">
+      <section class="asset-section">
+        <div class="asset-heading"><span class="asset-step">01</span><h3>服务连接</h3><el-tag size="small" effect="plain" type="info">{{ formatMcpType(mcpForm.server_type) }}</el-tag></div>
+        <div class="asset-grid">
+          <el-form-item label="服务名称" prop="name"><el-input v-model="mcpForm.name" :disabled="mcpForm.is_builtin" maxlength="128" placeholder="例如：团队知识库 MCP" /></el-form-item>
+          <el-form-item label="连接方式"><el-select v-model="mcpForm.server_type" :disabled="mcpForm.is_builtin" aria-label="连接方式"><el-option label="HTTP · 远程服务" value="http" /><el-option label="STDIO · 本地进程" value="stdio" /><el-option label="平台内置" value="platform_builtin" /></el-select></el-form-item>
+          <el-form-item :label="mcpForm.server_type === 'stdio' ? '启动命令' : '服务地址'" prop="endpoint_or_command" class="asset-full"><el-input v-model="mcpForm.endpoint_or_command" :placeholder="mcpForm.server_type === 'stdio' ? '例如：npx -y @modelcontextprotocol/server-example' : 'https://mcp.example.com/mcp'" /><div class="asset-hint">{{ mcpForm.server_type === 'stdio' ? '填写可执行文件及参数，凭据在高级设置中配置。' : (mcpForm.server_type === 'platform_builtin' ? '平台内置服务由系统维护，可留空。' : '填写 MCP 服务的完整 HTTP 端点。') }}</div></el-form-item>
+          <el-form-item label="服务说明" class="asset-full"><el-input v-model="mcpForm.description" type="textarea" :rows="2" placeholder="描述服务提供的数据或工具能力" /></el-form-item>
         </div>
-        <div v-if="mcpForm.server_type !== 'platform_builtin'" class="dialog-grid">
-          <el-form-item label="写操作">
-            <el-switch v-model="mcpAllowWrite" active-text="允许写工具" inactive-text="只读过滤" />
-          </el-form-item>
-          <el-form-item label="超时秒数">
-            <el-input-number v-model="mcpTimeoutSeconds" :min="5" :max="300" />
-          </el-form-item>
+      </section>
+      <section class="asset-section asset-section--tinted">
+        <div class="asset-heading"><span class="asset-step">02</span><h3>工具与运行</h3></div>
+        <el-form-item label="允许使用的工具"><el-select v-model="mcpForm.tool_whitelist" multiple filterable allow-create default-first-option collapse-tags collapse-tags-tooltip :max-collapse-tags="4" placeholder="输入工具名称，按 Enter 添加" aria-label="允许使用的工具"><el-option v-for="tool in skillToolOptions" :key="tool" :label="tool" :value="tool" /></el-select><div class="asset-hint">填写 MCP 返回的工具名称，可通过列表中的“工具”查看；外部 MCP 留空时加载全部符合运行权限的工具。</div></el-form-item>
+        <div v-if="mcpForm.server_type !== 'platform_builtin'" class="asset-grid">
+          <el-form-item label="写操作权限"><el-switch v-model="mcpAllowWrite" active-text="允许写操作" inactive-text="只读" aria-label="允许 MCP 写操作" /><div class="asset-hint">默认只读，写入类工具仍受账号权限和确认流程约束。</div></el-form-item>
+          <el-form-item label="请求超时（秒）"><el-input-number v-model="mcpTimeoutSeconds" :min="5" :max="300" controls-position="right" /></el-form-item>
         </div>
-        <el-form-item label="启用工具"><el-select v-model="mcpForm.tool_whitelist" multiple filterable allow-create default-first-option style="width:100%" /></el-form-item>
-        <el-form-item label="启用"><el-switch v-model="mcpForm.is_enabled" /></el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="mcpDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="saving.mcp" @click="saveMcp">保存</el-button>
-      </template>
-    </el-dialog>
+      </section>
+      <el-collapse v-model="mcpAdvanced" class="asset-advanced"><el-collapse-item name="auth"><template #title><span>高级设置</span><span class="asset-summary">鉴权请求头与环境变量</span></template>
+        <el-form-item label="鉴权配置（JSON）" prop="auth_config_text" class="asset-code"><el-input v-model="mcpForm.auth_config_text" type="textarea" :rows="6" placeholder='{"headers":{"Authorization":"Bearer xxx"},"env":{"TOKEN":"xxx"}}' /><div class="asset-hint">HTTP 使用 headers，STDIO 使用 env；STDIO 仅继承安全系统环境变量。</div></el-form-item>
+      </el-collapse-item></el-collapse>
+      <div class="asset-enable"><div><strong>启用此 MCP</strong><p>开启后可供智能体调用，实际使用仍遵循问答类型与用户权限。</p></div><el-switch v-model="mcpForm.is_enabled" aria-label="启用此 MCP" /></div>
+    </AgentAssetDialog>
 
-    <el-dialog v-model="skillDialogVisible" :title="skillForm.id ? '编辑 Skill' : '新增 Skill'" width="880px" destroy-on-close append-to-body>
-      <div v-if="skillForm.id" class="skill-detail-card">
-        <div class="skill-detail-title">Skill 详情</div>
-        <div class="skill-detail-meta">
-          <span>名称：{{ skillForm.name || '--' }}</span>
-          <span>标识：{{ skillForm.slug || '--' }}</span>
-          <span>类型：{{ formatSkillType(skillForm) }}</span>
-          <span>分类：{{ skillForm.category || '未分类' }}</span>
-        </div>
-        <div class="skill-detail-desc">{{ skillForm.description || '暂无描述' }}</div>
+    <el-dialog top="5vh" :close-on-click-modal="false" class="workbench-edit-dialog" v-model="capabilityDialogVisible" title="配置问答类型" width="min(760px, 94vw)" destroy-on-close append-to-body>
+      <div class="skill-detail-card">
+        <div class="skill-detail-title">{{ capabilityForm.display_name || capabilityForm.code }}</div>
+        <div class="skill-detail-desc">{{ capabilityForm.description || '暂无描述' }}</div>
       </div>
-      <el-form :model="skillForm" label-width="102px">
-        <div class="dialog-grid">
-          <el-form-item label="名称"><el-input v-model="skillForm.name" /></el-form-item>
-          <el-form-item label="标识"><el-input v-model="skillForm.slug" :disabled="skillForm.is_builtin" /></el-form-item>
-        </div>
-        <div class="dialog-grid">
-          <el-form-item label="来源">
-            <el-select v-model="skillForm.source_type" :disabled="skillForm.is_builtin" style="width:100%">
-              <el-option label="平台内置" value="inline" />
-              <el-option label="本地文件" value="local" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="分类">
-            <el-select v-model="skillForm.category" filterable allow-create default-first-option style="width:100%">
-              <el-option v-for="item in skillCategoryOptions" :key="item" :label="item" :value="item" />
-            </el-select>
-          </el-form-item>
-        </div>
-        <el-form-item label="描述"><el-input v-model="skillForm.description" /></el-form-item>
-        <el-form-item label="适用 Action">
-          <el-select v-model="skillForm.applicable_actions" multiple filterable collapse-tags collapse-tags-tooltip style="width:100%">
-            <el-option
-              v-for="action in actionRegistry"
-              :key="action.code"
-              :label="`${action.display_name || action.code}（${action.code}）`"
-              :value="action.code"
-            />
+      <el-form label-position="top" :model="capabilityForm" label-width="102px">
+        <el-form-item label="挂载 Skill">
+          <el-select v-model="capabilityForm.skills" multiple filterable collapse-tags collapse-tags-tooltip placeholder="选择可复用的方法包" style="width:100%">
+            <el-option v-for="skill in skills" :key="skill.slug" :label="`${skill.name}${skill.is_enabled ? '' : '（已停用）'}`" :value="skill.slug" />
           </el-select>
         </el-form-item>
-        <div class="dialog-grid">
-          <el-form-item label="风险提示">
-            <el-select v-model="skillForm.risk_level" style="width:100%">
-              <el-option label="只读" value="read_only" />
-              <el-option label="草稿" value="draft" />
-              <el-option label="写入" value="write" />
-              <el-option label="执行" value="execute" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="建议轮次">
-            <el-input-number v-model="skillForm.max_iterations" :min="0" :max="20" style="width:100%" />
-          </el-form-item>
-        </div>
-        <el-form-item label="适用场景">
-          <el-select v-model="skillForm.examples" multiple filterable allow-create default-first-option collapse-tags collapse-tags-tooltip style="width:100%" />
-        </el-form-item>
-        <el-form-item label="核心工具依赖">
-          <el-select v-model="skillForm.builtin_tools" multiple filterable allow-create default-first-option collapse-tags collapse-tags-tooltip style="width:100%">
-            <el-option v-for="tool in skillToolOptions" :key="`builtin-${tool}`" :label="tool" :value="tool" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="补充工具依赖">
-          <el-select v-model="skillForm.recommended_tools" multiple filterable allow-create default-first-option collapse-tags collapse-tags-tooltip style="width:100%">
-            <el-option v-for="tool in skillToolOptions" :key="`recommend-${tool}`" :label="tool" :value="tool" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="适用角色"><el-select v-model="skillForm.allowed_role_codes" multiple filterable allow-create default-first-option style="width:100%" /></el-form-item>
-        <el-form-item label="输出指导">
-          <el-input v-model="skillForm.output_contract_text" type="textarea" :rows="4" placeholder='例如：{"sections":["结论","依据"],"blocks":["risk_notice"]}' />
-        </el-form-item>
-        <el-form-item label="方法内容"><el-input v-model="skillForm.content" type="textarea" :rows="10" /></el-form-item>
-        <el-form-item label="启用"><el-switch v-model="skillForm.is_enabled" /></el-form-item>
       </el-form>
+      <div class="runtime-note">同一个 Skill 可以服务多个能力；实际加载还需满足启用状态、智能体策略选择和当前账号角色范围。</div>
+      <div v-if="selectedCapabilitySkills.length" class="stat-detail-list capability-skill-preview">
+        <div v-for="skill in selectedCapabilitySkills" :key="skill.slug" class="stat-detail-item">
+          <div class="stat-detail-main">
+            <span class="stat-detail-label">{{ skill.name || skill.slug }}</span>
+            <span class="stat-detail-desc">{{ skill.description || '暂无描述' }}</span>
+          </div>
+          <el-tag size="small" effect="plain" :type="skill.available ? 'success' : 'info'">{{ capabilitySkillAvailability(skill) }}</el-tag>
+        </div>
+      </div>
       <template #footer>
-        <el-button @click="skillDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="saving.skill" @click="saveSkill">保存</el-button>
+        <el-button @click="capabilityDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="saving.capability" @click="saveCapability">保存挂载</el-button>
       </template>
     </el-dialog>
+
+    <AgentAssetDialog v-model="skillDialogVisible" :title="skillForm.id ? '编辑 Skill' : '新增 Skill'" save-label="保存 Skill" :form="skillForm" :rules="skillRules" :saving="saving.skill" @save="saveSkill" @invalid="fields => { if (fields?.output_contract_text) skillAdvanced = ['output'] }">
+      <section class="asset-section">
+        <div class="asset-heading"><span class="asset-step">01</span><h3>基本信息</h3><el-tag size="small" effect="plain" type="info">{{ skillForm.is_builtin ? '平台内置' : '团队技能' }}</el-tag></div>
+        <div class="asset-grid">
+          <el-form-item label="技能名称" prop="name"><el-input v-model="skillForm.name" maxlength="128" placeholder="例如：发布风险评估" /></el-form-item>
+          <el-form-item label="唯一标识" prop="slug"><el-input v-model="skillForm.slug" :disabled="skillForm.is_builtin" placeholder="例如：release-risk-review" /><div class="asset-hint">使用字母、数字、下划线或短横线，内置标识不可修改。</div></el-form-item>
+          <el-form-item label="技能来源"><el-select v-model="skillForm.source_type" :disabled="skillForm.is_builtin" aria-label="技能来源"><el-option label="平台内联" value="inline" /><el-option label="本地文件" value="local" /></el-select></el-form-item>
+          <el-form-item label="分类"><el-select v-model="skillForm.category" filterable allow-create default-first-option placeholder="选择或输入分类" aria-label="技能分类"><el-option v-for="item in skillCategoryOptions" :key="item" :label="item" :value="item" /></el-select></el-form-item>
+          <el-form-item label="技能说明" class="asset-full"><el-input v-model="skillForm.description" type="textarea" :rows="2" placeholder="描述这个技能适用的问题和预期结果" /></el-form-item>
+        </div>
+        <div class="asset-note"><div class="asset-tags"><span>挂载的问答类型</span><el-tag v-for="capability in skillCapabilityNames(skillForm)" :key="capability.code" size="small" effect="plain">{{ capability.name }}</el-tag><span v-if="!skillCapabilityNames(skillForm).length">尚未挂载</span></div><div class="asset-hint">在“问答类型”中管理挂载；同一技能可供多种问答复用。</div></div>
+      </section>
+      <section class="asset-section asset-section--tinted">
+        <div class="asset-heading"><span class="asset-step">02</span><h3>技能指令</h3></div>
+        <el-form-item label="指令内容" class="asset-code"><el-input v-model="skillForm.content" type="textarea" :rows="8" resize="vertical" placeholder="描述处理步骤、取证方式、判断标准与输出要求…" /></el-form-item>
+        <el-form-item label="适用场景"><el-select v-model="skillForm.examples" multiple filterable allow-create default-first-option collapse-tags collapse-tags-tooltip :max-collapse-tags="3" placeholder="输入场景示例，按 Enter 添加" aria-label="适用场景" /></el-form-item>
+      </section>
+      <el-collapse v-model="skillAdvanced" class="asset-advanced">
+        <el-collapse-item name="tools"><template #title><span>工具依赖与访问范围</span><span class="asset-summary">{{ (skillForm.builtin_tools || []).length + (skillForm.recommended_tools || []).length }} 项依赖</span></template>
+          <div class="asset-grid"><el-form-item label="核心工具依赖"><el-select v-model="skillForm.builtin_tools" multiple filterable allow-create default-first-option collapse-tags collapse-tags-tooltip placeholder="选择或输入工具名" aria-label="核心工具依赖"><el-option v-for="tool in skillToolOptions" :key="tool" :label="tool" :value="tool" /></el-select></el-form-item>
+          <el-form-item label="补充工具依赖"><el-select v-model="skillForm.recommended_tools" multiple filterable allow-create default-first-option collapse-tags collapse-tags-tooltip placeholder="选择或输入工具名" aria-label="补充工具依赖"><el-option v-for="tool in skillToolOptions" :key="tool" :label="tool" :value="tool" /></el-select></el-form-item></div>
+          <el-form-item label="适用角色"><el-select v-model="skillForm.allowed_role_codes" multiple filterable allow-create default-first-option placeholder="输入角色编码，留空表示不额外限制" aria-label="适用角色" /><div class="asset-hint">角色范围仅收紧技能访问，不会授予账号额外权限。</div></el-form-item>
+        </el-collapse-item>
+        <el-collapse-item name="output"><template #title><span>运行参数与输出约束</span><span class="asset-summary">{{ skillForm.max_iterations ? `${skillForm.max_iterations} 轮迭代` : '默认迭代次数' }}</span></template>
+          <div class="asset-grid"><el-form-item label="风险提示"><el-select v-model="skillForm.risk_level" aria-label="风险提示"><el-option label="只读" value="read_only" /><el-option label="草稿" value="draft" /><el-option label="写入" value="write" /><el-option label="执行" value="execute" /></el-select></el-form-item>
+          <el-form-item label="最大迭代次数"><el-input-number v-model="skillForm.max_iterations" :min="0" :max="20" controls-position="right" /><div class="asset-hint">0 表示沿用智能体默认值。</div></el-form-item></div>
+          <el-form-item label="输出约束（JSON）" prop="output_contract_text" class="asset-code"><el-input v-model="skillForm.output_contract_text" type="textarea" :rows="5" placeholder='{"sections":["结论","证据"],"blocks":["risk_notice"]}' /></el-form-item>
+        </el-collapse-item>
+      </el-collapse>
+      <div class="asset-enable"><div><strong>启用此 Skill</strong><p>开启后按问答类型挂载和角色范围自动加载。</p></div><el-switch v-model="skillForm.is_enabled" aria-label="启用此 Skill" /></div>
+    </AgentAssetDialog>
 
     <el-dialog v-model="skillMarketDialogVisible" title="Skill 市场" width="900px" destroy-on-close append-to-body>
       <div class="skill-summary-row">
@@ -752,8 +590,8 @@
         <el-table-column prop="category" label="分类" width="120" />
         <el-table-column prop="source_display" label="来源" width="110" />
         <el-table-column prop="description" label="描述" min-width="240" show-overflow-tooltip />
-        <el-table-column label="Action" min-width="180" show-overflow-tooltip>
-          <template #default="{ row }">{{ formatActionList(row.applicable_actions) }}</template>
+        <el-table-column label="归属能力" min-width="180" show-overflow-tooltip>
+          <template #default="{ row }">{{ skillCapabilityNames(row).map(item => item.name).join('、') || '暂未挂载' }}</template>
         </el-table-column>
         <el-table-column label="操作" width="110" fixed="right">
           <template #default="{ row }">
@@ -766,18 +604,28 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="a2aDialogVisible" title="创建协同任务草案" width="720px" destroy-on-close append-to-body>
-      <el-form :model="a2aForm" label-width="104px">
-        <el-form-item label="来源系统"><el-input v-model="a2aForm.source_agent" /></el-form-item>
-        <el-form-item label="任务标题"><el-input v-model="a2aForm.title" placeholder="留空则使用 Action 名称" /></el-form-item>
-        <el-form-item label="Action">
-          <el-select v-model="a2aForm.action_code" filterable style="width:100%">
-            <el-option v-for="action in actionRegistry" :key="action.code" :label="`${action.display_name || action.code}（${action.code}）`" :value="action.code" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="输入参数">
-          <el-input v-model="a2aForm.input_payload_text" type="textarea" :rows="8" />
-        </el-form-item>
+    <el-dialog top="5vh" :close-on-click-modal="false" class="workbench-edit-dialog" v-model="a2aDialogVisible" title="创建协同任务草案" width="720px" destroy-on-close append-to-body>
+      <el-form class="workbench-editor-form--sectioned" label-position="top" :model="a2aForm" label-width="104px">
+        <section class="workbench-editor-section">
+          <div class="workbench-editor-heading"><span class="workbench-editor-step">01</span><h3>协同任务</h3></div>
+          <div class="workbench-editor-grid">
+            <el-form-item label="来源系统"><el-input v-model="a2aForm.source_agent" /></el-form-item>
+            <el-form-item label="任务标题"><el-input v-model="a2aForm.title" placeholder="留空则使用问答类型名称" /></el-form-item>
+            <el-form-item label="问答类型">
+              <el-select v-model="a2aForm.action_code" filterable style="width:100%">
+                <el-option v-for="capability in capabilityRegistry" :key="capability.code" :label="`${capability.display_name || capability.code}（${capability.code}）`" :value="capability.code" />
+              </el-select>
+            </el-form-item>
+          </div>
+        </section>
+        <section class="workbench-editor-section workbench-editor-section--tinted">
+          <div class="workbench-editor-heading"><span class="workbench-editor-step">02</span><h3>输入参数</h3></div>
+          <div>
+            <el-form-item label="输入参数">
+              <el-input v-model="a2aForm.input_payload_text" type="textarea" :rows="8" />
+            </el-form-item>
+          </div>
+        </section>
       </el-form>
       <template #footer>
         <el-button @click="a2aDialogVisible = false">取消</el-button>
@@ -785,17 +633,27 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="runbookDialogVisible" title="生成 Runbook 手册草案" width="760px" destroy-on-close append-to-body>
-      <el-form :model="runbookForm" label-width="104px">
-        <el-form-item label="标题"><el-input v-model="runbookForm.title" /></el-form-item>
-        <el-form-item label="来源会话"><el-input v-model="runbookForm.source_session" placeholder="填写会话 ID 可从事故会话一键生成" /></el-form-item>
-        <div class="dialog-grid">
-          <el-form-item label="环境"><el-input v-model="runbookForm.environment" /></el-form-item>
-          <el-form-item label="服务"><el-input v-model="runbookForm.service" /></el-form-item>
-        </div>
-        <el-form-item label="标签"><el-select v-model="runbookForm.tags" multiple filterable allow-create default-first-option style="width:100%" /></el-form-item>
-        <el-form-item label="引用来源"><el-input v-model="runbookForm.source_refs_text" type="textarea" :rows="3" /></el-form-item>
-        <el-form-item label="内容"><el-input v-model="runbookForm.content" type="textarea" :rows="10" placeholder="留空则按环境、服务和标题生成基础草案" /></el-form-item>
+    <el-dialog top="5vh" :close-on-click-modal="false" class="workbench-edit-dialog" v-model="runbookDialogVisible" title="生成 Runbook 手册草案" width="760px" destroy-on-close append-to-body>
+      <el-form class="workbench-editor-form--sectioned" label-position="top" :model="runbookForm" label-width="104px">
+        <section class="workbench-editor-section">
+          <div class="workbench-editor-heading"><span class="workbench-editor-step">01</span><h3>手册信息</h3></div>
+          <div class="workbench-editor-grid">
+            <el-form-item label="标题"><el-input v-model="runbookForm.title" /></el-form-item>
+            <el-form-item label="来源会话"><el-input v-model="runbookForm.source_session" placeholder="填写会话 ID 可从事故会话一键生成" /></el-form-item>
+            <div class="dialog-grid">
+              <el-form-item label="环境"><el-input v-model="runbookForm.environment" /></el-form-item>
+              <el-form-item label="服务"><el-input v-model="runbookForm.service" /></el-form-item>
+            </div>
+            <el-form-item label="标签"><el-select v-model="runbookForm.tags" multiple filterable allow-create default-first-option style="width:100%" /></el-form-item>
+            <el-form-item label="引用来源"><el-input v-model="runbookForm.source_refs_text" type="textarea" :rows="3" /></el-form-item>
+          </div>
+        </section>
+        <section class="workbench-editor-section workbench-editor-section--tinted">
+          <div class="workbench-editor-heading"><span class="workbench-editor-step">02</span><h3>引用与内容</h3></div>
+          <div>
+            <el-form-item label="内容"><el-input v-model="runbookForm.content" type="textarea" :rows="10" placeholder="留空则按环境、服务和标题生成基础草案" /></el-form-item>
+          </div>
+        </section>
       </el-form>
       <template #footer>
         <el-button @click="runbookDialogVisible = false">取消</el-button>
@@ -851,10 +709,33 @@
     <el-dialog v-model="statDetailDialogVisible" :title="statDetail.title || '统计详情'" width="640px" destroy-on-close append-to-body>
       <div v-if="statDetail.subtitle" class="stat-detail-subtitle">{{ statDetail.subtitle }}</div>
       <div v-if="statDetail.items.length" class="stat-detail-list">
-        <div v-for="(item, index) in statDetail.items" :key="`${item.label}-${index}`" class="stat-detail-item">
+        <div v-for="(item, index) in statDetail.items" :key="`${item.label}-${index}`" :class="['stat-detail-item', { 'stat-detail-item--tool': item.mcpBindings }]">
           <div class="stat-detail-main">
             <span class="stat-detail-label">{{ item.label }}</span>
             <span v-if="item.desc" class="stat-detail-desc">{{ item.desc }}</span>
+            <div v-if="item.mcpBindings" class="stat-detail-mcp">
+              <div class="stat-detail-mcp-title">MCP 依赖</div>
+              <div v-if="item.mcpBindings.length" class="stat-detail-mcp-list">
+                <div v-for="binding in item.mcpBindings" :key="`${item.label}-${binding.id || binding.name}`" class="stat-detail-mcp-card">
+                  <div class="stat-detail-mcp-head">
+                    <span class="stat-detail-mcp-name">{{ binding.name || '未命名 MCP' }}</span>
+                    <el-tag size="small" effect="plain">{{ formatMcpType(binding.server_type) }}</el-tag>
+                    <el-tag size="small" effect="plain" :type="binding.is_builtin ? 'success' : 'info'">
+                      {{ binding.is_builtin ? '平台内置' : '外部接入' }}
+                    </el-tag>
+                    <el-tag size="small" :type="binding.is_enabled ? 'success' : 'info'">
+                      {{ binding.is_enabled ? '已启用' : '已停用' }}
+                    </el-tag>
+                  </div>
+                  <div class="stat-detail-mcp-meta">
+                    <span>绑定工具：{{ binding.tool || item.label }}</span>
+                    <span v-if="binding.endpoint_or_command">入口：{{ binding.endpoint_or_command }}</span>
+                  </div>
+                  <div v-if="binding.description" class="stat-detail-mcp-desc">{{ binding.description }}</div>
+                </div>
+              </div>
+              <div v-else class="stat-detail-mcp-empty">未匹配已配置 MCP Server</div>
+            </div>
           </div>
           <el-tag v-if="item.tag" size="small" effect="plain">{{ item.tag }}</el-tag>
         </div>
@@ -871,6 +752,9 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ChatDotSquare, Connection, Cpu, Message, Promotion, Setting, Tools } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import AgentStrategyPanel from '@/components/aiops/AgentStrategyPanel.vue'
+import AgentAssetDialog from '@/components/aiops/AgentAssetDialog.vue'
+import ModelProviderDialog from '@/components/aiops/ModelProviderDialog.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useRouteTabState } from '@/composables/useRouteTabState'
 import {
@@ -878,7 +762,6 @@ import {
   autoIngestAIOpsReviewKnowledge,
   cancelAIOpsA2ATask,
   createAIOpsMcpServer,
-  createAIOpsProvider,
   createAIOpsSkill,
   createAIOpsA2ATask,
   createAIOpsRunbookDraft,
@@ -890,7 +773,7 @@ import {
   deleteAIOpsReviewKnowledge,
   deleteAIOpsRunbook,
   getAIOpsA2ATasks,
-  getAIOpsActions,
+  getAIOpsCapabilities,
   getAIOpsConfig,
   getAIOpsPlatformMcpManifest,
   getAIOpsProviderPresets,
@@ -901,7 +784,6 @@ import {
   getAIOpsMcpServers,
   getAIOpsProviders,
   getAIOpsSkills,
-  listAIOpsProviderModels,
   listAIOpsMcpTools,
   publishAIOpsRunbook,
   runAIOpsA2ATask,
@@ -909,8 +791,8 @@ import {
   testAIOpsProvider,
   testAIOpsMcpServer,
   updateAIOpsConfig,
+  updateAIOpsCapability,
   updateAIOpsMcpServer,
-  updateAIOpsProvider,
   updateAIOpsSkill,
 } from '@/api/modules/aiops'
 
@@ -921,14 +803,16 @@ const { activeTab } = useRouteTabState({
 })
 const authStore = useAuthStore()
 const loading = reactive({ page: false })
-const saving = reactive({ config: false, provider: false, models: false, mcp: false, skill: false })
+const saving = reactive({ config: false, mcp: false, skill: false, capability: false })
 
 const providers = ref([])
+const defaultProviderId = ref(null)
+const selectingProviderId = ref(null)
 const providerPresets = ref([])
 const mcpServers = ref([])
 const skills = ref([])
-const actionRegistry = ref([])
-const actionRegistrySummary = ref({})
+const capabilityRegistry = ref([])
+const capabilityRegistrySummary = ref({})
 const a2aTasks = ref([])
 const runbooks = ref([])
 const reviewKnowledge = ref([])
@@ -952,12 +836,10 @@ const reviewPagination = reactive({
 })
 
 const configForm = reactive({
-  default_provider_id: null,
   system_prompt: '',
   welcome_message: '',
   suggested_questions: [],
-  enabled_mcp_server_ids: [],
-  enabled_skill_ids: [],
+  enabled_capability_codes: [],
   is_enabled: true,
   allow_action_execution: true,
   require_confirmation: true,
@@ -969,6 +851,7 @@ const configForm = reactive({
 const providerDialogVisible = ref(false)
 const mcpDialogVisible = ref(false)
 const skillDialogVisible = ref(false)
+const capabilityDialogVisible = ref(false)
 const skillMarketDialogVisible = ref(false)
 const mcpToolsDialogVisible = ref(false)
 const a2aDialogVisible = ref(false)
@@ -984,17 +867,32 @@ const statDetail = reactive({
   emptyText: '',
 })
 
-const providerForm = reactive({})
-const providerModels = ref([])
-const providerModelRecommendation = ref(null)
-const selectedProviderPreset = computed({
-  get: () => providerForm.provider_preset || '',
-  set: (value) => {
-    providerForm.provider_preset = value || ''
-  },
-})
+const editingProvider = ref(null)
+const configuredDefaultProvider = ref(null)
+const configSnapshot = ref(null)
+const configDirty = computed(() => Boolean(configSnapshot.value && JSON.stringify(configForm) !== JSON.stringify(configSnapshot.value)))
+const mcpAdvanced = ref([])
+const skillAdvanced = ref([])
+function validateJsonObject(rule, value, callback) {
+  try {
+    const parsed = JSON.parse(value?.trim() || '{}')
+    if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') throw new Error()
+    callback()
+  } catch { callback(new Error('请填写合法的 JSON 对象')) }
+}
+const mcpRules = {
+  name: [{ required: true, whitespace: true, message: '请填写服务名称', trigger: 'blur' }],
+  endpoint_or_command: [{ validator: (rule, value, callback) => callback(mcpForm.server_type !== 'platform_builtin' && !value?.trim() ? new Error('请填写服务地址或启动命令') : undefined), trigger: 'blur' }],
+  auth_config_text: [{ validator: validateJsonObject, trigger: 'blur' }],
+}
+const skillRules = {
+  name: [{ required: true, whitespace: true, message: '请填写技能名称', trigger: 'blur' }],
+  slug: [{ required: true, message: '请填写唯一标识', trigger: 'blur' }, { pattern: /^[a-zA-Z0-9_-]+$/, message: '仅支持字母、数字、下划线和短横线', trigger: 'blur' }],
+  output_contract_text: [{ validator: validateJsonObject, trigger: 'blur' }],
+}
 const mcpForm = reactive({})
 const skillForm = reactive({})
+const capabilityForm = reactive({ code: '', display_name: '', description: '', skills: [] })
 const a2aForm = reactive({})
 const runbookForm = reactive({})
 const mcpToolsList = ref([])
@@ -1002,23 +900,16 @@ const mcpToolDiagnostics = ref([])
 const currentMcpToolsTitle = ref('')
 
 const canInvokeA2A = computed(() => authStore.hasPermission('aiops.a2a.invoke'))
+const canManageCapabilities = computed(() => authStore.hasPermission('aiops.config.manage'))
+const mcpOverview = computed(() => [
+  { label: 'MCP 总数', value: mcpServers.value.length },
+  { label: '平台内置', value: mcpServers.value.filter(item => item.server_type === 'platform_builtin').length },
+  { label: '外部接入', value: mcpServers.value.filter(item => item.server_type !== 'platform_builtin').length },
+  { label: '已启用', value: mcpServers.value.filter(item => item.is_enabled).length },
+])
 const canManageRunbook = computed(() => authStore.hasPermission('aiops.runbook.manage'))
 const canViewMcpServer = computed(() => authStore.hasPermission('aiops.mcp.view'))
 const canManageReviewKnowledge = computed(() => authStore.hasPermission('aiops.review.manage'))
-const selectedProviderPresetDetail = computed(() => providerPresets.value.find(item => item.key === selectedProviderPreset.value) || null)
-const providerApiKeyPlaceholder = computed(() => {
-  const preset = selectedProviderPresetDetail.value
-  if (preset?.api_key_placeholder) return providerForm.id ? `留空则保留原值；${preset.api_key_placeholder}` : preset.api_key_placeholder
-  return providerForm.id ? '留空则保留原值' : 'API Key'
-})
-const providerCurrencyOptions = [
-  { label: '人民币', value: 'CNY' },
-  { label: '美元', value: 'USD' },
-]
-const providerPriceUnitLabel = computed(() => {
-  const currency = String(providerForm.price_currency || '').toUpperCase()
-  return currency === 'USD' ? '$/M Token' : `${currencySymbol(currency)}/百万 Token`
-})
 const mcpAuthConfig = computed(() => {
   try {
     const raw = mcpForm.auth_config_text?.trim()
@@ -1055,30 +946,25 @@ const skillGroups = computed(() => {
     }))
     .sort((a, b) => a.category.localeCompare(b.category, 'zh-CN'))
 })
-const actionOverview = computed(() => ({
-  total: Number(actionRegistrySummary.value.total ?? actionRegistry.value.length) || 0,
+const capabilityOverview = computed(() => ({
+  total: Number(capabilityRegistrySummary.value.total ?? capabilityRegistry.value.length) || 0,
   available: Number(
-    actionRegistrySummary.value.available
-      ?? actionRegistry.value.filter(item => item.available !== false).length,
+    capabilityRegistrySummary.value.available
+      ?? capabilityRegistry.value.filter(item => item.available !== false).length,
   ) || 0,
-  preflight: Number(actionRegistrySummary.value.preflight_required ?? 0) || 0,
-  execute: Number(actionRegistrySummary.value.execute ?? 0) || 0,
+  environment: capabilityRegistry.value.filter(item => item.requires_environment).length,
+  mountedSkills: new Set(capabilityRegistry.value.flatMap(item => item.skills || [])).size,
 }))
-const actionGroups = computed(() => {
-  const groups = new Map()
-  actionRegistry.value.forEach((action) => {
-    const category = action.category || '通用'
-    if (!groups.has(category)) groups.set(category, { category, items: [] })
-    groups.get(category).items.push(action)
-  })
-  return Array.from(groups.values())
-    .map(group => ({
-      ...group,
-      items: group.items
-        .slice()
-        .sort((a, b) => String(a.display_name || a.code).localeCompare(String(b.display_name || b.code), 'zh-CN')),
-    }))
-    .sort((a, b) => a.category.localeCompare(b.category, 'zh-CN'))
+const capabilityList = computed(() => capabilityRegistry.value
+  .slice()
+  .sort((a, b) => String(a.display_name || a.code).localeCompare(String(b.display_name || b.code), 'zh-CN')))
+const selectedCapabilitySkills = computed(() => {
+  const capability = capabilityRegistry.value.find(item => item.code === capabilityForm.code)
+  const details = new Map((capability?.skill_details || []).map(skill => [skill.slug, skill]))
+  return (capabilityForm.skills || []).map(slug => ({
+    ...(skills.value.find(skill => skill.slug === slug) || { slug, name: slug, is_enabled: false }),
+    ...(details.get(slug) || {}),
+  }))
 })
 const skillMarketSummary = computed(() => skillMarketplace.value?.summary || {})
 const a2aOverview = computed(() => ({
@@ -1105,7 +991,7 @@ const platformMcpOverview = computed(() => ({
   rateLimit: platformMcpManifest.value?.rate_limit?.per_minute || 0,
 }))
 const skillCategoryOptions = computed(() => {
-  const categories = new Set(['告警排障', '变更关联', '日志查询', 'K8s 诊断', '自愈安全', '任务中心', '发布回滚', '回答规范'])
+  const categories = new Set(['诊断与处置', '事件分析', '日志分析', '指标与 SLO', '任务编排', 'CMDB', '通用规范'])
   skills.value.forEach(item => {
     if (item.category) categories.add(item.category)
   })
@@ -1114,7 +1000,7 @@ const skillCategoryOptions = computed(() => {
 const skillToolOptions = computed(() => {
   const tools = new Set()
   mcpServers.value.forEach(server => (server.tool_whitelist || []).forEach(tool => tools.add(tool)))
-  actionRegistry.value.forEach(action => (action.allowed_tools || []).forEach(tool => tools.add(tool)))
+  capabilityRegistry.value.forEach(capability => (capability.allowed_tools || []).forEach(tool => tools.add(tool)))
   return Array.from(tools).sort()
 })
 
@@ -1125,6 +1011,14 @@ function formatMcpType(serverType) {
 }
 
 function updateMcpAuthConfig(patch) {
+  try {
+    const parsed = JSON.parse(mcpForm.auth_config_text?.trim() || '{}')
+    if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') throw new Error()
+  } catch {
+    mcpAdvanced.value = ['auth']
+    ElMessage.warning('请先修正鉴权配置中的 JSON，再调整运行参数')
+    return
+  }
   const nextConfig = { ...mcpAuthConfig.value, ...patch }
   mcpForm.auth_config = nextConfig
   mcpForm.auth_config_text = JSON.stringify(nextConfig, null, 2)
@@ -1193,23 +1087,30 @@ function skillRecommendedToolCount(skill = {}) {
   return skillRecommendedTools(skill).length
 }
 
-function actionSkillCount(action = {}) {
-  return new Set(action.skills || []).size
+function capabilitySkillCount(capability = {}) {
+  return new Set(capability.skills || []).size
 }
 
-function formatActionName(code) {
-  const action = actionRegistry.value.find(item => item.code === code)
-  return action?.display_name || code
+function capabilityAvailableSkillCount(capability = {}) {
+  return (capability.skill_details || []).filter(skill => skill.available).length
 }
 
-function formatEnabledTools(tools) {
-  if (!Array.isArray(tools) || !tools.length) return '--'
-  return tools.join('、')
+function capabilitySkillAvailability(skill = {}) {
+  if (skill.available) return '当前可用'
+  if (!skill.is_enabled) return '已停用'
+  return skill.available_reason || '保存后校验可用性'
 }
 
-function formatActionList(items) {
-  if (!Array.isArray(items) || !items.length) return '--'
-  return items.join('、')
+function formatCapabilityName(code) {
+  const capability = capabilityRegistry.value.find(item => item.code === code || (item.legacy_action_codes || []).includes(code))
+  return capability?.display_name || code
+}
+
+function skillCapabilityNames(skill = {}) {
+  if (!skill.slug) return []
+  return capabilityRegistry.value
+    .filter(capability => (capability.skills || []).includes(skill.slug))
+    .map(capability => ({ code: capability.code, name: capability.display_name || capability.code }))
 }
 
 function openStatDetail({ title, subtitle, items, emptyText }) {
@@ -1229,6 +1130,7 @@ function openSkillStatDetail(skill = {}, type) {
       label: tool,
       tag: builtinTools.has(tool) ? '核心工具' : '补充工具',
       desc: builtinTools.has(tool) && recommendedTools.has(tool) ? '同时声明在补充依赖中' : '',
+      mcpBindings: mcpBindingsForSkillTool(skill, tool),
     }))
     openStatDetail({
       title: '工具依赖详情',
@@ -1250,48 +1152,66 @@ function openSkillStatDetail(skill = {}, type) {
   })
 }
 
-function openActionStatDetail(action = {}, type) {
-  const actionName = action.display_name || action.code || '--'
+function mcpBindingsForSkillTool(skill = {}, tool = '') {
+  const toolName = String(tool || '').trim()
+  if (!toolName) return []
+  const bindings = Array.isArray(skill.mcp_bindings)
+    ? skill.mcp_bindings.filter(binding => String(binding?.tool || '').trim() === toolName)
+    : []
+  if (bindings.length) {
+    return bindings.map(binding => {
+      const server = mcpServers.value.find(item => String(item.id) === String(binding.id))
+      return { ...(server || {}), ...binding, tool: binding.tool || toolName }
+    })
+  }
+  return mcpServers.value
+    .filter(server => (server.tool_whitelist || []).some(item => String(item || '').trim() === toolName))
+    .map(server => ({ ...server, tool: toolName }))
+}
+
+function openCapabilityStatDetail(capability = {}, type) {
+  const capabilityName = capability.display_name || capability.code || '--'
   if (type === 'examples') {
-    const items = (action.suggested_questions || []).filter(Boolean).map((example, index) => ({
+    const items = (capability.suggested_questions || []).filter(Boolean).map((example, index) => ({
       label: example,
       tag: `示例 ${index + 1}`,
     }))
     openStatDetail({
       title: '示例入口详情',
-      subtitle: `Action：${actionName}`,
+      subtitle: `问答类型：${capabilityName}`,
       items,
-      emptyText: '当前 Action 未配置示例入口',
+      emptyText: '当前问答类型未配置示例入口',
     })
     return
   }
   if (type === 'skills') {
     const skillsBySlug = new Map(skills.value.map(item => [item.slug, item]))
-    const items = Array.from(new Set(action.skills || [])).filter(Boolean).map((slug) => {
-      const skill = skillsBySlug.get(slug)
+    const details = new Map((capability.skill_details || []).map(skill => [skill.slug, skill]))
+    const items = Array.from(new Set(capability.skills || [])).filter(Boolean).map((slug) => {
+      const skill = { ...(skillsBySlug.get(slug) || {}), ...(details.get(slug) || {}) }
       return {
         label: skill?.name || slug,
         desc: skill?.description || `标识：${slug}`,
-        tag: skill?.is_builtin ? '内置' : '自定义',
+        tag: capabilitySkillAvailability(skill),
       }
     })
     openStatDetail({
-      title: '默认 Skill 详情',
-      subtitle: `Action：${actionName}`,
+      title: '挂载 Skill 详情',
+      subtitle: `问答类型：${capabilityName} · 已挂载 ${capabilitySkillCount(capability)} / 当前可用 ${capabilityAvailableSkillCount(capability)}`,
       items,
-      emptyText: '当前 Action 未绑定默认 Skill',
+      emptyText: '当前问答类型未挂载 Skill',
     })
     return
   }
-  const items = (action.output_blocks || []).filter(Boolean).map(block => ({
+  const items = (capability.output_blocks || []).filter(Boolean).map(block => ({
     label: block,
     tag: '输出块',
   }))
   openStatDetail({
     title: '结构化输出详情',
-    subtitle: `Action：${actionName}`,
+    subtitle: `问答类型：${capabilityName}`,
     items,
-    emptyText: '当前 Action 未配置结构化输出块',
+    emptyText: '当前问答类型未配置结构化输出块',
   })
 }
 
@@ -1331,22 +1251,8 @@ function actionAvailabilityTagType(available) {
   return available === false ? 'warning' : 'success'
 }
 
-function formatProviderModelLabel(item = {}) {
-  const owner = item.owned_by ? ` · ${item.owned_by}` : ''
-  return `${item.id}${owner}`
-}
-
-function currencySymbol(currency) {
-  return String(currency || '').toUpperCase() === 'CNY' ? '¥' : '$'
-}
-
 function formatProviderCurrency(currency) {
   return String(currency || '').toUpperCase() === 'CNY' ? '人民币' : '美元'
-}
-
-function providerOptionLabel(provider = {}) {
-  if (provider.runtime_ready) return provider.name
-  return `${provider.name}（${provider.is_enabled ? '待配置' : '停用'}）`
 }
 
 function providerRuntimeTagType(row = {}) {
@@ -1400,50 +1306,9 @@ function normalizeProviderList(data) {
     provider_preset: detectProviderPreset(item),
   }))
 }
-function applyProviderPreset(key) {
-  const preset = providerPresets.value.find(item => item.key === key)
-  if (!preset) {
-    providerForm.provider_preset = ''
-    return
-  }
-  Object.assign(providerForm, {
-    name: providerForm.name || preset.name,
-    provider_type: preset.provider_type || 'openai_compatible',
-    base_url: preset.base_url || providerForm.base_url,
-    default_model: Object.prototype.hasOwnProperty.call(preset, 'default_model') ? preset.default_model : providerForm.default_model,
-    backup_model: Object.prototype.hasOwnProperty.call(preset, 'backup_model') ? preset.backup_model : providerForm.backup_model,
-    temperature: preset.temperature ?? providerForm.temperature,
-    max_tokens: preset.max_tokens || providerForm.max_tokens,
-    timeout_seconds: preset.timeout_seconds || providerForm.timeout_seconds,
-    price_currency: preset.price_currency || providerForm.price_currency || 'CNY',
-    provider_preset: preset.key,
-  })
-  providerModels.value = []
-  providerModelRecommendation.value = null
-}
-
-function resetProviderForm() {
-  Object.assign(providerForm, {
-    id: null,
-    name: '',
-    provider_type: 'openai_compatible',
-    base_url: '',
-    api_key: '',
-    default_model: '',
-    backup_model: '',
-    temperature: 0.2,
-    max_tokens: 10000,
-    timeout_seconds: 30,
-    price_currency: 'CNY',
-    input_token_price_per_1m: 0,
-    output_token_price_per_1m: 0,
-    provider_preset: '',
-    is_enabled: true,
-  })
-  selectedProviderPreset.value = ''
-}
-
 function resetMcpForm() {
+  Object.keys(mcpForm).forEach(key => delete mcpForm[key])
+  mcpAdvanced.value = []
   Object.assign(mcpForm, {
     id: null,
     name: '',
@@ -1459,6 +1324,8 @@ function resetMcpForm() {
 }
 
 function resetSkillForm() {
+  Object.keys(skillForm).forEach(key => delete skillForm[key])
+  skillAdvanced.value = []
   Object.assign(skillForm, {
     id: null,
     name: '',
@@ -1466,7 +1333,6 @@ function resetSkillForm() {
     source_type: 'inline',
     description: '',
     category: '',
-    applicable_actions: [],
     examples: [],
     builtin_tools: [],
     recommended_tools: [],
@@ -1503,13 +1369,13 @@ function resetRunbookForm() {
 }
 
 function applyConfig(payload = {}) {
+  defaultProviderId.value = payload.default_provider?.id || null
+  configuredDefaultProvider.value = payload.default_provider || null
   Object.assign(configForm, {
-    default_provider_id: payload.default_provider?.id || null,
     system_prompt: payload.system_prompt || '',
     welcome_message: payload.welcome_message || '',
-    suggested_questions: payload.suggested_questions || [],
-    enabled_mcp_server_ids: payload.enabled_mcp_server_ids || [],
-    enabled_skill_ids: payload.enabled_skill_ids || [],
+    suggested_questions: [...(payload.suggested_questions || [])],
+    enabled_capability_codes: [...(payload.enabled_capability_codes || [])],
     is_enabled: payload.is_enabled ?? true,
     allow_action_execution: payload.allow_action_execution ?? true,
     require_confirmation: true,
@@ -1517,6 +1383,11 @@ function applyConfig(payload = {}) {
     allow_analysis: payload.allow_analysis ?? true,
     max_history_messages: payload.max_history_messages || 12,
   })
+  configSnapshot.value = JSON.parse(JSON.stringify(configForm))
+}
+
+function resetConfigChanges() {
+  if (configSnapshot.value) Object.assign(configForm, JSON.parse(JSON.stringify(configSnapshot.value)))
 }
 
 async function optionalLoad(loader, fallback) {
@@ -1530,17 +1401,45 @@ async function optionalLoad(loader, fallback) {
   }
 }
 
+async function refreshConfig() {
+  if (configDirty.value) {
+    try {
+      await ElMessageBox.confirm('刷新将丢弃尚未保存的策略修改，是否继续？', '刷新配置', { confirmButtonText: '刷新', cancelButtonText: '继续编辑', type: 'warning' })
+    } catch { return }
+  }
+  await loadAll()
+}
+
+async function reloadProviders() {
+  const [providerData, config] = await Promise.all([getAIOpsProviders(), getAIOpsConfig()])
+  providers.value = normalizeProviderList(providerData)
+  defaultProviderId.value = config.default_provider?.id || null
+  configuredDefaultProvider.value = config.default_provider || null
+}
+
+async function reloadCapabilities() {
+  const data = await getAIOpsCapabilities()
+  capabilityRegistry.value = data?.capabilities || []
+  capabilityRegistrySummary.value = data?.summary || {}
+}
+async function reloadAssets() {
+  const [mcpData, skillData, marketData] = await Promise.all([getAIOpsMcpServers(), getAIOpsSkills(), getAIOpsSkillMarketplace(), reloadCapabilities()])
+  mcpServers.value = mcpData || []
+  skills.value = skillData || []
+  skillMarketplace.value = marketData || { summary: {}, items: [] }
+}
+
 async function loadAll() {
   loading.page = true
   try {
-    const [config, providerData, presetData, mcpData, skillData, marketData, actionData, mcpManifestData] = await Promise.all([
+    const [config, providerData, presetData, mcpData, skillData, marketData, capabilityData, mcpManifestData] = await Promise.all([
       getAIOpsConfig(),
       getAIOpsProviders(),
       getAIOpsProviderPresets(),
       getAIOpsMcpServers(),
       getAIOpsSkills(),
       getAIOpsSkillMarketplace(),
-      getAIOpsActions(),
+      getAIOpsCapabilities(),
       optionalLoad(() => getAIOpsPlatformMcpManifest({ skipErrorMessage: true })),
     ])
     applyConfig(config)
@@ -1549,8 +1448,8 @@ async function loadAll() {
     mcpServers.value = mcpData || []
     skills.value = skillData || []
     skillMarketplace.value = marketData || { summary: {}, items: [] }
-    actionRegistry.value = actionData?.actions || []
-    actionRegistrySummary.value = actionData?.summary || {}
+    capabilityRegistry.value = capabilityData?.capabilities || []
+    capabilityRegistrySummary.value = capabilityData?.summary || {}
     platformMcpManifest.value = mcpManifestData || { tools: [], rate_limit: {} }
     await Promise.all([
       optionalLoad(() => loadA2ATasks(a2aPagination.page, { skipErrorMessage: true }), () => {
@@ -1619,43 +1518,30 @@ async function loadReviewKnowledge(page = 1, config = {}) {
 async function saveConfig() {
   saving.config = true
   try {
-    await updateAIOpsConfig({ ...configForm, require_confirmation: true })
+    const saved = await updateAIOpsConfig({ ...configForm, require_confirmation: true })
+    applyConfig(saved)
     ElMessage.success('智能体策略已保存')
-    await loadAll()
+    await reloadCapabilities()
   } finally {
     saving.config = false
   }
 }
 
-function openProviderDialog(row) {
-  resetProviderForm()
-  providerModels.value = []
-  providerModelRecommendation.value = null
-  if (row) {
-    Object.assign(providerForm, row, { api_key: '' })
-    selectedProviderPreset.value = detectProviderPreset(row)
-    providerForm.provider_preset = selectedProviderPreset.value
+async function handleSetDefaultProvider(provider) {
+  if (!canManageCapabilities.value || !provider.runtime_ready || selectingProviderId.value !== null) return
+  selectingProviderId.value = provider.id
+  try {
+    const config = await updateAIOpsConfig({ default_provider_id: provider.id })
+    defaultProviderId.value = config.default_provider?.id || null
+    ElMessage.success(`已将 ${provider.name} 设为默认供应商`)
+  } finally {
+    selectingProviderId.value = null
   }
-  providerDialogVisible.value = true
 }
 
-async function saveProvider() {
-  saving.provider = true
-  try {
-    const payload = { ...providerForm }
-    payload.provider_preset = selectedProviderPreset.value || payload.provider_preset || ''
-    payload.price_currency = payload.price_currency || 'CNY'
-    payload.input_token_price_per_1m = Number(payload.input_token_price_per_1m || 0).toFixed(2)
-    payload.output_token_price_per_1m = Number(payload.output_token_price_per_1m || 0).toFixed(2)
-    if (!payload.api_key) delete payload.api_key
-    if (providerForm.id) await updateAIOpsProvider(providerForm.id, payload)
-    else await createAIOpsProvider(payload)
-    providerDialogVisible.value = false
-    ElMessage.success('模型提供商已保存')
-    await loadAll()
-  } finally {
-    saving.provider = false
-  }
+function openProviderDialog(row) {
+  editingProvider.value = row ? { ...row, provider_preset: detectProviderPreset(row) } : null
+  providerDialogVisible.value = true
 }
 
 async function handleTestProvider(row) {
@@ -1665,60 +1551,20 @@ async function handleTestProvider(row) {
   } catch (error) {
     ElMessage.error(error.response?.data?.message || row.setup_hint || '模型测试失败')
   } finally {
-    await loadAll()
+    await reloadProviders()
   }
-}
-
-async function handleListProviderModels() {
-  if (!providerForm.id) {
-    ElMessage.warning('请先保存提供商后再拉取模型列表')
-    return
-  }
-  if (providerForm.api_key) {
-    ElMessage.warning('检测到 API Key 尚未保存，请先保存后再拉取模型列表')
-    return
-  }
-  saving.models = true
-  try {
-    const result = await listAIOpsProviderModels(providerForm.id, { probe: true })
-    providerModels.value = result.models || []
-    providerModelRecommendation.value = result.recommendation || null
-    if (result.catalog_error) {
-      ElMessage.warning(result.fallback_used ? `模型列表接口不可用，已回退到已配置模型：${result.catalog_error}` : result.catalog_error)
-    }
-    if (providerModelRecommendation.value?.model) {
-      providerForm.default_model = providerModelRecommendation.value.model
-      ElMessage.success(providerModelRecommendation.value.message || `已推荐 ${providerModelRecommendation.value.model}`)
-    } else if (providerModels.value.length) {
-      ElMessage.success(`已拉取 ${providerModels.value.length} 个模型`)
-    } else {
-      ElMessage.warning('未从供应商返回模型列表')
-    }
-  } catch (error) {
-    ElMessage.error(error.response?.data?.detail || '拉取模型列表失败')
-  } finally {
-    saving.models = false
-  }
-}
-
-function applyRecommendedModel() {
-  if (!providerModelRecommendation.value?.model) return
-  providerForm.default_model = providerModelRecommendation.value.model
-  const fallback = providerModels.value.find(item => item.id !== providerModelRecommendation.value.model)?.id || providerForm.backup_model
-  providerForm.backup_model = fallback || ''
-  ElMessage.success('已填入推荐模型，保存后生效')
 }
 
 async function handleDeleteProvider(row) {
   await ElMessageBox.confirm(`确认删除模型提供商 ${row.name} 吗？`, '删除确认', { type: 'warning' })
   await deleteAIOpsProvider(row.id)
   ElMessage.success('模型提供商已删除')
-  await loadAll()
+  await reloadProviders()
 }
 
 function openMcpDialog(row) {
   resetMcpForm()
-  if (row) Object.assign(mcpForm, row, { auth_config_text: JSON.stringify(row.auth_config || {}, null, 2) })
+  if (row) Object.assign(mcpForm, JSON.parse(JSON.stringify(row)), { auth_config_text: JSON.stringify(row.auth_config || {}, null, 2) })
   mcpDialogVisible.value = true
 }
 
@@ -1736,6 +1582,7 @@ async function handleListMcpTools(row) {
 }
 
 async function saveMcp() {
+  if (!canManageCapabilities.value) return
   saving.mcp = true
   try {
     const payload = { ...mcpForm }
@@ -1750,7 +1597,7 @@ async function saveMcp() {
     else await createAIOpsMcpServer(payload)
     mcpDialogVisible.value = false
     ElMessage.success('MCP 配置已保存')
-    await loadAll()
+    await reloadAssets()
   } finally {
     saving.mcp = false
   }
@@ -1760,7 +1607,30 @@ async function handleDeleteMcp(row) {
   await ElMessageBox.confirm(`确认删除 MCP ${row.name} 吗？`, '删除确认', { type: 'warning' })
   await deleteAIOpsMcpServer(row.id)
   ElMessage.success('MCP 已删除')
-  await loadAll()
+  await reloadAssets()
+}
+
+function openCapabilityDialog(capability) {
+  Object.assign(capabilityForm, {
+    code: capability.code,
+    display_name: capability.display_name || capability.code,
+    description: capability.description || '',
+    skills: [...(capability.skills || [])],
+  })
+  capabilityDialogVisible.value = true
+}
+
+async function saveCapability() {
+  if (!canManageCapabilities.value || !capabilityForm.code) return
+  saving.capability = true
+  try {
+    const capability = await updateAIOpsCapability(capabilityForm.code, { skills: [...capabilityForm.skills] })
+    capabilityRegistry.value = capabilityRegistry.value.map(item => item.code === capability.code ? capability : item)
+    capabilityDialogVisible.value = false
+    ElMessage.success('问答类型 Skill 挂载已保存')
+  } finally {
+    saving.capability = false
+  }
 }
 
 function openSkillDialog(row) {
@@ -1768,7 +1638,6 @@ function openSkillDialog(row) {
   if (row) {
     Object.assign(skillForm, {
       ...row,
-      applicable_actions: Array.isArray(row.applicable_actions) ? [...row.applicable_actions] : [],
       examples: Array.isArray(row.examples) ? [...row.examples] : [],
       builtin_tools: Array.isArray(row.builtin_tools) ? [...row.builtin_tools] : [],
       recommended_tools: Array.isArray(row.recommended_tools) ? [...row.recommended_tools] : [],
@@ -1781,6 +1650,7 @@ function openSkillDialog(row) {
 }
 
 async function saveSkill() {
+  if (!canManageCapabilities.value) return
   saving.skill = true
   try {
     let outputContract = {}
@@ -1798,7 +1668,6 @@ async function saveSkill() {
     const payload = {
       ...skillForm,
       output_contract: outputContract,
-      applicable_actions: skillForm.applicable_actions || [],
       examples: skillForm.examples || [],
       builtin_tools: skillForm.builtin_tools || [],
       recommended_tools: skillForm.recommended_tools || [],
@@ -1806,13 +1675,16 @@ async function saveSkill() {
       max_iterations: Number(skillForm.max_iterations || 0),
     }
     delete payload.output_contract_text
+    delete payload.applicable_actions
+    delete payload.applicable_capabilities
+    delete payload.capability_names
     delete payload.id
     delete payload.is_builtin
     if (skillForm.id) await updateAIOpsSkill(skillForm.id, payload)
     else await createAIOpsSkill(payload)
     skillDialogVisible.value = false
     ElMessage.success('Skill 已保存')
-    await loadAll()
+    await reloadAssets()
   } finally {
     saving.skill = false
   }
@@ -1822,7 +1694,7 @@ async function handleDeleteSkill(row) {
   await ElMessageBox.confirm(`确认删除 Skill ${row.name} 吗？`, '删除确认', { type: 'warning' })
   await deleteAIOpsSkill(row.id)
   ElMessage.success('Skill 已删除')
-  await loadAll()
+  await reloadAssets()
 }
 
 function openSkillMarketDialog() {
@@ -1833,7 +1705,7 @@ async function handleCloneSkill(row) {
   await cloneAIOpsSkill(row.id, {})
   ElMessage.success('已克隆为团队 Skill')
   skillMarketDialogVisible.value = false
-  await loadAll()
+  await reloadAssets()
 }
 
 function openA2ADialog() {
@@ -1976,7 +1848,6 @@ function formatJsonCompact(value) {
 }
 
 onMounted(async () => {
-  resetProviderForm()
   resetMcpForm()
   resetSkillForm()
   resetA2AForm()
@@ -1989,7 +1860,7 @@ onMounted(async () => {
 .aiops-config-page {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
 .panel {
@@ -2033,8 +1904,6 @@ onMounted(async () => {
 .hero-copy,
 .hero-title-row,
 .hero-actions,
-.config-grid,
-.switch-list,
 .audit-grid,
 .audit-toolbar-actions,
 .skill-detail-meta {
@@ -2044,9 +1913,26 @@ onMounted(async () => {
 
 .hero {
   min-height: 68px;
-  padding: 12px 14px;
+  padding: 14px 16px;
   align-items: center;
   justify-content: space-between;
+  margin: 0;
+  background: linear-gradient(135deg, #fbfdff 0%, #f7faff 52%, #f9fbfd 100%);
+  border-color: rgba(36,91,219,.09);
+}
+
+.hero.panel {
+  border-radius: 20px;
+}
+
+.config-refresh-button {
+  flex: 0 0 auto;
+  align-self: center;
+  margin: 0 6px 0 8px;
+}
+
+.capability-skill-preview {
+  margin-top: 12px;
 }
 
 .hero-copy {
@@ -2066,8 +1952,8 @@ onMounted(async () => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #fff;
-  background: linear-gradient(135deg, #0f766e, #2563eb);
+  color: #245bdb;
+  background: #e8f0ff;
 }
 
 .hero h2 {
@@ -2099,15 +1985,18 @@ onMounted(async () => {
   display: flex;
   align-items: flex-start;
   width: 100%;
-  padding: 4px;
+  padding: 3px;
+  margin: 0;
   border: 1px solid rgba(148, 163, 184, 0.16);
   border-radius: 12px;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.9));
-  box-shadow: 0 12px 26px rgba(15, 23, 42, 0.04);
+  box-shadow: none;
 }
 
 .event-like-tabs {
-  width: 100%;
+  min-width: 0;
+  flex: 1;
+  width: 0;
 }
 
 .event-like-tabs :deep(.el-tabs__header) {
@@ -2172,43 +2061,6 @@ onMounted(async () => {
   font-size: 15px;
 }
 
-.config-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(320px, 360px);
-  align-items: flex-start;
-  gap: 10px;
-}
-
-.config-section {
-  width: 100%;
-}
-
-.config-section--main {
-  min-width: 0;
-}
-
-.config-section--runtime {
-  position: sticky;
-  top: 12px;
-  padding: 12px;
-  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
-  border-color: rgba(96, 165, 250, 0.22);
-}
-
-.surface-card {
-  padding: 14px;
-  border-radius: 16px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.94));
-  border: 1px solid #e2e8f0;
-}
-
-.section-title {
-  font-size: 14px;
-  font-weight: 700;
-  color: #0f172a;
-  margin-bottom: 8px;
-}
-
 .runtime-note {
   margin: -2px 0 10px;
   color: #64748b;
@@ -2216,60 +2068,11 @@ onMounted(async () => {
   line-height: 1.5;
 }
 
-.switch-list {
-  flex-direction: column;
-  gap: 8px;
-}
-
-.switch-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 10px 12px;
-  border-radius: 12px;
-  background: rgba(248, 250, 252, 0.92);
-  border: 1px solid rgba(226, 232, 240, 0.9);
-}
-
-.switch-copy {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.switch-copy span {
-  color: #0f172a;
-  font-size: 13px;
+.section-title {
+  font-size: 14px;
   font-weight: 700;
-  line-height: 1.3;
-}
-
-.switch-copy small {
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.runtime-form {
-  margin-top: 10px;
-  padding: 10px 12px;
-  border-radius: 12px;
-  background: #ffffff;
-  border: 1px solid rgba(226, 232, 240, 0.92);
-}
-
-.runtime-form :deep(.el-form-item) {
-  margin-bottom: 0;
-}
-
-.runtime-field-tip {
-  width: 100%;
-  margin-top: 6px;
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.45;
+  color: #0f172a;
+  margin-bottom: 8px;
 }
 
 .section-toolbar {
@@ -2321,89 +2124,6 @@ onMounted(async () => {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0 10px;
-}
-
-.provider-inline-grid {
-  display: grid;
-  gap: 0 10px;
-}
-
-.provider-inline-grid--three,
-.provider-runtime-grid,
-.provider-billing-grid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.provider-inline-grid :deep(.el-form-item) {
-  min-width: 0;
-}
-
-.provider-inline-grid :deep(.el-form-item__label) {
-  flex: 0 0 auto;
-  width: 90px !important;
-  padding-right: 8px;
-  justify-content: flex-end;
-  white-space: nowrap;
-}
-
-.provider-inline-grid :deep(.el-form-item:first-child .el-form-item__label) {
-  width: 102px !important;
-}
-
-.provider-inline-grid :deep(.el-form-item__content) {
-  min-width: 0;
-}
-
-.provider-compact-number {
-  width: 84px;
-}
-
-.provider-compact-number--wide {
-  width: 100px;
-}
-
-.provider-compact-number :deep(.el-input__inner),
-.price-input-row :deep(.el-input__inner) {
-  text-align: left;
-}
-
-.provider-billing-grid :deep(.el-segmented) {
-  width: 150px;
-  max-width: 100%;
-  padding: 2px;
-}
-
-.provider-billing-grid :deep(.el-segmented__item) {
-  min-width: 0;
-  padding: 0 12px;
-}
-
-.provider-unit-input {
-  display: inline-grid;
-  grid-template-columns: 84px auto;
-  align-items: center;
-  gap: 6px;
-}
-
-.price-input-row {
-  display: grid;
-  grid-template-columns: 76px minmax(72px, auto);
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-}
-
-.price-input-row .el-input-number {
-  min-width: 0;
-  width: 76px;
-}
-
-.provider-unit-input span,
-.price-input-row span {
-  color: #64748b;
-  font-size: 12px;
-  font-weight: 700;
-  white-space: nowrap;
 }
 
 .audit-grid {
@@ -2512,57 +2232,6 @@ onMounted(async () => {
   display: inline-flex;
   align-items: center;
   gap: 2px;
-}
-
-.model-discovery-strip {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: -2px 0 12px 102px;
-  padding: 8px 10px;
-  border-radius: 12px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-}
-
-.model-discovery-hint {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.4;
-}
-
-.provider-preset-option {
-  float: right;
-  margin-left: 18px;
-  color: #94a3b8;
-  font-size: 12px;
-}
-
-.provider-preset-card {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin: -4px 0 12px 102px;
-  padding: 9px 11px;
-  border-radius: 12px;
-  background: linear-gradient(135deg, #f8fafc, #eff6ff);
-  border: 1px solid #dbeafe;
-  color: #475569;
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.provider-preset-card strong {
-  color: #0f172a;
-  font-size: 13px;
-}
-
-.provider-preset-card a {
-  color: #2563eb;
-  text-decoration: none;
 }
 
 .mcp-guard-card {
@@ -2852,40 +2521,19 @@ onMounted(async () => {
   gap: 10px;
 }
 
-.action-group {
-  border: 1px solid #e2e8f0;
-  border-radius: 14px;
-  background: #ffffff;
-  overflow: hidden;
-}
-
-.action-group-head {
-  padding: 10px 12px;
-  background: #f8fafc;
-  border-bottom: 1px solid #e2e8f0;
-}
-
-.action-group-title {
-  color: #0f172a;
-  font-size: 13px;
-  font-weight: 800;
-}
-
-.action-package-list {
-  display: flex;
-  flex-direction: column;
-}
-
 .action-package-row {
   display: flex;
   align-items: stretch;
   justify-content: space-between;
   gap: 12px;
   padding: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  background: #ffffff;
 }
 
 .action-package-row + .action-package-row {
-  border-top: 1px solid #edf2f7;
+  border-top: 1px solid #e2e8f0;
 }
 
 .action-package-main {
@@ -2921,6 +2569,11 @@ onMounted(async () => {
   line-height: 1.5;
 }
 
+.mcp-package-endpoint {
+  overflow-wrap: anywhere;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
 .action-package-tags {
   display: flex;
   align-items: center;
@@ -2937,7 +2590,7 @@ onMounted(async () => {
 }
 
 .action-package-stat {
-  width: 48px;
+  width: 68px;
   min-height: 46px;
   border-radius: 12px;
   background: #f8fafc;
@@ -2958,6 +2611,12 @@ onMounted(async () => {
   color: #0f172a;
   font-size: 16px;
   line-height: 1;
+}
+
+.action-package-stat small {
+  color: #64748b;
+  font-size: 10px;
+  line-height: 1.2;
 }
 
 .stat-detail-subtitle {
@@ -2986,6 +2645,10 @@ onMounted(async () => {
   border: 1px solid #e2e8f0;
 }
 
+.stat-detail-item--tool {
+  align-items: flex-start;
+}
+
 .stat-detail-main {
   min-width: 0;
   display: flex;
@@ -3006,6 +2669,64 @@ onMounted(async () => {
   font-size: 12px;
   line-height: 1.45;
   word-break: break-word;
+}
+
+.stat-detail-mcp {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed rgba(148, 163, 184, 0.36);
+}
+
+.stat-detail-mcp-title {
+  color: #475569;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.stat-detail-mcp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.stat-detail-mcp-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  background: #fff;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+}
+
+.stat-detail-mcp-head,
+.stat-detail-mcp-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.stat-detail-mcp-name {
+  color: #0f172a;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.stat-detail-mcp-meta,
+.stat-detail-mcp-desc,
+.stat-detail-mcp-empty {
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.stat-detail-mcp-empty {
+  color: #94a3b8;
 }
 
 .stat-detail-empty {
@@ -3088,14 +2809,6 @@ onMounted(async () => {
     grid-template-columns: 1fr;
   }
 
-  .config-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .config-section--runtime {
-    position: static;
-  }
-
   .skill-package-row,
   .skill-package-side,
   .action-package-row,
@@ -3121,19 +2834,11 @@ onMounted(async () => {
 }
 
 @media (max-width: 760px) {
-  .hero,
-  .switch-item {
+  .hero {
     align-items: flex-start;
     flex-direction: column;
   }
 
-  .provider-inline-grid--three,
-  .provider-runtime-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .model-discovery-strip,
-  .provider-preset-card,
   .mcp-guard-card {
     margin-left: 0;
   }

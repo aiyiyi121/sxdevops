@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="960" viewBox="0 0 1200 960" role="img" aria-labelledby="title desc">
+  <title id="title">SxDevOps AIOps 实现原理</title>
+  <desc id="desc">问题与上下文进入 Action 路由并确认范围，LangGraph 按专业路线分阶段取证，或执行模型规划、单次工具调用和证据汇总循环。Skill 规范回答并进行验证修复。查询返回证据；动作生成草稿，经预检、人工确认与后端复核后执行。独立 worker 通过 checkpoint 恢复，执行前保存告警基线的任务可继续验证恢复结果。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="m0 0 8 4-8 4" fill="#7a9a90"/></marker>
+    <style>text{font-family:Inter,"Microsoft YaHei","PingFang SC",sans-serif}.heading{fill:#f1f5f3;font-size:19px;font-weight:650}.body{fill:#b4c2bf;font-size:15px}.small{fill:#8fa6a0;font-size:13px}.label{fill:#a6efd0;font-size:12px;letter-spacing:1.5px}.node{fill:#192126;stroke:#35463f;stroke-width:1}.line{fill:none;stroke:#7a9a90;stroke-width:1.5;marker-end:url(#arrow)}</style>
+  </defs>
+  <rect width="1200" height="960" rx="16" fill="#101619"/>
+  <text x="36" y="38" class="label">SXDEVOPS / AIOPS EXECUTION FLOW</text>
+  <text x="36" y="72" class="heading">从问题、证据到待确认动作</text>
+  <text x="1164" y="70" text-anchor="end" class="small">展示职责与主要路径，非完整节点清单</text>
+
+  <rect x="36" y="100" width="860" height="64" rx="9" class="node"/>
+  <text x="56" y="127" class="heading">01  问题 + 页面上下文 + 知识环境</text>
+  <text x="56" y="150" class="small">保留用户问题、时间窗口、目标资源与原始范围</text>
+  <path d="M466 164v26" class="line"/>
+  <rect x="36" y="192" width="860" height="74" rx="9" fill="#163029" stroke="#5c8c75"/>
+  <text x="56" y="222" class="heading">02  Action 路由 / prepare / policy</text>
+  <text x="56" y="247" class="body">识别任务、确认范围、检查身份与动作策略；缺少上下文时先补充信息</text>
+  <path d="M466 266v27" class="line"/>
+
+  <rect x="36" y="295" width="860" height="192" rx="12" fill="#131c1b" stroke="#426253"/>
+  <text x="56" y="323" class="label">03  LANGGRAPH / 分阶段编排</text>
+  <rect x="56" y="342" width="390" height="116" rx="8" class="node"/>
+  <text x="76" y="370" class="heading">专业取证路线</text>
+  <text x="76" y="398" class="body">告警 / K8s / 服务异常 / 变更关联 / SLO</text>
+  <text x="76" y="426" class="small">按数据源拆分节点 → 保存证据 → 综合分析</text>
+  <text x="76" y="447" class="small">CMDB 明确查询可走授权 fastpath</text>
+  <rect x="466" y="342" width="410" height="116" rx="8" class="node"/>
+  <text x="486" y="370" class="heading">通用模型与工具循环</text>
+  <text x="486" y="398" class="body">agent_plan → agent_tool → synthesis</text>
+  <text x="486" y="426" class="small">模型规划 → 单次工具执行 → 汇总或继续查询</text>
+  <text x="486" y="447" class="small">有界规划与调用，结果逐步写入 checkpoint</text>
+  <path d="M466 487v27" class="line"/>
+  <rect x="36" y="516" width="860" height="65" rx="9" class="node"/>
+  <text x="56" y="543" class="heading">04  MCP / 平台工具 → 结构化事实</text>
+  <text x="56" y="566" class="small">工具白名单 ∩ MCP 可用性 ∩ 用户 RBAC ∩ Action 安全策略；保留数据来源与缺口</text>
+  <path d="M466 581v26" class="line"/>
+  <rect x="36" y="609" width="860" height="65" rx="9" class="node"/>
+  <text x="56" y="636" class="heading">05  Skill 约束 + 回复整形 + 结果校验</text>
+  <text x="56" y="659" class="small">区分事实与推断，整理结论 / 依据 / 风险 / 建议；校验不通过时有界修复或兜底</text>
+  <path d="M255 674v29M675 674v29" class="line"/>
+
+  <rect x="36" y="705" width="400" height="82" rx="9" fill="#163029" stroke="#5c8c75"/>
+  <text x="56" y="735" class="heading">只读分析：返回答案与证据</text>
+  <text x="56" y="762" class="body">查询失败与无数据分别说明，不推断健康</text>
+  <rect x="460" y="705" width="436" height="82" rx="9" class="node"/>
+  <text x="480" y="735" class="heading">动作：task_scope → resources → draft</text>
+  <text x="480" y="762" class="body">返回候选草稿，由 Django 创建待确认动作</text>
+  <path d="M675 787v25" class="line"/>
+  <rect x="36" y="814" width="860" height="100" rx="9" fill="#163029" stroke="#5c8c75"/>
+  <text x="56" y="845" class="heading">预检 → 人工确认 → 后端复核 → 任务执行 → 审计与验证</text>
+  <text x="56" y="872" class="body">平台 API 执行，复核本人身份、权限、资源范围与动作开关</text>
+  <text x="56" y="896" class="small">提前保存告警基线的任务：执行结果 → 观察窗口 → 同一告警恢复事件 → 验证结论</text>
+
+  <rect x="922" y="100" width="242" height="814" rx="12" fill="#121d1b" stroke="#426253"/>
+  <text x="944" y="132" class="label">贯穿流程的运行保障</text>
+  <text x="944" y="179" class="heading">独立 worker</text>
+  <text x="944" y="207" class="body">数据库任务队列</text>
+  <text x="944" y="233" class="body">租约领取与接管</text>
+  <path d="M944 259h198" stroke="#35463f"/>
+  <text x="944" y="299" class="heading">Checkpoint</text>
+  <text x="944" y="327" class="body">记录已完成阶段</text>
+  <text x="944" y="353" class="body">恢复下一未完成节点</text>
+  <text x="944" y="385" class="small">节点内中断仍可能重试</text>
+  <text x="944" y="407" class="small">外部工具需要幂等</text>
+  <path d="M944 433h198" stroke="#35463f"/>
+  <text x="944" y="473" class="heading">恢复时重新校验</text>
+  <text x="944" y="501" class="body">原始环境与资源范围</text>
+  <text x="944" y="527" class="body">当前权限与 MCP 状态</text>
+  <path d="M944 553h198" stroke="#35463f"/>
+  <text x="944" y="593" class="heading">节点与调用审计</text>
+  <text x="944" y="621" class="body">耗时 / 失败 / 重试 / 恢复</text>
+  <text x="944" y="647" class="body">关联会话、工具与动作</text>
+  <path d="M944 673h198" stroke="#35463f"/>
+  <text x="944" y="713" class="heading">凭据隔离</text>
+  <text x="944" y="741" class="body">checkpoint 不保存</text>
+  <text x="944" y="767" class="body">API Key / SSH 密码</text>
+  <text x="944" y="793" class="body">kubeconfig 等凭据</text>
+  <text x="944" y="868" class="label">模型规划 / 平台执行</text>
+  <text x="36" y="944" class="small">处置验证当前基于告警恢复证据，不代表操作因果或业务整体健康。</text>
+</svg>

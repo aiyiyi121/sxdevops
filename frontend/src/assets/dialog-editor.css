@@ -1,0 +1,118 @@
+/* Opt in on form dialogs; detail viewers, terminals and confirmations keep their own layout. */
+.el-dialog.workbench-edit-dialog {
+  display: flex;
+  flex-direction: column;
+  max-width: calc(100vw - 24px);
+  max-height: 90vh;
+  max-height: 90dvh;
+  margin: 5vh auto !important;
+  padding: 20px 24px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 16px !important;
+  background: var(--el-bg-color);
+  color: var(--el-text-color-primary);
+}
+
+.el-dialog.workbench-edit-dialog > .el-dialog__header {
+  flex: none;
+  margin: 0 0 16px;
+  padding: 0 32px 0 0;
+}
+
+.workbench-edit-dialog .el-dialog__title {
+  color: var(--el-text-color-primary);
+  font-size: 17px;
+  font-weight: 650;
+  line-height: 26px;
+}
+
+.el-dialog.workbench-edit-dialog > .el-dialog__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding: 4px 4px 4px 0 !important;
+}
+
+.el-dialog.workbench-edit-dialog > .el-dialog__footer {
+  flex: none;
+  margin-top: 16px;
+  padding: 16px 0 0;
+  border-top: 1px solid var(--el-border-color-lighter);
+}
+
+.workbench-edit-dialog .el-form-item {
+  min-width: 0;
+  margin-bottom: 18px;
+}
+
+.el-dialog.workbench-edit-dialog .el-form-item__label {
+  height: auto !important;
+  min-height: 0 !important;
+  margin-bottom: 6px;
+  color: var(--el-text-color-regular);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 20px !important;
+  white-space: normal;
+}
+
+.workbench-edit-dialog .el-form-item__content { min-width: 0; }
+.el-dialog.workbench-edit-dialog .inline-fields--small { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; }
+.el-dialog.workbench-edit-dialog .switch-row { grid-column: 1 / -1; flex-wrap: wrap; gap: 12px 24px; padding-left: 0; }
+.workbench-edit-dialog .inline-fields--small .el-checkbox { margin-right: 0; }
+.workbench-edit-dialog .el-select { max-width: 100%; width: 100%; }
+.workbench-edit-dialog :is(.el-input__wrapper, .el-select__wrapper, .el-textarea__inner) { border-radius: 8px; }
+.workbench-edit-dialog .el-form-item__error { position: static; width: 100%; line-height: 1.5; }
+.workbench-edit-dialog :is(.el-radio-group, .el-checkbox-group) { max-width: 100%; }
+.workbench-edit-dialog :is(.el-radio, .el-checkbox) { white-space: normal; }
+.workbench-edit-dialog :is(.el-radio__label, .el-checkbox__label) { line-height: 1.6; overflow-wrap: anywhere; }
+
+.el-dialog.workbench-edit-dialog .workbench-editor-form--sectioned { display: block; }
+.workbench-editor-section + .workbench-editor-section { margin-top: 22px; }
+.workbench-editor-heading { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; }
+.workbench-editor-heading h3 { margin: 0; color: var(--el-text-color-primary); font-size: 14px; font-weight: 650; line-height: 22px; }
+.workbench-editor-step { display: grid; flex: none; place-items: center; width: 25px; height: 25px; border-radius: 7px; background: var(--el-color-primary-light-9); color: var(--el-color-primary); font-size: 11px; font-weight: 700; }
+.workbench-editor-section--tinted { padding: 14px; border: 1px solid var(--el-border-color-light); border-radius: 12px; background: var(--el-fill-color-lighter); }
+.workbench-editor-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 16px; }
+.workbench-editor-grid > :is(.el-alert, .workbench-editor-full, .span-2),
+.workbench-editor-grid > .el-form-item:has(.el-textarea, .el-checkbox-group, .el-transfer, .el-tree) { grid-column: 1 / -1; }
+.workbench-editor-grid > .el-form-item > .el-form-item__content > .el-input-number { width: 100%; }
+.workbench-editor-grid > :is(.form-row, .dialog-grid, .release-form-grid) { grid-column: 1 / -1; }
+
+.workbench-edit-dialog .workbench-editor-advanced {
+  margin-top: 22px;
+  padding: 0 14px;
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 12px;
+  background: var(--el-fill-color-lighter);
+}
+.workbench-editor-advanced .el-collapse-item__header { background: transparent; color: var(--el-text-color-primary); font-size: 13px; font-weight: 600; }
+.workbench-editor-advanced .el-collapse-item__wrap { background: transparent; }
+.workbench-editor-advanced .el-collapse-item__content { padding: 12px 0 0; }
+.workbench-editor-hint,
+.el-dialog.workbench-edit-dialog :is(.field-hint, .field-help, .form-item-hint, .form-tip, .form-hint, .section-tip) { color: var(--text-secondary, var(--el-text-color-secondary)); font-size: 12px; line-height: 1.7; }
+
+/* Existing grouped editors share surfaces without changing their domain-specific controls. */
+.el-dialog.workbench-edit-dialog :is(.form-group-card, .form-section, .template-editor-panel, .flow-nodes-card) {
+  border-color: var(--el-border-color-light);
+  border-radius: 12px;
+  background: var(--el-fill-color-lighter);
+  color: var(--el-text-color-regular);
+}
+.el-dialog.workbench-edit-dialog :is(.cmdb-form-section-title, .template-editor-section-title, .form-group-card__head strong, .form-section__head strong) { color: var(--el-text-color-primary); }
+
+@media (max-width: 640px) {
+  .el-dialog.workbench-edit-dialog { padding: 16px; }
+  .el-dialog.workbench-edit-dialog .workbench-editor-grid,
+  .el-dialog.workbench-edit-dialog :is(.dialog-grid, .release-form-grid, .ticket-form-grid, .cmdb-form-grid) { grid-template-columns: minmax(0, 1fr); }
+  .el-dialog.workbench-edit-dialog .workbench-editor-grid > *,
+  .el-dialog.workbench-edit-dialog :is(.dialog-grid, .release-form-grid, .ticket-form-grid, .cmdb-form-grid) > .span-2 { grid-column: 1 / -1; }
+  .el-dialog.workbench-edit-dialog .form-row { flex-direction: column; gap: 0; }
+  .el-dialog.workbench-edit-dialog .form-col { width: 100%; }
+  .el-dialog.workbench-edit-dialog :is(.inline-fields, .switch-row, .batch-import-options) { flex-wrap: wrap; gap: 10px; }
+  .el-dialog.workbench-edit-dialog .inline-fields { grid-template-columns: minmax(0, 1fr); }
+  .el-dialog.workbench-edit-dialog > .el-dialog__footer { padding-top: 12px; margin-top: 12px; }
+}

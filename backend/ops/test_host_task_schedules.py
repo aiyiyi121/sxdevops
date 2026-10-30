@@ -19,7 +19,7 @@ class HostTaskScheduleApiTests(TestCase):
         self.client.force_authenticate(user=self.user)
         self.host = Host.objects.create(
             hostname='schedule-app-01',
-            ip_address='10.10.20.10',
+            ip_address='192.0.2.2',
             business_line='payment',
             environment='prod',
             status='online',

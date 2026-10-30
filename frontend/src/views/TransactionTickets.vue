@@ -4,7 +4,7 @@
       <div class="release-hero-title-row release-hero-title-inline">
         <span class="ticket-header-icon"><el-icon><Tickets /></el-icon></span>
         <h2>事务工单</h2>
-        <p class="ticket-hero-desc">覆盖变更执行、巡检维护、权限开通与故障处置，统一走审批流并沉淀处理窗口。</p>
+        <p class="ticket-hero-desc">覆盖变更执行、巡检维护、权限开通、故障处置与漏洞处理，统一走审批流并沉淀处理窗口。</p>
       </div>
     </section>
 
@@ -157,42 +157,57 @@
       </el-table>
     </div>
 
-    <el-dialog v-model="createVisible" title="新建事务工单" width="760px" append-to-body destroy-on-close>
-      <el-form :model="ticketForm" label-width="96px" class="ticket-form-grid">
-        <el-form-item label="工单标题" class="span-2" required><el-input v-model="ticketForm.title" /></el-form-item>
-        <el-form-item label="事务类型" required>
-          <el-select v-model="ticketForm.ticket_type" style="width: 100%">
-            <el-option v-for="item in typeOptions" :key="item.value" :label="item.label" :value="item.value" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="优先级" required>
-          <el-select v-model="ticketForm.priority" style="width: 100%">
-            <el-option v-for="item in priorityOptions" :key="item.value" :label="item.label" :value="item.value" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="系统" required>
-          <el-select v-model="ticketForm.business_line" filterable style="width: 100%" @change="handleBusinessLineChange">
-            <el-option v-for="item in businessLineOptions" :key="item.value" :label="item.label" :value="item.value" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="环境" required>
-          <el-select v-model="ticketForm.environment" style="width: 100%">
-            <el-option v-for="item in formEnvironmentOptions" :key="item.value" :label="item.label" :value="item.value" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="处理人"><el-input v-model="ticketForm.owner" placeholder="如：值班运维 / 平台组" /></el-form-item>
-        <el-form-item label="执行窗口"><el-input v-model="ticketForm.window" placeholder="如：今晚 22:00-23:00" /></el-form-item>
-        <el-form-item label="审批流" class="span-2">
-          <el-select v-model="ticketForm.approval_flow" clearable filterable style="width: 100%" placeholder="选择审批流">
-            <el-option
+    <el-dialog top="5vh" :close-on-click-modal="false" class="workbench-edit-dialog" v-model="createVisible" title="新建事务工单" width="760px" append-to-body destroy-on-close>
+      <el-form label-position="top" :model="ticketForm" label-width="96px" class="workbench-editor-form--sectioned ticket-form-grid">
+        <section class="workbench-editor-section">
+          <div class="workbench-editor-heading"><span class="workbench-editor-step">01</span><h3>工单信息</h3></div>
+          <div class="workbench-editor-grid">
+            <el-form-item label="工单标题" class="span-2" required><el-input v-model="ticketForm.title" /></el-form-item>
+            <el-form-item label="事务类型" required>
+              <el-select v-model="ticketForm.ticket_type" style="width: 100%">
+                <el-option v-for="item in typeOptions" :key="item.value" :label="item.label" :value="item.value" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="优先级" required>
+              <el-select v-model="ticketForm.priority" style="width: 100%">
+                <el-option v-for="item in priorityOptions" :key="item.value" :label="item.label" :value="item.value" />
+              </el-select>
+            </el-form-item>
+          </div>
+        </section>
+        <section class="workbench-editor-section workbench-editor-section--tinted">
+          <div class="workbench-editor-heading"><span class="workbench-editor-step">02</span><h3>执行范围与审批</h3></div>
+          <div class="workbench-editor-grid">
+            <el-form-item label="系统" required>
+              <el-select v-model="ticketForm.business_line" filterable style="width: 100%" @change="handleBusinessLineChange">
+                <el-option v-for="item in businessLineOptions" :key="item.value" :label="item.label" :value="item.value" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="环境" required>
+              <el-select v-model="ticketForm.environment" style="width: 100%">
+                <el-option v-for="item in formEnvironmentOptions" :key="item.value" :label="item.label" :value="item.value" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="处理人"><el-input v-model="ticketForm.owner" placeholder="如：值班运维 / 平台组" /></el-form-item>
+            <el-form-item label="执行窗口"><el-input v-model="ticketForm.window" placeholder="如：今晚 22:00-23:00" /></el-form-item>
+            <el-form-item label="审批流" class="span-2">
+              <el-select v-model="ticketForm.approval_flow" clearable filterable style="width: 100%" placeholder="选择审批流">
+                <el-option
               v-for="item in transactionFlows"
               :key="item.id"
               :label="`${item.name} · ${item.environment_display || '全部环境'}`"
               :value="item.id"
             />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="说明" class="span-2"><el-input v-model="ticketForm.description" type="textarea" :rows="4" /></el-form-item>
+              </el-select>
+            </el-form-item>
+          </div>
+        </section>
+        <section class="workbench-editor-section workbench-editor-section--tinted">
+          <div class="workbench-editor-heading"><span class="workbench-editor-step">03</span><h3>补充说明</h3></div>
+          <div>
+            <el-form-item label="说明" class="workbench-editor-full span-2"><el-input v-model="ticketForm.description" type="textarea" :rows="4" /></el-form-item>
+          </div>
+        </section>
       </el-form>
       <template #footer>
         <el-button @click="createVisible = false">取消</el-button>
@@ -260,6 +275,7 @@ const typeOptions = [
   { label: '巡检任务', value: 'inspection' },
   { label: '权限开通', value: 'access' },
   { label: '故障处理', value: 'incident' },
+  { label: '漏洞处理', value: 'vulnerability' },
 ]
 const priorityOptions = [
   { label: '高', value: 'high' },
@@ -392,7 +408,7 @@ function statusLabel(value) {
 }
 
 function typeTagType(value) {
-  return ({ change: 'warning', inspection: 'info', access: 'success', incident: 'danger' }[value] || 'info')
+  return ({ change: 'warning', inspection: 'info', access: 'success', incident: 'danger', vulnerability: 'danger' }[value] || 'info')
 }
 
 function priorityTagType(value) {

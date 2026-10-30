@@ -1,5 +1,5 @@
 <template>
-  <div class="alerts-page">
+  <div class="alerts-page workbench-page-shell">
     <section class="hero panel">
       <div class="hero-copy">
         <div class="hero-title-row">
@@ -48,7 +48,7 @@
     </div>
 
     <template v-if="activeTab === 'events' && canViewAlerts">
-      <section class="panel">
+      <section class="panel workbench-fill-panel">
         <div class="toolbar">
           <el-select v-model="filters.status" size="small" clearable placeholder="&#x72B6;&#x6001;" @change="handleFilterChange">
             <el-option label="&#x6D3B;&#x8DC3;" value="active" />
@@ -182,7 +182,7 @@
     </template>
 
     <template v-if="activeTab === 'notify' && canViewConfig">
-      <section class="panel">
+      <section class="panel workbench-fill-panel">
         <div class="neo-sub-tabs theme-blue alert-sub-tabs">
           <button class="neo-sub-tab-btn" :class="{ active: notifyTab === 'rules' }" @click="changeNotifyTab('rules')">&#x901A;&#x77E5;&#x89C4;&#x5219;</button>
           <button class="neo-sub-tab-btn" :class="{ active: notifyTab === 'channels' }" @click="changeNotifyTab('channels')">&#x901A;&#x77E5;&#x6E20;&#x9053;</button>
@@ -304,7 +304,7 @@
     </template>
 
     <template v-if="activeTab === 'policies' && canViewConfig">
-      <section class="panel">
+      <section class="panel workbench-fill-panel">
         <div class="neo-sub-tabs theme-blue alert-sub-tabs">
           <button class="neo-sub-tab-btn" :class="{ active: policyTab === 'aggregation' }" @click="changePolicyTab('aggregation')">&#x805A;&#x5408;</button>
           <button class="neo-sub-tab-btn" :class="{ active: policyTab === 'inhibition' }" @click="changePolicyTab('inhibition')">&#x6291;&#x5236;</button>
@@ -328,7 +328,7 @@
     </template>
 
     <template v-if="activeTab === 'integrations' && canViewConfig">
-      <section class="panel">
+      <section class="panel workbench-fill-panel">
         <div class="section-head">
           <h3>Webhook &#x63A5;&#x5165;&#x6E90;</h3>
           <div class="section-actions">
@@ -407,7 +407,7 @@
     </el-dialog>
 
     <template v-if="activeTab === 'logs' && canViewAlerts">
-      <section class="panel">
+      <section class="panel workbench-fill-panel">
         <div class="section-head">
           <h3>&#x901A;&#x77E5;&#x8BB0;&#x5F55;</h3>
           <el-button size="small" :icon="Refresh" @click="fetchNotificationLogs">&#x5237;&#x65B0;</el-button>
@@ -491,19 +491,29 @@
       </template>
     </el-drawer>
 
-    <el-dialog v-model="integrationDialog.visible" title="&#x63A5;&#x5165;&#x6E90;" width="620px">
-      <el-form :model="integrationDialog.form" label-width="120px">
-        <el-form-item label="&#x540D;&#x79F0;"><el-input v-model="integrationDialog.form.name" /></el-form-item>
-        <el-form-item label="&#x7C7B;&#x578B;">
-          <el-select v-model="integrationDialog.form.provider">
-            <el-option v-for="item in providerOptions" :key="item.value" :label="item.label" :value="item.value" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="&#x9ED8;&#x8BA4;&#x6807;&#x7B7E;">
-          <MatcherEditor v-model="integrationDialog.form.default_label_rows" mode="equals" />
-        </el-form-item>
-        <el-form-item label="&#x542F;&#x7528;"><el-switch v-model="integrationDialog.form.is_enabled" /></el-form-item>
-        <el-form-item label="&#x8BF4;&#x660E;"><el-input v-model="integrationDialog.form.description" type="textarea" :rows="2" /></el-form-item>
+    <el-dialog top="5vh" :close-on-click-modal="false" append-to-body class="workbench-edit-dialog" v-model="integrationDialog.visible" title="&#x63A5;&#x5165;&#x6E90;" width="620px">
+      <el-form class="workbench-editor-form--sectioned" label-position="top" :model="integrationDialog.form" label-width="120px">
+        <section class="workbench-editor-section">
+          <div class="workbench-editor-heading"><span class="workbench-editor-step">01</span><h3>接入信息</h3></div>
+          <div class="workbench-editor-grid">
+            <el-form-item label="&#x540D;&#x79F0;"><el-input v-model="integrationDialog.form.name" /></el-form-item>
+            <el-form-item label="&#x7C7B;&#x578B;">
+              <el-select v-model="integrationDialog.form.provider">
+                <el-option v-for="item in providerOptions" :key="item.value" :label="item.label" :value="item.value" />
+              </el-select>
+            </el-form-item>
+          </div>
+        </section>
+        <section class="workbench-editor-section workbench-editor-section--tinted">
+          <div class="workbench-editor-heading"><span class="workbench-editor-step">02</span><h3>标签与状态</h3></div>
+          <div>
+            <el-form-item label="&#x9ED8;&#x8BA4;&#x6807;&#x7B7E;">
+              <MatcherEditor v-model="integrationDialog.form.default_label_rows" mode="equals" />
+            </el-form-item>
+            <el-form-item label="&#x542F;&#x7528;"><el-switch v-model="integrationDialog.form.is_enabled" /></el-form-item>
+            <el-form-item class="workbench-editor-full" label="&#x8BF4;&#x660E;"><el-input v-model="integrationDialog.form.description" type="textarea" :rows="2" /></el-form-item>
+          </div>
+        </section>
       </el-form>
       <template #footer>
         <el-button @click="integrationDialog.visible = false">&#x53D6;&#x6D88;</el-button>
@@ -511,21 +521,36 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="channelDialog.visible" title="&#x901A;&#x77E5;&#x6E20;&#x9053;" width="700px">
-      <el-form :model="channelDialog.form" label-width="130px">
-        <el-form-item label="&#x540D;&#x79F0;"><el-input v-model="channelDialog.form.name" /></el-form-item>
-        <el-form-item label="&#x7C7B;&#x578B;">
-          <el-select v-model="channelDialog.form.channel_type">
-            <el-option v-for="item in channelOptions" :key="item.value" :label="item.label" :value="item.value" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="Webhook &#x5730;&#x5740;"><el-input v-model="channelDialog.form.webhook_url" /></el-form-item>
-        <el-form-item label="&#x8BBF;&#x95EE;&#x4EE4;&#x724C;"><el-input v-model="channelDialog.form.access_token" show-password /></el-form-item>
-        <el-form-item label="&#x9ED8;&#x8BA4;&#x63A5;&#x6536;&#x5730;&#x5740;"><el-input v-model="channelDialog.form.to" placeholder="&#x591A;&#x4E2A;&#x63A5;&#x6536;&#x5730;&#x5740;&#x6216;&#x624B;&#x673A;&#x53F7;&#xFF0C;&#x4F7F;&#x7528;&#x82F1;&#x6587;&#x9017;&#x53F7;&#x5206;&#x9694;" /></el-form-item>
-        <el-form-item label="&#x6807;&#x9898;&#x6A21;&#x677F;"><el-input v-model="channelDialog.form.template_title" /></el-form-item>
-        <el-form-item label="&#x5185;&#x5BB9;&#x6A21;&#x677F;"><el-input v-model="channelDialog.form.template_body" type="textarea" :rows="4" /></el-form-item>
-        <el-form-item label="&#x6062;&#x590D;&#x901A;&#x77E5;"><el-switch v-model="channelDialog.form.send_resolved" /></el-form-item>
-        <el-form-item label="&#x542F;&#x7528;"><el-switch v-model="channelDialog.form.is_enabled" /></el-form-item>
+    <el-dialog top="5vh" :close-on-click-modal="false" append-to-body class="workbench-edit-dialog" v-model="channelDialog.visible" title="&#x901A;&#x77E5;&#x6E20;&#x9053;" width="700px">
+      <el-form class="workbench-editor-form--sectioned" label-position="top" :model="channelDialog.form" label-width="130px">
+        <section class="workbench-editor-section">
+          <div class="workbench-editor-heading"><span class="workbench-editor-step">01</span><h3>渠道信息</h3></div>
+          <div class="workbench-editor-grid">
+            <el-form-item label="&#x540D;&#x79F0;"><el-input v-model="channelDialog.form.name" /></el-form-item>
+            <el-form-item label="&#x7C7B;&#x578B;">
+              <el-select v-model="channelDialog.form.channel_type">
+                <el-option v-for="item in channelOptions" :key="item.value" :label="item.label" :value="item.value" />
+              </el-select>
+            </el-form-item>
+          </div>
+        </section>
+        <section class="workbench-editor-section workbench-editor-section--tinted">
+          <div class="workbench-editor-heading"><span class="workbench-editor-step">02</span><h3>通知接入</h3></div>
+          <div>
+            <el-form-item label="Webhook &#x5730;&#x5740;"><el-input v-model="channelDialog.form.webhook_url" /></el-form-item>
+            <el-form-item label="&#x8BBF;&#x95EE;&#x4EE4;&#x724C;"><el-input v-model="channelDialog.form.access_token" show-password /></el-form-item>
+            <el-form-item label="&#x9ED8;&#x8BA4;&#x63A5;&#x6536;&#x5730;&#x5740;"><el-input v-model="channelDialog.form.to" placeholder="&#x591A;&#x4E2A;&#x63A5;&#x6536;&#x5730;&#x5740;&#x6216;&#x624B;&#x673A;&#x53F7;&#xFF0C;&#x4F7F;&#x7528;&#x82F1;&#x6587;&#x9017;&#x53F7;&#x5206;&#x9694;" /></el-form-item>
+          </div>
+        </section>
+        <section class="workbench-editor-section workbench-editor-section--tinted">
+          <div class="workbench-editor-heading"><span class="workbench-editor-step">03</span><h3>消息模板与通知设置</h3></div>
+          <div class="workbench-editor-grid">
+            <el-form-item label="&#x6807;&#x9898;&#x6A21;&#x677F;"><el-input v-model="channelDialog.form.template_title" /></el-form-item>
+            <el-form-item label="&#x5185;&#x5BB9;&#x6A21;&#x677F;"><el-input v-model="channelDialog.form.template_body" type="textarea" :rows="4" /></el-form-item>
+            <el-form-item label="&#x6062;&#x590D;&#x901A;&#x77E5;"><el-switch v-model="channelDialog.form.send_resolved" /></el-form-item>
+            <el-form-item label="&#x542F;&#x7528;"><el-switch v-model="channelDialog.form.is_enabled" /></el-form-item>
+          </div>
+        </section>
       </el-form>
       <template #footer>
         <el-button @click="channelDialog.visible = false">&#x53D6;&#x6D88;</el-button>
@@ -533,15 +558,25 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="recipientDialog.visible" title="&#x63A5;&#x6536;&#x4EBA;" width="620px">
-      <el-form :model="recipientDialog.form" label-width="120px">
-        <el-form-item label="&#x59D3;&#x540D;"><el-input v-model="recipientDialog.form.name" /></el-form-item>
-        <el-form-item label="&#x624B;&#x673A;&#x53F7;"><el-input v-model="recipientDialog.form.phone" /></el-form-item>
-        <el-form-item label="&#x90AE;&#x7BB1;"><el-input v-model="recipientDialog.form.email" /></el-form-item>
-        <el-form-item label="&#x9489;&#x9489; ID"><el-input v-model="recipientDialog.form.dingtalk_user_id" /></el-form-item>
-        <el-form-item label="&#x98DE;&#x4E66; ID"><el-input v-model="recipientDialog.form.feishu_user_id" /></el-form-item>
-        <el-form-item label="&#x4F01;&#x5FAE; ID"><el-input v-model="recipientDialog.form.wecom_user_id" /></el-form-item>
-        <el-form-item label="&#x542F;&#x7528;"><el-switch v-model="recipientDialog.form.is_enabled" /></el-form-item>
+    <el-dialog top="5vh" :close-on-click-modal="false" append-to-body class="workbench-edit-dialog" v-model="recipientDialog.visible" title="&#x63A5;&#x6536;&#x4EBA;" width="620px">
+      <el-form class="workbench-editor-form--sectioned" label-position="top" :model="recipientDialog.form" label-width="120px">
+        <section class="workbench-editor-section">
+          <div class="workbench-editor-heading"><span class="workbench-editor-step">01</span><h3>联系人信息</h3></div>
+          <div class="workbench-editor-grid">
+            <el-form-item label="&#x59D3;&#x540D;"><el-input v-model="recipientDialog.form.name" /></el-form-item>
+            <el-form-item label="&#x624B;&#x673A;&#x53F7;"><el-input v-model="recipientDialog.form.phone" /></el-form-item>
+            <el-form-item label="&#x90AE;&#x7BB1;"><el-input v-model="recipientDialog.form.email" /></el-form-item>
+          </div>
+        </section>
+        <section class="workbench-editor-section workbench-editor-section--tinted">
+          <div class="workbench-editor-heading"><span class="workbench-editor-step">02</span><h3>平台账号与状态</h3></div>
+          <div class="workbench-editor-grid">
+            <el-form-item label="&#x9489;&#x9489; ID"><el-input v-model="recipientDialog.form.dingtalk_user_id" /></el-form-item>
+            <el-form-item label="&#x98DE;&#x4E66; ID"><el-input v-model="recipientDialog.form.feishu_user_id" /></el-form-item>
+            <el-form-item label="&#x4F01;&#x5FAE; ID"><el-input v-model="recipientDialog.form.wecom_user_id" /></el-form-item>
+            <el-form-item label="&#x542F;&#x7528;"><el-switch v-model="recipientDialog.form.is_enabled" /></el-form-item>
+          </div>
+        </section>
       </el-form>
       <template #footer>
         <el-button @click="recipientDialog.visible = false">&#x53D6;&#x6D88;</el-button>
@@ -549,21 +584,31 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="recipientGroupDialog.visible" title="&#x63A5;&#x6536;&#x7EC4;" width="620px">
-      <el-form :model="recipientGroupDialog.form" label-width="120px">
-        <el-form-item label="&#x7EC4;&#x540D;"><el-input v-model="recipientGroupDialog.form.name" /></el-form-item>
-        <el-form-item label="&#x63A5;&#x6536;&#x4EBA;">
-          <el-select v-model="recipientGroupDialog.form.recipient_ids" multiple filterable>
-            <el-option v-for="item in recipients" :key="item.id" :label="item.name" :value="item.id" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="&#x5E73;&#x53F0;&#x7528;&#x6237;">
-          <el-select v-model="recipientGroupDialog.form.user_ids" multiple filterable>
-            <el-option v-for="item in users" :key="item.id" :label="item.display_name || item.username" :value="item.id" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="&#x542F;&#x7528;"><el-switch v-model="recipientGroupDialog.form.is_enabled" /></el-form-item>
-        <el-form-item label="&#x8BF4;&#x660E;"><el-input v-model="recipientGroupDialog.form.description" type="textarea" :rows="2" /></el-form-item>
+    <el-dialog top="5vh" :close-on-click-modal="false" append-to-body class="workbench-edit-dialog" v-model="recipientGroupDialog.visible" title="&#x63A5;&#x6536;&#x7EC4;" width="620px">
+      <el-form class="workbench-editor-form--sectioned" label-position="top" :model="recipientGroupDialog.form" label-width="120px">
+        <section class="workbench-editor-section">
+          <div class="workbench-editor-heading"><span class="workbench-editor-step">01</span><h3>接收组信息</h3></div>
+          <div>
+            <el-form-item label="&#x7EC4;&#x540D;"><el-input v-model="recipientGroupDialog.form.name" /></el-form-item>
+          </div>
+        </section>
+        <section class="workbench-editor-section workbench-editor-section--tinted">
+          <div class="workbench-editor-heading"><span class="workbench-editor-step">02</span><h3>接收对象与状态</h3></div>
+          <div>
+            <el-form-item label="&#x63A5;&#x6536;&#x4EBA;">
+              <el-select v-model="recipientGroupDialog.form.recipient_ids" multiple filterable>
+                <el-option v-for="item in recipients" :key="item.id" :label="item.name" :value="item.id" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="&#x5E73;&#x53F0;&#x7528;&#x6237;">
+              <el-select v-model="recipientGroupDialog.form.user_ids" multiple filterable>
+                <el-option v-for="item in users" :key="item.id" :label="item.display_name || item.username" :value="item.id" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="&#x542F;&#x7528;"><el-switch v-model="recipientGroupDialog.form.is_enabled" /></el-form-item>
+            <el-form-item class="workbench-editor-full" label="&#x8BF4;&#x660E;"><el-input v-model="recipientGroupDialog.form.description" type="textarea" :rows="2" /></el-form-item>
+          </div>
+        </section>
       </el-form>
       <template #footer>
         <el-button @click="recipientGroupDialog.visible = false">&#x53D6;&#x6D88;</el-button>
@@ -571,49 +616,64 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="notificationRuleDialog.visible" title="&#x901A;&#x77E5;&#x89C4;&#x5219;" width="760px">
-      <el-form :model="notificationRuleDialog.form" label-width="130px">
-        <el-form-item label="&#x540D;&#x79F0;"><el-input v-model="notificationRuleDialog.form.name" /></el-form-item>
-        <el-form-item label="&#x5339;&#x914D;&#x6761;&#x4EF6;"><MatcherEditor v-model="notificationRuleDialog.form.matchers" /></el-form-item>
-        <el-form-item label="&#x6700;&#x4F4E;&#x7EA7;&#x522B;">
-          <el-select v-model="notificationRuleDialog.form.min_level" clearable>
-            <el-option label="&#x4E25;&#x91CD;" value="critical" />
-            <el-option label="&#x8B66;&#x544A;" value="warning" />
-            <el-option label="&#x4FE1;&#x606F;" value="info" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="&#x901A;&#x77E5;&#x6E20;&#x9053;">
-          <el-select v-model="notificationRuleDialog.form.channel_ids" multiple>
-            <el-option v-for="item in channels" :key="item.id" :label="`${item.name} / ${channelText(item.channel_type)}`" :value="item.id" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="&#x63A5;&#x6536;&#x7EC4;">
-          <el-select v-model="notificationRuleDialog.form.recipient_group_ids" multiple>
-            <el-option v-for="item in recipientGroups" :key="item.id" :label="item.name" :value="item.id" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="&#x63A5;&#x6536;&#x4EBA;">
-          <el-select v-model="notificationRuleDialog.form.recipient_ids" multiple>
-            <el-option v-for="item in recipients" :key="item.id" :label="item.name" :value="item.id" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="&#x805A;&#x5408;&#x89C4;&#x5219;">
-          <el-select v-model="notificationRuleDialog.form.aggregation_rule" clearable>
-            <el-option v-for="item in aggregationRules" :key="item.id" :label="item.name" :value="item.id" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="&#x5347;&#x7EA7;&#x7B56;&#x7565;">
-          <el-select v-model="notificationRuleDialog.form.escalation_policy" clearable>
-            <el-option v-for="item in escalationPolicies" :key="item.id" :label="item.name" :value="item.id" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="&#x901A;&#x77E5;&#x65F6;&#x673A;">
-          <el-checkbox v-model="notificationRuleDialog.form.notify_on_fire">&#x89E6;&#x53D1;</el-checkbox>
-          <el-checkbox v-model="notificationRuleDialog.form.notify_on_resolved">&#x6062;&#x590D;</el-checkbox>
-          <el-checkbox v-model="notificationRuleDialog.form.notify_on_escalation">&#x5347;&#x7EA7;</el-checkbox>
-        </el-form-item>
-        <el-form-item label="&#x542F;&#x7528;"><el-switch v-model="notificationRuleDialog.form.is_enabled" /></el-form-item>
-        <el-form-item label="&#x8BF4;&#x660E;"><el-input v-model="notificationRuleDialog.form.description" type="textarea" :rows="2" /></el-form-item>
+    <el-dialog top="5vh" :close-on-click-modal="false" append-to-body class="workbench-edit-dialog" v-model="notificationRuleDialog.visible" title="&#x901A;&#x77E5;&#x89C4;&#x5219;" width="760px">
+      <el-form class="workbench-editor-form--sectioned" label-position="top" :model="notificationRuleDialog.form" label-width="130px">
+        <section class="workbench-editor-section">
+          <div class="workbench-editor-heading"><span class="workbench-editor-step">01</span><h3>匹配范围</h3></div>
+          <div>
+            <el-form-item label="&#x540D;&#x79F0;"><el-input v-model="notificationRuleDialog.form.name" /></el-form-item>
+            <el-form-item label="&#x5339;&#x914D;&#x6761;&#x4EF6;"><MatcherEditor v-model="notificationRuleDialog.form.matchers" /></el-form-item>
+            <el-form-item label="&#x6700;&#x4F4E;&#x7EA7;&#x522B;">
+              <el-select v-model="notificationRuleDialog.form.min_level" clearable>
+                <el-option label="&#x4E25;&#x91CD;" value="critical" />
+                <el-option label="&#x8B66;&#x544A;" value="warning" />
+                <el-option label="&#x4FE1;&#x606F;" value="info" />
+              </el-select>
+            </el-form-item>
+          </div>
+        </section>
+        <section class="workbench-editor-section workbench-editor-section--tinted">
+          <div class="workbench-editor-heading"><span class="workbench-editor-step">02</span><h3>通知对象</h3></div>
+          <div>
+            <el-form-item label="&#x901A;&#x77E5;&#x6E20;&#x9053;">
+              <el-select v-model="notificationRuleDialog.form.channel_ids" multiple>
+                <el-option v-for="item in channels" :key="item.id" :label="`${item.name} / ${channelText(item.channel_type)}`" :value="item.id" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="&#x63A5;&#x6536;&#x7EC4;">
+              <el-select v-model="notificationRuleDialog.form.recipient_group_ids" multiple>
+                <el-option v-for="item in recipientGroups" :key="item.id" :label="item.name" :value="item.id" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="&#x63A5;&#x6536;&#x4EBA;">
+              <el-select v-model="notificationRuleDialog.form.recipient_ids" multiple>
+                <el-option v-for="item in recipients" :key="item.id" :label="item.name" :value="item.id" />
+              </el-select>
+            </el-form-item>
+          </div>
+        </section>
+        <section class="workbench-editor-section workbench-editor-section--tinted">
+          <div class="workbench-editor-heading"><span class="workbench-editor-step">03</span><h3>聚合与通知策略</h3></div>
+          <div class="workbench-editor-grid">
+            <el-form-item label="&#x805A;&#x5408;&#x89C4;&#x5219;">
+              <el-select v-model="notificationRuleDialog.form.aggregation_rule" clearable>
+                <el-option v-for="item in aggregationRules" :key="item.id" :label="item.name" :value="item.id" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="&#x5347;&#x7EA7;&#x7B56;&#x7565;">
+              <el-select v-model="notificationRuleDialog.form.escalation_policy" clearable>
+                <el-option v-for="item in escalationPolicies" :key="item.id" :label="item.name" :value="item.id" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="&#x901A;&#x77E5;&#x65F6;&#x673A;">
+              <el-checkbox v-model="notificationRuleDialog.form.notify_on_fire">&#x89E6;&#x53D1;</el-checkbox>
+              <el-checkbox v-model="notificationRuleDialog.form.notify_on_resolved">&#x6062;&#x590D;</el-checkbox>
+              <el-checkbox v-model="notificationRuleDialog.form.notify_on_escalation">&#x5347;&#x7EA7;</el-checkbox>
+            </el-form-item>
+            <el-form-item label="&#x542F;&#x7528;"><el-switch v-model="notificationRuleDialog.form.is_enabled" /></el-form-item>
+            <el-form-item class="workbench-editor-full" label="&#x8BF4;&#x660E;"><el-input v-model="notificationRuleDialog.form.description" type="textarea" :rows="2" /></el-form-item>
+          </div>
+        </section>
       </el-form>
       <template #footer>
         <el-button @click="notificationRuleDialog.visible = false">&#x53D6;&#x6D88;</el-button>
@@ -621,64 +681,74 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="policyDialog.visible" :title="policyDialog.title" width="760px">
-      <el-form :model="policyDialog.form" label-width="130px">
-        <el-form-item label="&#x540D;&#x79F0;"><el-input v-model="policyDialog.form.name" /></el-form-item>
-        <el-form-item v-if="policyDialog.kind !== 'inhibition'" label="&#x5339;&#x914D;&#x6761;&#x4EF6;"><MatcherEditor v-model="policyDialog.form.matchers" /></el-form-item>
+    <el-dialog top="5vh" :close-on-click-modal="false" append-to-body class="workbench-edit-dialog" v-model="policyDialog.visible" :title="policyDialog.title" width="760px">
+      <el-form class="workbench-editor-form--sectioned" label-position="top" :model="policyDialog.form" label-width="130px">
+        <section class="workbench-editor-section">
+          <div class="workbench-editor-heading"><span class="workbench-editor-step">01</span><h3>策略信息</h3></div>
+          <div>
+            <el-form-item label="&#x540D;&#x79F0;"><el-input v-model="policyDialog.form.name" /></el-form-item>
+            <el-form-item v-if="policyDialog.kind !== 'inhibition'" label="&#x5339;&#x914D;&#x6761;&#x4EF6;"><MatcherEditor v-model="policyDialog.form.matchers" /></el-form-item>
+          </div>
+        </section>
 
-        <template v-if="policyDialog.kind === 'aggregation'">
-          <el-form-item label="&#x5206;&#x7EC4;&#x7EF4;&#x5EA6;">
-            <el-select v-model="policyDialog.form.group_by" multiple>
-              <el-option v-for="item in dimensionOptions" :key="item.value" :label="item.label" :value="item.value" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="&#x805A;&#x5408;&#x7A97;&#x53E3;"><el-input-number v-model="policyDialog.form.window_minutes" :min="1" /> &#x5206;&#x949F;</el-form-item>
-          <el-form-item label="&#x91CD;&#x590D;&#x95F4;&#x9694;"><el-input-number v-model="policyDialog.form.repeat_interval_minutes" :min="1" /> &#x5206;&#x949F;</el-form-item>
-        </template>
+        <section class="workbench-editor-section workbench-editor-section--tinted">
+          <div class="workbench-editor-heading"><span class="workbench-editor-step">02</span><h3>规则与状态</h3></div>
+          <div>
+            <template v-if="policyDialog.kind === 'aggregation'">
+              <el-form-item label="&#x5206;&#x7EC4;&#x7EF4;&#x5EA6;">
+                <el-select v-model="policyDialog.form.group_by" multiple>
+                  <el-option v-for="item in dimensionOptions" :key="item.value" :label="item.label" :value="item.value" />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="&#x805A;&#x5408;&#x7A97;&#x53E3;"><el-input-number v-model="policyDialog.form.window_minutes" :min="1" /> &#x5206;&#x949F;</el-form-item>
+              <el-form-item label="&#x91CD;&#x590D;&#x95F4;&#x9694;"><el-input-number v-model="policyDialog.form.repeat_interval_minutes" :min="1" /> &#x5206;&#x949F;</el-form-item>
+            </template>
 
-        <template v-if="policyDialog.kind === 'inhibition'">
-          <el-form-item label="&#x6765;&#x6E90;&#x5339;&#x914D;"><MatcherEditor v-model="policyDialog.form.source_matchers" /></el-form-item>
-          <el-form-item label="&#x76EE;&#x6807;&#x5339;&#x914D;"><MatcherEditor v-model="policyDialog.form.target_matchers" /></el-form-item>
-          <el-form-item label="&#x76F8;&#x7B49;&#x6807;&#x7B7E;">
-            <el-select v-model="policyDialog.form.equal_labels" multiple allow-create filterable>
-              <el-option v-for="item in dimensionOptions" :key="item.value" :label="item.label" :value="item.value" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="&#x6301;&#x7EED;&#x65F6;&#x95F4;"><el-input-number v-model="policyDialog.form.duration_minutes" :min="1" /> &#x5206;&#x949F;</el-form-item>
-        </template>
+            <template v-if="policyDialog.kind === 'inhibition'">
+              <el-form-item label="&#x6765;&#x6E90;&#x5339;&#x914D;"><MatcherEditor v-model="policyDialog.form.source_matchers" /></el-form-item>
+              <el-form-item label="&#x76EE;&#x6807;&#x5339;&#x914D;"><MatcherEditor v-model="policyDialog.form.target_matchers" /></el-form-item>
+              <el-form-item label="&#x76F8;&#x7B49;&#x6807;&#x7B7E;">
+                <el-select v-model="policyDialog.form.equal_labels" multiple allow-create filterable>
+                  <el-option v-for="item in dimensionOptions" :key="item.value" :label="item.label" :value="item.value" />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="&#x6301;&#x7EED;&#x65F6;&#x95F4;"><el-input-number v-model="policyDialog.form.duration_minutes" :min="1" /> &#x5206;&#x949F;</el-form-item>
+            </template>
 
-        <template v-if="policyDialog.kind === 'mute'">
-          <el-form-item label="&#x65F6;&#x95F4;&#x8303;&#x56F4;">
-            <el-date-picker
+            <template v-if="policyDialog.kind === 'mute'">
+              <el-form-item label="&#x65F6;&#x95F4;&#x8303;&#x56F4;">
+                <el-date-picker
               v-model="policyDialog.form.range"
               type="datetimerange"
               value-format="YYYY-MM-DDTHH:mm:ssZ"
               start-placeholder="&#x5F00;&#x59CB;&#x65F6;&#x95F4;"
               end-placeholder="&#x7ED3;&#x675F;&#x65F6;&#x95F4;"
             />
-          </el-form-item>
-          <el-form-item label="&#x539F;&#x56E0;"><el-input v-model="policyDialog.form.reason" /></el-form-item>
-        </template>
+              </el-form-item>
+              <el-form-item class="workbench-editor-full" label="&#x539F;&#x56E0;"><el-input v-model="policyDialog.form.reason" /></el-form-item>
+            </template>
 
-        <template v-if="policyDialog.kind === 'escalation'">
-          <el-form-item label="&#x91CD;&#x590D;&#x95F4;&#x9694;"><el-input-number v-model="policyDialog.form.repeat_interval_minutes" :min="1" /> &#x5206;&#x949F;</el-form-item>
-          <el-form-item label="&#x5347;&#x7EA7;&#x5C42;&#x7EA7;">
-            <div class="level-editor">
-              <div v-for="(item, index) in policyDialog.form.levels" :key="index" class="level-row">
-                <el-input-number v-model="item.after_minutes" :min="0" size="small" />
-                <el-input v-model="item.name" size="small" placeholder="&#x5C42;&#x7EA7;&#x540D;&#x79F0;" />
-                <el-select v-model="item.channel_ids" multiple size="small" placeholder="&#x901A;&#x77E5;&#x6E20;&#x9053;">
-                  <el-option v-for="channel in channels" :key="channel.id" :label="channel.name" :value="channel.id" />
-                </el-select>
-                <el-button link type="danger" :icon="Delete" @click="policyDialog.form.levels.splice(index, 1)" />
-              </div>
-              <el-button size="small" :icon="Plus" @click="policyDialog.form.levels.push({ name: '', after_minutes: 30, channel_ids: [] })">&#x65B0;&#x589E;&#x5C42;&#x7EA7;</el-button>
-            </div>
-          </el-form-item>
-        </template>
+            <template v-if="policyDialog.kind === 'escalation'">
+              <el-form-item label="&#x91CD;&#x590D;&#x95F4;&#x9694;"><el-input-number v-model="policyDialog.form.repeat_interval_minutes" :min="1" /> &#x5206;&#x949F;</el-form-item>
+              <el-form-item label="&#x5347;&#x7EA7;&#x5C42;&#x7EA7;">
+                <div class="level-editor">
+                  <div v-for="(item, index) in policyDialog.form.levels" :key="index" class="level-row">
+                    <el-input-number v-model="item.after_minutes" :min="0" size="small" />
+                    <el-input v-model="item.name" size="small" placeholder="&#x5C42;&#x7EA7;&#x540D;&#x79F0;" />
+                    <el-select v-model="item.channel_ids" multiple size="small" placeholder="&#x901A;&#x77E5;&#x6E20;&#x9053;">
+                      <el-option v-for="channel in channels" :key="channel.id" :label="channel.name" :value="channel.id" />
+                    </el-select>
+                    <el-button link type="danger" :icon="Delete" @click="policyDialog.form.levels.splice(index, 1)" />
+                  </div>
+                  <el-button size="small" :icon="Plus" @click="policyDialog.form.levels.push({ name: '', after_minutes: 30, channel_ids: [] })">&#x65B0;&#x589E;&#x5C42;&#x7EA7;</el-button>
+                </div>
+              </el-form-item>
+            </template>
 
-        <el-form-item label="&#x542F;&#x7528;"><el-switch v-model="policyDialog.form.is_enabled" /></el-form-item>
-        <el-form-item label="&#x8BF4;&#x660E;"><el-input v-model="policyDialog.form.description" type="textarea" :rows="2" /></el-form-item>
+            <el-form-item label="&#x542F;&#x7528;"><el-switch v-model="policyDialog.form.is_enabled" /></el-form-item>
+            <el-form-item class="workbench-editor-full" label="&#x8BF4;&#x660E;"><el-input v-model="policyDialog.form.description" type="textarea" :rows="2" /></el-form-item>
+          </div>
+        </section>
       </el-form>
       <template #footer>
         <el-button @click="policyDialog.visible = false">&#x53D6;&#x6D88;</el-button>
@@ -686,8 +756,8 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="muteDialog.visible" title="&#x5C4F;&#x853D;&#x544A;&#x8B66;" width="420px">
-      <el-form :model="muteDialog.form" label-width="96px">
+    <el-dialog top="5vh" :close-on-click-modal="false" append-to-body class="workbench-edit-dialog" v-model="muteDialog.visible" title="&#x5C4F;&#x853D;&#x544A;&#x8B66;" width="420px">
+      <el-form label-position="top" :model="muteDialog.form" label-width="96px">
         <el-form-item label="&#x5C4F;&#x853D;&#x65F6;&#x957F;">
           <el-input-number v-model="muteDialog.form.minutes" :min="1" :max="10080" />
           <span class="field-suffix">&#x5206;&#x949F;</span>

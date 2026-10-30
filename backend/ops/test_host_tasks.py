@@ -299,7 +299,7 @@ class HostTaskApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='203.0.113.176',
+            ip_address='120.26.213.176',
             ssh_user='root',
             ssh_password='secret',
         )
@@ -419,7 +419,7 @@ class HostTaskApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=other_env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='10.30.1.11',
+            ip_address='192.0.2.4',
         )
 
         response = self.client.get(

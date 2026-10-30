@@ -10,7 +10,6 @@ from eventwall.mixins import EventWallModelViewSetMixin
 from eventwall.models import EventRecord
 from eventwall.services import build_resource, record_event
 from rbac.permissions import RBACPermissionMixin, build_rbac_permission
-from rbac.services import DEMO_ACCOUNT_MUTATION_MESSAGE, is_demo_account
 
 from . import deployer
 from .models import ServiceDeployment, ServiceTemplate
@@ -161,8 +160,6 @@ class ServiceDeploymentViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated, build_rbac_permission('marketplace.deployment.manage')])
 def deploy_service_view(request):
-    if is_demo_account(request.user):
-        return Response({'detail': DEMO_ACCOUNT_MUTATION_MESSAGE}, status=status.HTTP_403_FORBIDDEN)
     serializer = DeployRequestSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     data = serializer.validated_data

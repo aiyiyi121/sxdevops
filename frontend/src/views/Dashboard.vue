@@ -1,669 +1,903 @@
 <template>
-  <div v-loading="auditLoading" class="dashboard-page workbench-page-shell">
-    <section class="workbench-card dashboard-aiops-overview">
-      <div class="section-toolbar">
-        <div class="toolbar-head">
-          <span class="toolbar-title">运行概览</span>
-          <span class="toolbar-desc">聚焦所选时间范围内的调用命中明细与模型成本。</span>
+  <div v-loading="loading" class="dashboard-page">
+    <div v-if="canViewSystemPosture" class="stats-grid dashboard-stats">
+      <article v-for="card in summaryCards" :key="card.label" class="summary-card" :class="card.tone">
+        <div class="summary-card__head">
+          <span class="summary-card__label">{{ card.label }}</span>
+          <span class="summary-card__icon">
+            <el-icon><component :is="card.icon" /></el-icon>
+          </span>
         </div>
-        <div class="overview-time-controls">
-          <el-date-picker
-            v-model="overviewTimeRange"
-            class="overview-time-picker"
-            size="small"
-            type="datetimerange"
-            format="YYYY-MM-DD HH:mm"
-            range-separator="至"
-            start-placeholder="开始时间"
-            end-placeholder="结束时间"
-            :clearable="false"
-            :shortcuts="overviewTimeShortcuts"
-            @change="handleOverviewRangeChange"
-          />
-          <el-button size="small" :type="overviewAllTime ? 'primary' : 'default'" plain @click="selectAllOverviewTime">
-            全部时间
-          </el-button>
-          <el-button class="filter-refresh-btn" size="small" plain :loading="auditLoading" @click="loadAuditOverview">
-            <el-icon><RefreshRight /></el-icon>
-            刷新
-          </el-button>
+        <div class="summary-card__value-row">
+          <div class="summary-card__value">{{ card.value }}</div>
+          <span v-if="card.unit" class="summary-card__unit">{{ card.unit }}</span>
         </div>
+        <div v-if="card.meta" class="summary-card__meta">{{ card.meta }}</div>
+      </article>
+    </div>
+
+    <section v-if="canViewSystemPosture" class="focus-strip" :class="`is-${overallStatus}`">
+      <div class="focus-strip__signal">
+        <span class="focus-strip__icon" :class="`is-${overallStatus}`">
+          <el-icon><component :is="focusIcon" /></el-icon>
+        </span>
+        <span class="focus-strip__label">{{ focusBadge }}</span>
       </div>
+      <div class="focus-strip__body">
+        <strong>{{ focusTitle }}</strong>
+        <el-tooltip
+          v-if="focusTooltip"
+          effect="light"
+          placement="top"
+          popper-class="dashboard-focus-popper"
+        >
+          <template #content>
+            <div class="dashboard-focus-tip">{{ focusTooltip }}</div>
+          </template>
+          <span class="focus-strip__text">{{ focusText }}</span>
+        </el-tooltip>
+        <span v-else class="focus-strip__text">{{ focusText }}</span>
+      </div>
+      <div class="focus-strip__actions">
+        <el-button size="small" type="primary" @click="recalculateToday">
+          <el-icon><RefreshRight /></el-icon>
+          重算今日
+        </el-button>
+        <el-button size="small" @click="openOverview('system-posture')">查看系统态势</el-button>
+        <el-button size="small" text @click="openOverview('posture-history')">查看完整历史</el-button>
+      </div>
+    </section>
 
-      <div class="overview-dashboard-grid">
-        <div class="overview-invocation-section">
-          <div class="invocation-chart-grid">
-            <div v-for="chart in overviewInvocationCharts" :key="chart.key" class="invocation-chart-card">
-              <div class="invocation-chart-head">
-                <strong>{{ chart.title }}</strong>
-                <el-tag size="small" effect="plain">{{ formatNumber(chart.total) }} 次</el-tag>
-              </div>
-              <div class="invocation-pie-layout">
-                <div class="invocation-pie" :style="chart.pieStyle">
-                  <div class="invocation-pie-core">
-                    <strong>{{ formatNumber(chart.total) }}</strong>
-                    <span>总计</span>
-                  </div>
-                </div>
-                <div v-if="chart.total" class="invocation-pie-legend">
-                  <div v-for="item in chart.rows.slice(0, 5)" :key="item.key" class="invocation-pie-row">
-                    <div class="invocation-pie-row-head">
-                      <span class="invocation-dot" :style="{ background: item.color }"></span>
-                      <span>{{ item.label }}</span>
-                      <em>{{ formatPercent(item.value, chart.total) }}</em>
-                      <strong>{{ formatNumber(item.value) }}</strong>
-                    </div>
-                  </div>
-                </div>
-                <div v-else class="overview-empty">{{ chart.emptyText }}</div>
-              </div>
-            </div>
+    <section v-if="canViewSystemPosture" class="panel dashboard-history-shell">
+      <div class="dashboard-history-shell__head">
+        <div class="dashboard-history-shell__title">
+          <div class="dashboard-history-shell__headline">
+            <h3>系统 SLA 统计</h3>
+            <span class="dashboard-history-shell__tag">{{ latestDay ? `统计至 ${latestDay}` : '近 30 天' }}</span>
           </div>
         </div>
-
-        <div class="overview-panel overview-panel--model">
-          <div class="overview-panel-head">
-            <span class="section-title">模型成本</span>
-          </div>
-          <div class="overview-mini-grid">
-            <div class="overview-mini-stat">
-              <span>模型调用</span>
-              <strong>{{ formatNumber(modelCostSummary.total_calls) }}</strong>
-            </div>
-            <div class="overview-mini-stat">
-              <span>Token</span>
-              <strong>{{ formatTokenCount(modelCostSummary.total_tokens) }}</strong>
-            </div>
-            <div class="overview-mini-stat">
-              <span>费用</span>
-              <strong>{{ formatModelCostSummary(modelCostSummary) }}</strong>
-            </div>
-            <div class="overview-mini-stat">
-              <span>平均耗时</span>
-              <strong>{{ formatLatency(modelCostSummary.avg_latency_ms) }}</strong>
-            </div>
-          </div>
-          <div class="overview-rank-list">
-            <div v-for="item in modelProviderRows" :key="`${item.provider}-${item.cost_currency || 'USD'}`" class="overview-rank-row">
-              <div class="overview-rank-main">
-                <div class="overview-rank-title">
-                  <span>{{ item.provider }}</span>
-                  <strong>{{ formatNumber(item.calls) }} 次</strong>
-                </div>
-                <div class="overview-rank-meta">
-                  <span>{{ formatTokenCount(item.tokens) }} Token</span>
-                  <span>{{ formatCost(item.estimated_cost_usd, item.cost_currency) }}</span>
-                  <span>平均 {{ formatLatency(item.avg_latency_ms) }}</span>
-                </div>
-                <div class="overview-rank-bar"><span :style="{ width: `${item.percent}%` }"></span></div>
-              </div>
-            </div>
-            <div v-if="!modelProviderRows.length" class="overview-empty">暂无模型调用数据</div>
+        <div class="dashboard-history-shell__meta">
+          <span class="history-meta-pill">{{ latestSystems.length }} 个系统</span>
+          <div class="history-meta-legend">
+            <span><i class="is-healthy"></i>健康 {{ statusCounts.healthy }}</span>
+            <span><i class="is-critical"></i>故障 {{ statusCounts.critical }}</span>
+            <span><i class="is-unknown"></i>未知 {{ statusCounts.unknown }}</span>
           </div>
         </div>
       </div>
+      <ObservabilityPostureHistory
+        v-if="ObservabilityPostureHistory"
+        :key="historyPanelKey"
+        :initial-date-range="selectedDateRange"
+        embedded
+        @range-change="handleHistoryRangeChange"
+      />
+    </section>
+    <section v-else class="panel dashboard-history-shell">
+      <div class="dashboard-history-shell__head">
+        <div class="dashboard-history-shell__title">
+          <div class="dashboard-history-shell__headline">
+            <h3>运维概览</h3>
+            <span class="dashboard-history-shell__tag">{{ systemPostureEnabled ? '访问受限' : '开源版' }}</span>
+          </div>
+        </div>
+        <div class="dashboard-history-shell__meta">
+          <span class="history-meta-pill">{{ systemPostureEnabled ? '未授予系统态势查看权限' : '系统态势未启用' }}</span>
+        </div>
+      </div>
+      <div class="dashboard-empty-state">{{ systemPostureEnabled ? '请从左侧菜单进入已授权的功能，或联系管理员申请系统态势查看权限。' : '当前版本未启用系统态势与态势历史，智能助手不会读取相关数据。' }}</div>
     </section>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
-import { RefreshRight } from '@element-plus/icons-vue'
+import { computed, defineAsyncComponent, onMounted, ref } from 'vue'
+import { ElMessage } from 'element-plus'
+import { Calendar, CircleCheck, QuestionFilled, RefreshRight, WarningFilled } from '@element-plus/icons-vue'
+import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
-import { getAIOpsAuditCosts, getAIOpsAuditOverview } from '@/api/modules/aiops'
+import { getObservabilitySystemPostureHistory } from '@/api/modules/ops'
+import { SYSTEM_POSTURE_ENABLED } from '@/config/features'
 
-const OVERVIEW_DEFAULT_DAYS = 7
-
+const router = useRouter()
+const systemPostureEnabled = SYSTEM_POSTURE_ENABLED
 const authStore = useAuthStore()
-const auditLoading = ref(false)
-const auditOverview = ref({})
-const auditCosts = ref({})
-const overviewAllTime = ref(false)
-const overviewRecentDays = ref(OVERVIEW_DEFAULT_DAYS)
-const overviewTimeRange = ref(buildRecentTimeRange(OVERVIEW_DEFAULT_DAYS))
-const overviewTimeShortcuts = [
-  { text: '最近 24 小时', value: () => buildRecentTimeRange(1) },
-  { text: '最近 7 天', value: () => buildRecentTimeRange(7) },
-  { text: '最近 30 天', value: () => buildRecentTimeRange(30) },
-  { text: '最近 90 天', value: () => buildRecentTimeRange(90) },
-]
+const canViewSystemPosture = computed(() => systemPostureEnabled && authStore.hasPermission('ops.observability.system_posture.view'))
+const ObservabilityPostureHistory = systemPostureEnabled
+  ? defineAsyncComponent(() => import('@/views/ObservabilityPostureHistory.vue'))
+  : null
 
-const canViewAiopsAudit = computed(() => authStore.hasPermission('aiops.audit.view'))
+const loading = ref(false)
+const historyPanelKey = ref(0)
+const dashboardHistory = ref({ days: [], systems: [], summary: {}, context: {} })
+const selectedDateRange = ref(defaultHistoryDateRange())
 
-const invocationPiePalettes = {
-  mcp: ['#245bdb', '#3b82f6', '#60a5fa', '#93c5fd', '#1d4ed8', '#2563eb', '#38bdf8', '#0ea5e9'],
-  skills: ['#16a34a', '#22c55e', '#4ade80', '#86efac', '#15803d', '#059669', '#34d399', '#10b981'],
-  actions: ['#f59e0b', '#fbbf24', '#f97316', '#fb923c', '#d97706', '#ea580c', '#facc15', '#eab308'],
-}
+const historyUnknownBefore = '2026-04-07'
 
-const modelCostSummary = computed(() => auditCosts.value?.model || {})
-const toolCostSummary = computed(() => auditCosts.value?.tools || {})
-const modelProviderRows = computed(() => {
-  const rows = Array.isArray(modelCostSummary.value.by_provider) ? modelCostSummary.value.by_provider : []
-  const maxCalls = Math.max(...rows.map(item => toNumber(item.calls)), 1)
-  return rows.slice(0, 6).map(item => ({
-    ...item,
-    percent: Math.max(6, Math.round((toNumber(item.calls) / maxCalls) * 100)),
-  }))
-})
+const latestDay = computed(() => dashboardHistory.value.summary?.latest_day || dashboardHistory.value.context?.end_day || '')
 
-const overviewInvocationCharts = computed(() => {
-  const distribution = auditOverview.value?.invocation_distribution || {}
-  const fallbackMcpItems = Array.isArray(toolCostSummary.value.by_tool)
-    ? toolCostSummary.value.by_tool.map(item => ({
-      key: item.tool_name || 'unknown',
-      label: item.tool_name || '未命名工具',
-      count: item.calls,
-    }))
-    : []
-  return [
-    buildInvocationPieChart({
-      key: 'mcp',
-      title: 'MCP 工具调用',
-      items: Array.isArray(distribution.mcp_tools) ? distribution.mcp_tools : fallbackMcpItems,
-      palette: invocationPiePalettes.mcp,
-      emptyText: '暂无 MCP 工具调用',
-    }),
-    buildInvocationPieChart({
-      key: 'skills',
-      title: 'Skill 命中',
-      items: Array.isArray(distribution.skills) ? distribution.skills : [],
-      palette: invocationPiePalettes.skills,
-      emptyText: '暂无 Skill 命中记录',
-    }),
-    buildInvocationPieChart({
-      key: 'actions',
-      title: 'Action 命中',
-      items: Array.isArray(distribution.actions) ? distribution.actions : [],
-      palette: invocationPiePalettes.actions,
-      emptyText: '暂无 Action 命中记录',
-    }),
-  ]
-})
-
-function toNumber(value) {
-  const numberValue = Number(value)
-  return Number.isFinite(numberValue) ? numberValue : 0
-}
-
-function normalizeInvocationPieRows(items, palette) {
-  const rowMap = new Map()
-  ;(Array.isArray(items) ? items : []).forEach((item, index) => {
-    const value = toNumber(item?.count ?? item?.value ?? item?.calls)
-    if (!value) return
-    const label = String(item?.label || item?.name || item?.tool_name || item?.code || item?.key || '未命名').trim()
-    const key = String(item?.key || item?.slug || item?.code || item?.tool_name || label || index).trim()
-    const current = rowMap.get(key) || { key, label, value: 0 }
-    current.value += value
-    rowMap.set(key, current)
-  })
-  return Array.from(rowMap.values())
-    .sort((left, right) => right.value - left.value || left.label.localeCompare(right.label, 'zh-CN'))
-    .map((item, index) => ({
-      ...item,
-      color: palette[index % palette.length],
-    }))
-}
-
-function buildInvocationPieStyle(rows, total) {
-  if (!total) return { background: 'conic-gradient(#e2e8f0 0deg 360deg)' }
-  let cursor = 0
-  const segments = rows.map((item) => {
-    const start = cursor
-    cursor += (item.value / total) * 360
-    return `${item.color} ${start.toFixed(2)}deg ${cursor.toFixed(2)}deg`
-  })
-  return { background: `conic-gradient(${segments.join(', ')})` }
-}
-
-function buildInvocationPieChart({ key, title, items, palette, emptyText }) {
-  const rows = normalizeInvocationPieRows(items, palette)
-  const total = rows.reduce((sum, item) => sum + item.value, 0)
+const latestSystems = computed(() => (dashboardHistory.value.systems || []).map((system) => {
+  const record = latestSystemRecord(system, latestDay.value)
+  const status = resolveDashboardStatus(record, system.target, latestDay.value)
   return {
-    key,
-    title,
-    rows,
-    total,
-    emptyText,
-    pieStyle: buildInvocationPieStyle(rows, total),
+    id: system.id,
+    name: system.name,
+    environment: system.environment_name || system.environment || '默认环境',
+    status,
   }
+}))
+
+const statusCounts = computed(() => latestSystems.value.reduce((acc, system) => {
+  acc[system.status] += 1
+  return acc
+}, { healthy: 0, critical: 0, unknown: 0 }))
+
+const failureSystems = computed(() => latestSystems.value.filter(system => system.status === 'critical'))
+const unknownSystems = computed(() => latestSystems.value.filter(system => system.status === 'unknown'))
+
+const overallStatus = computed(() => {
+  if (failureSystems.value.length) return 'critical'
+  if (unknownSystems.value.length) return 'unknown'
+  return 'healthy'
+})
+
+const focusIcon = computed(() => {
+  if (overallStatus.value === 'critical') return WarningFilled
+  if (overallStatus.value === 'unknown') return QuestionFilled
+  return CircleCheck
+})
+
+const selectedRangeDays = computed(() => inclusiveDays(selectedDateRange.value))
+const selectedRangeLabel = computed(() => {
+  const [start, end] = Array.isArray(selectedDateRange.value) ? selectedDateRange.value : []
+  const startText = formatRangeDay(start)
+  const endText = formatRangeDay(end)
+  if (!startText || !endText) return ''
+  return `${startText} 至 ${endText}`
+})
+
+const summaryCards = computed(() => [
+  {
+    label: '健康系统',
+    value: `${statusCounts.value.healthy}`,
+    unit: '个',
+    meta: `当前纳管 ${latestSystems.value.length} 个系统`,
+    tone: 'success',
+    icon: CircleCheck,
+  },
+  {
+    label: '故障系统',
+    value: `${statusCounts.value.critical}`,
+    unit: '个',
+    meta: statusCounts.value.critical ? '建议优先进入系统态势排查' : '当前没有故障系统',
+    tone: 'danger',
+    icon: WarningFilled,
+  },
+  {
+    label: '未知系统',
+    value: `${statusCounts.value.unknown}`,
+    unit: '个',
+    meta: statusCounts.value.unknown ? '存在采集缺口或历史不足' : '当前没有未知系统',
+    tone: 'neutral',
+    icon: QuestionFilled,
+  },
+  {
+    label: '统计周期',
+    value: `${selectedRangeDays.value || 0}`,
+    unit: '天',
+    meta: selectedRangeLabel.value,
+    tone: 'context',
+    icon: Calendar,
+  },
+])
+
+const failureInline = computed(() => failureSystems.value
+  .map(system => `${system.environment} / ${system.name}`)
+  .join('、'))
+
+const unknownInline = computed(() => unknownSystems.value
+  .map(system => `${system.environment} / ${system.name}`)
+  .join('、'))
+
+const focusTitle = computed(() => {
+  if (failureSystems.value.length) return '优先处理故障系统'
+  if (unknownSystems.value.length) return '补齐未知系统数据'
+  return '当前系统运行稳定'
+})
+
+const focusBadge = computed(() => {
+  if (failureSystems.value.length) return '故障优先'
+  if (unknownSystems.value.length) return '数据待补'
+  return '整体稳定'
+})
+
+const focusText = computed(() => {
+  if (failureSystems.value.length) return truncateText(failureInline.value, 92)
+  if (unknownSystems.value.length) return truncateText(`当前暂无可用数据：${unknownInline.value}`, 92)
+  return '首页趋势区保留完整历史条视图，可继续查看近阶段状态波动。'
+})
+
+const focusTooltip = computed(() => {
+  if (failureSystems.value.length) return failureInline.value
+  if (unknownSystems.value.length) return `当前暂无可用数据：${unknownInline.value}`
+  return ''
+})
+
+function latestSystemRecord(system, dayKey = '') {
+  const records = Array.isArray(system?.records) ? system.records : []
+  if (!records.length) return null
+  if (dayKey) {
+    const matched = records.find(item => item.day === dayKey)
+    if (matched) return matched
+  }
+  return records[records.length - 1]
 }
 
-function buildRecentTimeRange(days) {
-  const end = new Date()
-  const start = new Date(end.getTime() - days * 24 * 60 * 60 * 1000)
-  return [start, end]
+function resolveDashboardStatus(record, target, dayKey = '') {
+  if (!record || !dayKey || dayKey < historyUnknownBefore) return 'unknown'
+  if (record.status === 'unknown' || record.sla == null) return 'unknown'
+  const sla = Number(record.sla)
+  const slo = Number(record.target ?? target)
+  if (!Number.isFinite(sla)) return 'unknown'
+  if (Number.isFinite(slo)) return sla >= slo ? 'healthy' : 'critical'
+  return record.status === 'healthy' ? 'healthy' : record.status === 'critical' ? 'critical' : 'unknown'
 }
 
-function formatDateTimeParam(value) {
-  if (!value) return ''
-  const date = value instanceof Date ? value : new Date(value)
-  return Number.isNaN(date.getTime()) ? '' : date.toISOString()
+function truncateText(text = '', maxLength = 0) {
+  if (!text || !maxLength || text.length <= maxLength) return text
+  return `${text.slice(0, maxLength)}...`
 }
 
-function buildOverviewCostParams() {
-  if (overviewAllTime.value) return { range: 'all' }
-  if (overviewRecentDays.value) return { days: overviewRecentDays.value }
-  const [start, end] = Array.isArray(overviewTimeRange.value) ? overviewTimeRange.value : []
-  const startParam = formatDateTimeParam(start)
-  const endParam = formatDateTimeParam(end)
-  if (startParam && endParam) return { start: startParam, end: endParam }
-  return { days: OVERVIEW_DEFAULT_DAYS }
+function daysAgo(count) {
+  const date = new Date()
+  date.setHours(0, 0, 0, 0)
+  date.setDate(date.getDate() - count)
+  return date
 }
 
-function inferRecentDaysFromRange(range) {
-  if (!Array.isArray(range) || range.length !== 2) return null
-  const [start, end] = range
-  const startDate = start instanceof Date ? start : new Date(start)
-  const endDate = end instanceof Date ? end : new Date(end)
-  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) return null
-  const now = Date.now()
-  const endDelta = Math.abs(now - endDate.getTime())
-  const diffDays = (endDate.getTime() - startDate.getTime()) / (24 * 60 * 60 * 1000)
-  if (endDelta > 10 * 60 * 1000) return null
-  return [1, 7, 14, 30, 90].find(days => Math.abs(diffDays - days) < 0.02) || null
+function defaultHistoryDateRange() {
+  return [daysAgo(89), new Date()]
 }
 
-function formatNumber(value) {
-  return toNumber(value).toLocaleString('zh-CN')
+function inclusiveDays(range = []) {
+  const [start, end] = Array.isArray(range) ? range : []
+  if (!(start instanceof Date) || !(end instanceof Date)) return 0
+  const startTime = new Date(start)
+  const endTime = new Date(end)
+  startTime.setHours(0, 0, 0, 0)
+  endTime.setHours(0, 0, 0, 0)
+  const diff = Math.round((endTime.getTime() - startTime.getTime()) / 86400000)
+  return diff >= 0 ? diff + 1 : 0
 }
 
-function formatPercent(value, total) {
-  const totalValue = toNumber(total)
-  if (!totalValue) return '0%'
-  const percent = (toNumber(value) / totalValue) * 100
-  return `${percent >= 10 ? Math.round(percent) : percent.toFixed(1)}%`
+function formatRangeDay(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return ''
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
 }
 
-function formatTokenCount(value) {
-  const numberValue = Math.round(toNumber(value))
-  if (Math.abs(numberValue) < 1000000) return formatNumber(numberValue)
-  const millionValue = numberValue / 1000000
-  const digits = Math.abs(millionValue) < 10 ? 2 : 1
-  return `${millionValue.toFixed(digits).replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1')}M`
+function normalizeRange(range = []) {
+  if (Array.isArray(range) && range.length === 2) {
+    const start = range[0] instanceof Date ? new Date(range[0]) : new Date(range[0])
+    const end = range[1] instanceof Date ? new Date(range[1]) : new Date(range[1])
+    if (!Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime())) {
+      return [start, end]
+    }
+  }
+  return defaultHistoryDateRange()
 }
 
-function normalizeCostCurrency(currency) {
-  return String(currency || '').toUpperCase() === 'CNY' ? 'CNY' : 'USD'
+function handleHistoryRangeChange(payload = {}) {
+  selectedDateRange.value = normalizeRange(payload.range)
 }
 
-function currencySymbol(currency) {
-  return normalizeCostCurrency(currency) === 'CNY' ? '¥' : '$'
+function openOverview(tab) {
+  const name = tab === 'posture-history' ? 'ObservabilityPostureHistory' : 'ObservabilitySystemPosture'
+  router.push({ name })
 }
 
-function formatCost(value, currency = 'USD') {
-  const numberValue = toNumber(value)
-  const symbol = currencySymbol(currency)
-  if (!numberValue) return `${symbol}0`
-  return `${symbol}${numberValue.toFixed(numberValue < 1 ? 4 : 2)}`
-}
-
-function formatModelCostSummary(summary = {}) {
-  const byCurrency = Array.isArray(summary.by_currency) ? summary.by_currency.filter(item => toNumber(item.estimated_cost_usd)) : []
-  if (byCurrency.length > 1) return byCurrency.map(item => formatCost(item.estimated_cost_usd, item.currency)).join(' / ')
-  const currency = byCurrency[0]?.currency || summary.cost_currency || 'USD'
-  return formatCost(summary.estimated_cost_usd, currency)
-}
-
-function formatLatency(value) {
-  const numberValue = Math.round(toNumber(value))
-  return numberValue ? `${formatNumber(numberValue)} ms` : '-'
-}
-
-async function loadAuditOverview() {
-  if (!canViewAiopsAudit.value) return
-  auditLoading.value = true
+async function loadDashboardSummary(showMessage = false, refresh = false) {
+  if (!canViewSystemPosture.value) return
+  loading.value = true
   try {
-    const params = buildOverviewCostParams()
-    const [overviewData, costData] = await Promise.all([
-      getAIOpsAuditOverview(params, { skipErrorMessage: true }),
-      getAIOpsAuditCosts(params, { skipErrorMessage: true }),
-    ])
-    auditOverview.value = overviewData || {}
-    auditCosts.value = costData || {}
+    dashboardHistory.value = await getObservabilitySystemPostureHistory({ days: 30, refresh: refresh ? 1 : undefined })
+    if (showMessage) ElMessage.success(refresh ? '今日态势已重算' : '首页态势已刷新')
+  } catch (error) {
+    console.error('获取首页态势摘要失败', error)
+    ElMessage.error('获取首页态势摘要失败')
   } finally {
-    auditLoading.value = false
+    loading.value = false
   }
 }
 
-async function handleOverviewRangeChange() {
-  overviewAllTime.value = false
-  overviewRecentDays.value = inferRecentDaysFromRange(overviewTimeRange.value)
-  await loadAuditOverview()
+async function recalculateToday() {
+  await loadDashboardSummary(true, true)
+  historyPanelKey.value += 1
 }
 
-async function selectAllOverviewTime() {
-  overviewAllTime.value = true
-  overviewRecentDays.value = null
-  overviewTimeRange.value = []
-  await loadAuditOverview()
-}
-
-onMounted(loadAuditOverview)
+onMounted(() => {
+  loadDashboardSummary()
+})
 </script>
 
 <style scoped>
 .dashboard-page {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+  min-height: 100%;
+  padding: 0 0 24px;
 }
 
-.workbench-card {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(250, 252, 255, 0.96) 100%);
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 16px;
-  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.04);
-  padding: 16px;
-}
-
-.dashboard-aiops-overview {
-  min-height: calc(100vh - 128px);
-}
-
-.section-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 12px;
-}
-
-.toolbar-head {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 10px;
-  flex-wrap: wrap;
-  min-width: 0;
-}
-
-.toolbar-title,
-.section-title {
-  color: #0f172a;
-  font-size: 14px;
-  font-weight: 700;
-}
-
-.toolbar-desc {
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.4;
-}
-
-.overview-time-controls {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.overview-time-picker {
-  width: 330px;
-}
-
-.filter-refresh-btn {
-  min-height: 28px;
-}
-
-.overview-dashboard-grid {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 12px;
-}
-
-.invocation-chart-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.invocation-chart-card,
-.overview-panel {
-  min-width: 0;
+.panel {
+  background: linear-gradient(180deg, #ffffff 0%, #fffdf8 100%);
+  border: 1px solid #e5e7eb;
   border-radius: 14px;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  background: linear-gradient(180deg, #fff 0%, #fbfdff 100%);
-  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.03);
-  padding: 12px 14px;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.04);
 }
 
-.invocation-chart-head,
-.overview-panel-head {
+.focus-strip,
+.focus-strip__signal,
+.focus-strip__body,
+.focus-strip__actions,
+.summary-card__head {
   display: flex;
+  gap: 10px;
+}
+
+.dashboard-stats {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-bottom: 6px;
+}
+
+.summary-card {
+  border: 1px solid #e8edf2;
+  border-radius: 14px;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.03);
+  padding: 10px 12px;
+  position: relative;
+  overflow: hidden;
+}
+
+.summary-card::after {
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.6));
+  content: '';
+  inset: 0 auto 0 0;
+  position: absolute;
+  width: 100%;
+  pointer-events: none;
+}
+
+.summary-card.context {
+  background: linear-gradient(180deg, #ffffff 0%, #f7fbff 100%);
+}
+
+.summary-card.success {
+  background: linear-gradient(180deg, #ffffff 0%, #f5fbf7 100%);
+}
+
+.summary-card.danger {
+  background: linear-gradient(180deg, #ffffff 0%, #fff6f7 100%);
+}
+
+.summary-card.neutral {
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+}
+
+.summary-card__head {
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 8px;
 }
 
-.invocation-chart-head strong {
-  color: #0f172a;
-  font-size: 14px;
-}
-
-.invocation-pie-layout {
-  display: grid;
-  grid-template-rows: auto minmax(96px, 1fr);
-  gap: 10px;
-  min-height: 330px;
-}
-
-.invocation-pie {
-  position: relative;
-  width: 168px;
-  height: 168px;
-  margin: 6px auto 0;
-  border-radius: 50%;
-  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.08);
-}
-
-.invocation-pie::after {
-  position: absolute;
-  inset: 36px;
-  content: '';
-  border-radius: 50%;
-  background: #f8fafc;
-  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.04);
-}
-
-.invocation-pie-core {
-  position: absolute;
-  z-index: 1;
-  inset: 48px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  background: #f8fafc;
-}
-
-.invocation-pie-core strong {
-  color: #0f172a;
-  font-size: 28px;
-  font-weight: 800;
+.summary-card__label {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 600;
   line-height: 1;
 }
 
-.invocation-pie-core span {
-  color: #64748b;
-  font-size: 12px;
-  font-weight: 700;
-  margin-top: 8px;
-}
-
-.invocation-pie-legend {
-  overflow: hidden auto;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  max-height: 128px;
-  padding-right: 4px;
-}
-
-.invocation-pie-row {
-  border-radius: 9px;
-  border: 1px solid rgba(148, 163, 184, 0.16);
-  background: rgba(248, 250, 252, 0.62);
-  padding: 6px 8px;
-}
-
-.invocation-pie-row-head {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+.summary-card__icon {
   align-items: center;
-  gap: 6px;
-}
-
-.invocation-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-}
-
-.invocation-pie-row-head span:not(.invocation-dot) {
-  min-width: 0;
-  overflow: hidden;
-  color: #334155;
-  font-size: 12px;
-  font-weight: 700;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.invocation-pie-row-head em {
-  color: #94a3b8;
-  font-size: 12px;
-  font-style: normal;
-  font-weight: 700;
-}
-
-.invocation-pie-row-head strong {
-  color: #0f172a;
-  font-size: 12px;
-}
-
-.overview-mini-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.overview-mini-stat {
-  border-radius: 12px;
-  border: 1px solid rgba(148, 163, 184, 0.16);
-  background: linear-gradient(180deg, #fff 0%, #f8fafc 100%);
-  padding: 12px 14px;
-}
-
-.overview-mini-stat span {
-  display: block;
+  border-radius: 9px;
   color: #64748b;
-  font-size: 12px;
-  font-weight: 700;
-  margin-bottom: 8px;
+  display: inline-flex;
+  height: 24px;
+  justify-content: center;
+  width: 24px;
 }
 
-.overview-mini-stat strong {
-  color: #0f172a;
-  font-size: 23px;
-  font-weight: 800;
+.summary-card.context .summary-card__icon {
+  background: #eef4ff;
+  color: #2563eb;
 }
 
-.overview-rank-list {
+.summary-card.success .summary-card__icon {
+  background: #ecfdf3;
+  color: #18a957;
+}
+
+.summary-card.danger .summary-card__icon {
+  background: #fff1f3;
+  color: #e11d48;
+}
+
+.summary-card.neutral .summary-card__icon {
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+.summary-card__value-row {
+  align-items: baseline;
   display: flex;
-  flex-direction: column;
-  gap: 8px;
+  gap: 4px;
   margin-top: 10px;
 }
 
-.overview-rank-row {
-  border-radius: 12px;
-  border: 1px solid rgba(148, 163, 184, 0.16);
-  background: rgba(255, 255, 255, 0.82);
-  padding: 10px 12px;
+.summary-card__value {
+  color: #0f172a;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.1;
+  min-width: 0;
 }
 
-.overview-rank-title,
-.overview-rank-meta {
-  display: flex;
+.summary-card__unit {
+  color: #8b95a1;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.summary-card__meta {
+  color: #7b8794;
+  font-size: 10px;
+  line-height: 1.4;
+  margin-top: 5px;
+}
+
+.focus-strip {
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 14px;
+  margin-bottom: 8px;
+  padding: 10px 12px;
+  position: relative;
 }
 
-.overview-rank-title span {
+.focus-strip.is-critical {
+  background: linear-gradient(180deg, #fff8f9 0%, #ffffff 100%);
+  border-color: #f4cdd6;
+}
+
+.focus-strip.is-unknown {
+  background: linear-gradient(180deg, #fafbfc 0%, #ffffff 100%);
+  border-color: #e5e7eb;
+}
+
+.focus-strip.is-healthy {
+  background: linear-gradient(180deg, #f8fcfa 0%, #ffffff 100%);
+  border-color: #dcefe3;
+}
+
+.focus-strip::before {
+  border-radius: 14px 0 0 14px;
+  content: '';
+  inset: 0 auto 0 0;
+  position: absolute;
+  width: 4px;
+}
+
+.focus-strip.is-critical::before {
+  background: #f31260;
+}
+
+.focus-strip.is-unknown::before {
+  background: #c9ced6;
+}
+
+.focus-strip.is-healthy::before {
+  background: #18c964;
+}
+
+.focus-strip__signal {
+  align-items: center;
+  flex: 0 0 auto;
+  padding-top: 1px;
+}
+
+.focus-strip__icon {
+  align-items: center;
+  border-radius: 999px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 28px;
+  justify-content: center;
+  width: 28px;
+}
+
+.focus-strip__icon.is-critical {
+  background: #fff1f3;
+  color: #e11d48;
+}
+
+.focus-strip__icon.is-unknown {
+  background: #f2f4f7;
+  color: #98a2b3;
+}
+
+.focus-strip__icon.is-healthy {
+  background: #ecfdf3;
+  color: #16a34a;
+}
+
+.focus-strip__label {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.78);
+  border-radius: 999px;
+  color: #475467;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  min-height: 24px;
+  padding: 0 9px;
+}
+
+.focus-strip__body {
+  align-items: baseline;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.focus-strip__body strong {
+  color: #111827;
+  flex: 0 0 auto;
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+.focus-strip__text {
+  color: #667085;
+  font-size: 12px;
+  line-height: 1.4;
   min-width: 0;
   overflow: hidden;
-  color: #0f172a;
-  font-size: 13px;
-  font-weight: 800;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.overview-rank-title strong {
-  color: #0f172a;
-  flex: 0 0 auto;
-  font-size: 13px;
-}
-
-.overview-rank-meta {
-  justify-content: flex-start;
-  flex-wrap: wrap;
-  color: #64748b;
-  font-size: 12px;
-  margin-top: 6px;
-}
-
-.overview-rank-bar {
-  overflow: hidden;
-  height: 5px;
-  margin-top: 9px;
-  border-radius: 999px;
-  background: #e8eef7;
-}
-
-.overview-rank-bar span {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: linear-gradient(90deg, #60a5fa, #2563eb);
-}
-
-.overview-empty {
-  display: flex;
+.focus-strip__actions {
   align-items: center;
-  justify-content: center;
-  min-height: 80px;
-  color: #94a3b8;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.focus-strip__actions :deep(.el-button) {
+  border-color: #dfe6e2;
+  border-radius: 9px;
+  color: #475467;
+  min-height: 28px;
+  padding: 0 10px;
+}
+
+.focus-strip__actions :deep(.el-button--primary) {
+  background: #edf8f1;
+  border-color: #d4e8da;
+  color: #166534;
+}
+
+.focus-strip__actions :deep(.el-button--default) {
+  background: #ffffff;
+}
+
+.focus-strip__actions :deep(.el-button--text) {
+  color: #667085;
+}
+
+.dashboard-history-shell {
+  padding: 12px 15px 14px;
+}
+
+.dashboard-history-shell__head {
+  align-items: flex-start;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.dashboard-history-shell__title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.dashboard-history-shell__headline {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.dashboard-history-shell__head h3 {
+  color: #111827;
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1.2;
+  margin: 0;
+}
+
+.dashboard-history-shell__tag {
+  align-items: center;
+  background: linear-gradient(180deg, #f5faf7 0%, #eef5f0 100%);
+  border: 1px solid #e3ebe6;
+  border-radius: 999px;
+  color: #55606f;
+  display: inline-flex;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  min-height: 22px;
+  padding: 0 9px;
+}
+
+.dashboard-history-shell__meta,
+.history-meta-legend,
+.history-meta-pill,
+.history-meta-legend span {
+  align-items: center;
+  display: flex;
+}
+
+.dashboard-history-shell__meta {
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.history-meta-pill {
+  background: #fafcfb;
+  border: 1px solid #e8eeea;
+  border-radius: 999px;
+  color: #667085;
+  font-size: 11px;
+  line-height: 1;
+  min-height: 22px;
+  padding: 0 9px;
+  white-space: nowrap;
+}
+
+.history-meta-legend {
+  background: #fafcfb;
+  border: 1px solid #e8eeea;
+  border-radius: 999px;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-height: 22px;
+  padding: 0 9px;
+}
+
+.history-meta-legend span {
+  color: #667085;
+  font-size: 10px;
+  gap: 5px;
+  line-height: 1;
+}
+
+.history-meta-legend i {
+  border-radius: 999px;
+  display: inline-block;
+  height: 6px;
+  width: 12px;
+}
+
+.history-meta-legend i.is-healthy {
+  background: #18c964;
+}
+
+.history-meta-legend i.is-critical {
+  background: #f31260;
+}
+
+.history-meta-legend i.is-unknown {
+  background: #c9ced6;
+}
+
+.dashboard-history-shell :deep(.posture-history-page) {
+  background: transparent;
+  justify-content: stretch;
+  min-height: auto;
+  padding: 0;
+}
+
+.dashboard-history-shell :deep(.status-wrap) {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  max-width: none;
+}
+
+.dashboard-history-shell :deep(.status-topbar) {
+  background: linear-gradient(180deg, #f5faf7 0%, #eef5f0 100%);
+  border: 1px solid #e3ebe6;
+  border-radius: 12px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
+  margin-bottom: 8px;
+  min-height: auto;
+  padding: 7px 10px;
+}
+
+.dashboard-history-shell :deep(.brand) {
+  display: none;
+}
+
+.dashboard-history-shell :deep(.topbar-actions) {
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+  margin-left: auto;
+  width: 100%;
+}
+
+.dashboard-history-shell :deep(.history-date-picker) {
+  width: 248px;
+}
+
+.dashboard-history-shell :deep(.history-date-picker .el-input__wrapper) {
+  background: rgba(255, 255, 255, 0.94);
+  border-radius: 8px;
+  box-shadow: 0 0 0 1px rgba(221, 231, 225, 0.56) inset;
+  min-height: 28px;
+}
+
+.dashboard-history-shell :deep(.topbar-actions button) {
+  background: rgba(255, 255, 255, 0.92);
+  border-color: #dde6e0;
+  border-radius: 8px;
+  color: #475467;
+  font-size: 11px;
+  font-weight: 600;
+  min-height: 28px;
+  padding: 0 9px;
+}
+
+.dashboard-history-shell :deep(.topbar-actions button:first-of-type) {
+  background: #eff8f2;
+  border-color: #d8e8dd;
+  color: #166534;
+}
+
+.dashboard-history-shell :deep(.topbar-actions button:hover) {
+  background: #ffffff;
+  border-color: #d5e1da;
+}
+
+.dashboard-history-shell :deep(.topbar-actions button:last-child) {
+  display: none;
+}
+
+.dashboard-history-shell :deep(.overall) {
+  display: none;
+}
+
+.dashboard-history-shell :deep(.system-status) {
+  background: transparent;
+  border-bottom: 0;
+  padding: 0;
+}
+
+.dashboard-history-shell :deep(.block-title) {
+  display: none;
+}
+
+.dashboard-history-shell :deep(.environment-section) {
+  margin-bottom: 7px;
+  padding: 11px 12px 8px;
+}
+
+.dashboard-history-shell :deep(.environment-section:first-of-type) {
+  margin-top: 0;
+}
+
+.dashboard-history-shell :deep(.environment-head) {
+  margin-bottom: 0;
+  padding-bottom: 7px;
+}
+
+.dashboard-history-shell :deep(.environment-head h3) {
+  font-size: 15px;
+}
+
+.dashboard-history-shell :deep(.environment-section .status-row:first-of-type) {
+  padding-top: 10px;
+}
+
+.dashboard-history-shell :deep(.status-row) {
+  padding: 10px 0;
+}
+
+.dashboard-history-shell :deep(.row-head) {
+  margin-bottom: 7px;
+}
+
+.dashboard-history-shell :deep(.row-bars) {
+  padding: 7px;
+}
+
+:global(.dashboard-focus-popper) {
+  border: 1px solid #dfe3ea !important;
+  border-radius: 12px !important;
+  box-shadow: 0 14px 32px rgba(15, 23, 42, 0.1) !important;
+  max-width: 420px;
+}
+
+.dashboard-focus-tip {
+  color: #475467;
   font-size: 12px;
+  line-height: 1.7;
+  padding: 2px 4px;
 }
 
-@media (max-width: 980px) {
-  .invocation-chart-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .overview-mini-grid {
+@media (max-width: 1180px) {
+  .dashboard-stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
-@media (max-width: 640px) {
-  .section-toolbar {
+@media (max-width: 768px) {
+  .dashboard-page {
+    padding-bottom: 16px;
+  }
+
+  .focus-strip,
+  .dashboard-history-shell {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+
+  .focus-strip {
     align-items: flex-start;
     flex-direction: column;
   }
 
-  .overview-time-picker {
+  .focus-strip__actions {
     width: 100%;
   }
 
-  .invocation-chart-grid,
-  .overview-mini-grid {
+  .dashboard-stats {
     grid-template-columns: 1fr;
+  }
+
+  .focus-strip__body {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .focus-strip__text {
+    white-space: normal;
+  }
+
+  .dashboard-history-shell__meta {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .dashboard-history-shell :deep(.status-topbar) {
+    padding-bottom: 10px;
+  }
+
+  .dashboard-history-shell :deep(.topbar-actions) {
+    justify-content: flex-start;
+  }
+
+  .dashboard-history-shell :deep(.history-date-picker) {
+    width: 100%;
   }
 }
 </style>

@@ -8,6 +8,7 @@ import hashlib
 import json
 import logging
 import shlex
+import time
 
 import paramiko
 from django.core.cache import cache
@@ -15,9 +16,11 @@ from rest_framework import viewsets
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.exceptions import ValidationError
+
+from eventwall.services import record_event
 
 from rbac.permissions import RBACPermissionMixin, build_rbac_permission
-from rbac.services import DEMO_ACCOUNT_MUTATION_MESSAGE, is_demo_account
 
 from .models import DockerHost
 from .serializers import DockerHostSerializer
@@ -34,22 +37,75 @@ DOCKER_DEMO_HOST_IPS = {'192.168.1.120', '192.168.1.121', '192.168.1.122'}
 def _get_ssh_client_from_docker_host(docker_host):
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    client.connect(
-        hostname=docker_host.ip_address,
-        port=docker_host.ssh_port or 22,
-        username=docker_host.ssh_user or 'root',
-        password=docker_host.ssh_password or None,
-        timeout=15,
-    )
+    try:
+        client.connect(
+            hostname=docker_host.ip_address,
+            port=docker_host.ssh_port or 22,
+            username=docker_host.ssh_user or 'root',
+            password=docker_host.ssh_password or None,
+            timeout=8, banner_timeout=8, auth_timeout=8,
+        )
+    except Exception:
+        client.close()
+        raise
     return client
 
 
 def _ssh_exec(client, cmd, timeout=30):
-    stdin, stdout, stderr = client.exec_command(cmd, timeout=timeout)
-    exit_code = stdout.channel.recv_exit_status()
-    out = stdout.read().decode('utf-8', errors='replace')
-    err = stderr.read().decode('utf-8', errors='replace')
-    return exit_code, out, err
+    channel = client.get_transport().open_session(timeout=timeout)
+    output, errors = bytearray(), bytearray()
+    deadline = time.monotonic() + timeout
+    try:
+        channel.settimeout(timeout)
+        channel.exec_command(cmd)
+        while True:
+            received = False
+            if channel.recv_ready():
+                output.extend(channel.recv(65536))
+                received = True
+            if channel.recv_stderr_ready():
+                errors.extend(channel.recv_stderr(65536))
+                received = True
+            if len(output) + len(errors) > 8 * 1024 * 1024:
+                raise RuntimeError('Docker 命令输出超过 8 MB，请缩小查询范围')
+            if time.monotonic() > deadline:
+                raise TimeoutError('Docker 命令执行超时')
+            if not received:
+                if channel.exit_status_ready():
+                    break
+                time.sleep(0.01)
+        return channel.recv_exit_status(), output.decode('utf-8', errors='replace'), errors.decode('utf-8', errors='replace')
+    finally:
+        channel.close()
+
+
+def _run_docker(host, command, timeout=30):
+    client = _get_ssh_client_from_docker_host(host)
+    try:
+        return _ssh_exec(client, command, timeout=timeout)
+    finally:
+        client.close()
+
+
+def _cache_key(host, resource):
+    return f'ops:docker:{host.pk}:{host.updated_at.isoformat()}:{resource}'
+
+
+def _invalidate_inventory(host):
+    cache.delete_many([_cache_key(host, resource) for resource in ('containers', 'images', 'summary')])
+
+
+def _audit(request, host, operation, resource_id=''):
+    record_event(module='ops', category='operation', action=operation,
+                 title=f'Docker {operation}', request=request, resource_type='docker',
+                 resource_id=str(resource_id or host.pk)[:64], resource_name=host.name,
+                 metadata={'host_id': host.pk}, is_demo=_is_demo_docker_host(host))
+
+
+def _validate_identifier(value):
+    if not value or len(str(value)) > 256 or str(value).startswith('-') or any(char in str(value) for char in '\r\n\x00'):
+        raise ValidationError('无效的 Docker 资源标识')
+    return value
 
 
 def _quote_arg(value):
@@ -65,7 +121,7 @@ def _normalize_tail(value, default=DOCKER_LOG_TAIL_DEFAULT, max_value=DOCKER_LOG
 
 
 def _docker_json_command(command):
-    return f"{command} --format '{{{{json .}}}}' 2>/dev/null"
+    return f"{command} --format '{{{{json .}}}}'"
 
 
 def _parse_docker_ps(raw_output):
@@ -120,7 +176,7 @@ def _ensure_image_ids(value):
 def _get_docker_host(host_id):
     try:
         return DockerHost.objects.get(pk=host_id)
-    except DockerHost.DoesNotExist:
+    except (DockerHost.DoesNotExist, ValueError, TypeError):
         return None
 
 
@@ -233,6 +289,7 @@ def _get_demo_state(docker_host):
 
 def _set_demo_state(docker_host, state):
     cache.set(_demo_state_key(docker_host.id), state, DOCKER_DEMO_STATE_CACHE_TTL)
+    _invalidate_inventory(docker_host)
 
 
 def _find_demo_container(state, container_id):
@@ -306,7 +363,55 @@ class DockerHostViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         'partial_update': ['ops.docker.manage'],
         'destroy': ['ops.docker.manage'],
         'test_connection': ['ops.docker.manage'],
+        'summary': ['ops.docker.view'],
     }
+
+    def perform_create(self, serializer):
+        host = serializer.save()
+        _audit(self.request, host, 'create_host')
+
+    def perform_update(self, serializer):
+        host = serializer.save()
+        _invalidate_inventory(host)
+        _audit(self.request, host, 'update_host')
+
+    def perform_destroy(self, instance):
+        _invalidate_inventory(instance)
+        _audit(self.request, instance, 'delete_host')
+        instance.delete()
+
+    @action(detail=True, methods=['get'])
+    def summary(self, request, pk=None):
+        host = self.get_object()
+        key = _cache_key(host, 'summary')
+        data = cache.get(key) if request.query_params.get('refresh') != '1' else None
+        if data is None:
+            if _is_demo_docker_host(host):
+                state = _get_demo_state(host)
+                data = {'server_version': host.docker_api_version or '24.0', 'os': 'Ubuntu 22.04',
+                        'architecture': 'x86_64', 'kernel': '5.15.0', 'cpus': 8,
+                        'memory_bytes': 16 * 1024 ** 3, 'storage_driver': 'overlay2',
+                        'root_dir': '/var/lib/docker', 'containers': len(state['containers']),
+                        'running': sum(item['state'] == 'running' for item in state['containers']),
+                        'paused': sum(item['state'] == 'paused' for item in state['containers']),
+                        'stopped': sum(item['state'] == 'exited' for item in state['containers']),
+                        'images': len({item['id'] for item in state['images']})}
+            else:
+                try:
+                    code, output, error = _run_docker(host, _docker_json_command('docker info'), timeout=15)
+                    if code:
+                        return Response({'detail': error or output or '无法读取 Docker 信息'}, status=502)
+                    info = json.loads(output)
+                    mapping = {'server_version': 'ServerVersion', 'os': 'OperatingSystem',
+                               'architecture': 'Architecture', 'kernel': 'KernelVersion', 'cpus': 'NCPU',
+                               'memory_bytes': 'MemTotal', 'storage_driver': 'Driver', 'root_dir': 'DockerRootDir',
+                               'containers': 'Containers', 'running': 'ContainersRunning',
+                               'paused': 'ContainersPaused', 'stopped': 'ContainersStopped', 'images': 'Images'}
+                    data = {key: info.get(field) for key, field in mapping.items()}
+                except Exception as exc:
+                    return Response({'detail': f'读取环境概要失败: {exc}'}, status=502)
+            cache.set(key, data, 10)
+        return Response(data)
 
     @action(detail=True, methods=['post'])
     def test_connection(self, request, pk=None):
@@ -321,9 +426,7 @@ class DockerHostViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             })
 
         try:
-            client = _get_ssh_client_from_docker_host(docker_host)
-            code, out, err = _ssh_exec(client, 'docker version --format "{{.Server.Version}}" 2>/dev/null')
-            client.close()
+            code, out, err = _run_docker(docker_host, 'docker version --format "{{.Server.Version}}"', timeout=15)
             if code == 0 and out.strip():
                 docker_host.status = 'connected'
                 docker_host.docker_api_version = out.strip()
@@ -353,12 +456,16 @@ def list_containers(request):
         return Response(_get_demo_state(docker_host).get('containers', []))
 
     try:
-        client = _get_ssh_client_from_docker_host(docker_host)
-        code, out, err = _ssh_exec(client, _docker_json_command('docker ps -a'))
-        client.close()
+        key = _cache_key(docker_host, 'containers')
+        cached = cache.get(key) if request.query_params.get('refresh') != '1' else None
+        if cached is not None:
+            return Response(cached)
+        code, out, err = _run_docker(docker_host, _docker_json_command('docker ps -a'))
         if code != 0:
             return Response({'detail': f'Docker 命令执行失败: {err}'}, status=400)
-        return Response(_parse_docker_ps(out))
+        data = _parse_docker_ps(out)
+        cache.set(key, data, 5)
+        return Response(data)
     except Exception as exc:
         return Response({'detail': f'连接失败: {str(exc)}'}, status=400)
 
@@ -378,12 +485,16 @@ def list_images(request):
         return Response(_get_demo_state(docker_host).get('images', []))
 
     try:
-        client = _get_ssh_client_from_docker_host(docker_host)
-        code, out, err = _ssh_exec(client, _docker_json_command('docker images'))
-        client.close()
+        key = _cache_key(docker_host, 'images')
+        cached = cache.get(key) if request.query_params.get('refresh') != '1' else None
+        if cached is not None:
+            return Response(cached)
+        code, out, err = _run_docker(docker_host, _docker_json_command('docker images'))
         if code != 0:
             return Response({'detail': f'Docker 命令执行失败: {err}'}, status=400)
-        return Response(_parse_docker_images(out))
+        data = _parse_docker_images(out)
+        cache.set(key, data, 5)
+        return Response(data)
     except Exception as exc:
         return Response({'detail': f'连接失败: {str(exc)}'}, status=400)
 
@@ -391,6 +502,7 @@ def list_images(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated, build_rbac_permission('ops.docker.manage')])
 def container_action(request, container_id):
+    _validate_identifier(container_id)
     host_id = request.data.get('host_id')
     action_name = request.data.get('action')
     if action_name not in ('start', 'stop', 'restart'):
@@ -415,13 +527,14 @@ def container_action(request, container_id):
             container['state'] = 'running'
             container['status'] = 'Up 2 seconds (healthy)'
         _set_demo_state(docker_host, state)
+        _audit(request, docker_host, action_name, container_id)
         return Response({'success': True, 'message': f'演示容器已执行 {action_name}'})
 
     try:
-        client = _get_ssh_client_from_docker_host(docker_host)
-        code, out, err = _ssh_exec(client, f'docker {action_name} {_quote_arg(container_id)} 2>&1')
-        client.close()
+        code, out, err = _run_docker(docker_host, f'docker {action_name} {_quote_arg(container_id)} 2>&1')
+        _invalidate_inventory(docker_host)
         if code == 0:
+            _audit(request, docker_host, action_name, container_id)
             return Response({'success': True, 'message': f'容器 {action_name} 成功'})
         return Response({'success': False, 'message': f'操作失败: {out}{err}'}, status=400)
     except Exception as exc:
@@ -431,8 +544,7 @@ def container_action(request, container_id):
 @api_view(['DELETE'])
 @permission_classes([IsAuthenticated, build_rbac_permission('ops.docker.manage')])
 def container_remove(request, container_id):
-    if is_demo_account(request.user):
-        return Response({'detail': DEMO_ACCOUNT_MUTATION_MESSAGE}, status=403)
+    _validate_identifier(container_id)
     host_id = request.query_params.get('host_id')
     docker_host = _get_docker_host(host_id)
     if not docker_host:
@@ -446,13 +558,14 @@ def container_remove(request, container_id):
         if len(state['containers']) == before:
             return Response({'detail': '演示容器不存在'}, status=404)
         _set_demo_state(docker_host, state)
+        _audit(request, docker_host, 'remove_container', container_id)
         return Response({'success': True, 'message': '演示容器已删除'})
 
     try:
-        client = _get_ssh_client_from_docker_host(docker_host)
-        code, out, err = _ssh_exec(client, f'docker rm -f {_quote_arg(container_id)} 2>&1')
-        client.close()
+        code, out, err = _run_docker(docker_host, f'docker rm -f {_quote_arg(container_id)} 2>&1')
+        _invalidate_inventory(docker_host)
         if code == 0:
+            _audit(request, docker_host, 'remove_container', container_id)
             return Response({'success': True, 'message': '容器已删除'})
         return Response({'success': False, 'message': f'删除失败: {out}{err}'}, status=400)
     except Exception as exc:
@@ -462,6 +575,7 @@ def container_remove(request, container_id):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, build_rbac_permission('ops.docker.view')])
 def container_logs(request, container_id):
+    _validate_identifier(container_id)
     host_id = request.query_params.get('host_id')
     tail = _normalize_tail(request.query_params.get('tail', DOCKER_LOG_TAIL_DEFAULT))
     docker_host = _get_docker_host(host_id)
@@ -477,13 +591,13 @@ def container_logs(request, container_id):
         return Response({'logs': '\n'.join(logs[-tail:]) + '\n'})
 
     try:
-        client = _get_ssh_client_from_docker_host(docker_host)
-        code, out, err = _ssh_exec(
-            client,
+        code, out, err = _run_docker(
+            docker_host,
             f'docker logs --tail={tail} {_quote_arg(container_id)} 2>&1',
             timeout=15,
         )
-        client.close()
+        if code:
+            return Response({'detail': out or err or '获取日志失败'}, status=400)
         return Response({'logs': out})
     except Exception as exc:
         return Response({'detail': f'获取日志失败: {str(exc)}'}, status=400)
@@ -492,6 +606,7 @@ def container_logs(request, container_id):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, build_rbac_permission('ops.docker.view')])
 def container_inspect(request, container_id):
+    _validate_identifier(container_id)
     host_id = request.query_params.get('host_id')
     docker_host = _get_docker_host(host_id)
     if not docker_host:
@@ -505,9 +620,7 @@ def container_inspect(request, container_id):
         return Response(_demo_inspect_for_container(docker_host, container))
 
     try:
-        client = _get_ssh_client_from_docker_host(docker_host)
-        code, out, err = _ssh_exec(client, f'docker inspect {_quote_arg(container_id)} 2>&1')
-        client.close()
+        code, out, err = _run_docker(docker_host, f'docker container inspect {_quote_arg(container_id)} 2>&1')
         if code == 0:
             try:
                 data = json.loads(out)
@@ -522,12 +635,14 @@ def container_inspect(request, container_id):
 @api_view(['DELETE'])
 @permission_classes([IsAuthenticated, build_rbac_permission('ops.docker.manage')])
 def remove_images(request):
-    if is_demo_account(request.user):
-        return Response({'detail': DEMO_ACCOUNT_MUTATION_MESSAGE}, status=403)
     host_id = request.data.get('host_id') or request.query_params.get('host_id')
     image_ids = _ensure_image_ids(request.data.get('image_ids'))
     if not image_ids:
         return Response({'detail': '请选择要删除的镜像'}, status=400)
+    if len(image_ids) > 100:
+        raise ValidationError('一次最多删除 100 个镜像')
+    for image_id in image_ids:
+        _validate_identifier(image_id)
 
     docker_host = _get_docker_host(host_id)
     if not docker_host:
@@ -546,6 +661,7 @@ def remove_images(request):
                 kept.append(image)
         state['images'] = kept
         _set_demo_state(docker_host, state)
+        _audit(request, docker_host, 'remove_images', ','.join(image_ids)[:200])
         skipped = len(image_ids) - len(removed)
         return Response({
             'success': True,
@@ -553,11 +669,11 @@ def remove_images(request):
         })
 
     try:
-        client = _get_ssh_client_from_docker_host(docker_host)
         quoted_ids = ' '.join(_quote_arg(image_id) for image_id in image_ids)
-        code, out, err = _ssh_exec(client, f'docker rmi {quoted_ids} 2>&1')
-        client.close()
+        code, out, err = _run_docker(docker_host, f'docker rmi {quoted_ids} 2>&1')
+        _invalidate_inventory(docker_host)
         if code == 0:
+            _audit(request, docker_host, 'remove_images', ','.join(image_ids)[:200])
             return Response({'success': True, 'message': f'已删除 {len(image_ids)} 个镜像', 'output': out})
         return Response({'success': False, 'message': f'删除失败: {out}{err}'}, status=400)
     except Exception as exc:
@@ -567,8 +683,6 @@ def remove_images(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated, build_rbac_permission('ops.docker.manage')])
 def prune_dangling_images(request):
-    if is_demo_account(request.user):
-        return Response({'detail': DEMO_ACCOUNT_MUTATION_MESSAGE}, status=403)
     host_id = request.data.get('host_id')
     docker_host = _get_docker_host(host_id)
     if not docker_host:
@@ -583,14 +697,38 @@ def prune_dangling_images(request):
         ]
         reclaimed = before - len(state['images'])
         _set_demo_state(docker_host, state)
+        _audit(request, docker_host, 'prune_images')
         return Response({'success': True, 'message': f'演示环境已清理 {reclaimed} 个悬空镜像'})
 
     try:
-        client = _get_ssh_client_from_docker_host(docker_host)
-        code, out, err = _ssh_exec(client, 'docker image prune -f 2>&1')
-        client.close()
+        code, out, err = _run_docker(docker_host, 'docker image prune -f 2>&1')
+        _invalidate_inventory(docker_host)
         if code == 0:
+            _audit(request, docker_host, 'prune_images')
             return Response({'success': True, 'message': '悬空镜像已清理', 'output': out})
         return Response({'success': False, 'message': f'清理失败: {out}{err}'}, status=400)
     except Exception as exc:
         return Response({'detail': f'连接失败: {str(exc)}'}, status=400)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, build_rbac_permission('ops.docker.view')])
+def image_inspect(request, image_id):
+    _validate_identifier(image_id)
+    host = _get_docker_host(request.query_params.get('host_id'))
+    if host is None:
+        return Response({'detail': 'Docker 环境不存在'}, status=404)
+    if _is_demo_docker_host(host):
+        image = next((item for item in _get_demo_state(host)['images'] if item['id'] == image_id), None)
+        if image is None:
+            return Response({'detail': '镜像不存在'}, status=404)
+        return Response({'Id': image['id'], 'RepoTags': [f"{image['repository']}:{image['tag']}"],
+                         'Created': image['created'], 'Size': image['size'], 'Architecture': 'amd64', 'Os': 'linux'})
+    try:
+        code, output, error = _run_docker(host, f'docker image inspect {_quote_arg(image_id)}')
+        if code:
+            return Response({'detail': error or output}, status=400)
+        data = json.loads(output)
+        return Response(data[0] if data else {})
+    except Exception as exc:
+        return Response({'detail': f'读取镜像详情失败: {exc}'}, status=400)

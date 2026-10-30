@@ -23,6 +23,11 @@ SENSITIVE_KEYWORDS = {
     'key_content',
     'ssh_password',
     'kubeconfig',
+    'api_key',
+    'auth_config',
+    'headers',
+    'webhook_url',
+    'endpoint_or_command',
 }
 
 RESOURCE_NAME_FIELDS = (
@@ -39,8 +44,10 @@ RESOURCE_NAME_FIELDS = (
 
 
 def _is_sensitive_key(key):
-    lowered = str(key or '').lower()
-    return any(token in lowered for token in SENSITIVE_KEYWORDS)
+    normalized = str(key or '').lower().replace('_', '').replace('-', '').replace('.', '')
+    return normalized in {'env', 'authorization', 'httpauthorization'} or any(
+        token.replace('_', '') in normalized for token in SENSITIVE_KEYWORDS
+    )
 
 
 def sanitize_value(value, key=''):

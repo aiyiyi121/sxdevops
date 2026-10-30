@@ -1,6 +1,8 @@
-﻿from rest_framework.permissions import SAFE_METHODS, BasePermission, IsAuthenticated
+﻿from rest_framework.permissions import BasePermission, IsAuthenticated
 
-from .services import DEMO_ACCOUNT_MUTATION_MESSAGE, is_demo_account, user_has_permissions
+from rest_framework.exceptions import PermissionDenied
+
+from .services import user_has_permissions
 
 
 class RBACPermission(BasePermission):
@@ -8,19 +10,7 @@ class RBACPermission(BasePermission):
     required_permissions = ()
 
     def has_permission(self, request, view):
-        if not request.user or not request.user.is_authenticated:
-            return False
-
-        action = getattr(view, 'action', None)
-        allowed_actions = set(getattr(view, 'demo_account_allowed_actions', set()) or [])
-        allow_demo_write = bool(getattr(self, 'allow_demo_write', False) or getattr(view, 'demo_account_allow_write', False))
-        if (
-            is_demo_account(request.user)
-            and request.method.upper() not in SAFE_METHODS
-            and not allow_demo_write
-            and action not in allowed_actions
-        ):
-            self.message = DEMO_ACCOUNT_MUTATION_MESSAGE
+        if not request.user or not request.user.is_authenticated or not request.user.is_active:
             return False
 
         codes = getattr(self, 'required_permissions', ())
@@ -41,18 +31,25 @@ class RBACPermissionMixin:
     rbac_permissions = {}
 
     def get_required_permissions(self):
+        request = getattr(self, 'request', None)
+        allowed_methods = getattr(self, 'allowed_methods', None)
+        if request is not None and allowed_methods is not None and request.method not in allowed_methods:
+            # Unsupported methods have no handler; preserve DRF's 405 response.
+            return []
         mapping = getattr(self, 'rbac_permissions', {}) or {}
         action = getattr(self, 'action', None)
-        codes = mapping.get(action, mapping.get('*', []))
+        if action == 'metadata':
+            action = 'list'
+        if action not in mapping and '*' not in mapping:
+            raise PermissionDenied('该操作尚未配置权限，已拒绝访问。')
+        codes = mapping.get(action, mapping.get('*'))
         if isinstance(codes, str):
             return [codes]
         return list(codes or [])
 
 
-def build_rbac_permission(*codes, allow_demo_write=False):
+def build_rbac_permission(*codes):
     class ViewRBACPermission(RBACPermission):
         required_permissions = codes
-
-    ViewRBACPermission.allow_demo_write = allow_demo_write
 
     return ViewRBACPermission

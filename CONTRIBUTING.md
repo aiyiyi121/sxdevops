@@ -1,81 +1,49 @@
 # 贡献指南
 
-感谢你愿意参与 SxDevOps。这个项目还在快速演进，任何问题反馈、文档修正、演示数据补充、测试用例和功能贡献都很有价值。
+欢迎通过 Issue、Pull Request 或文档修正参与。开发环境见[快速开始](docs/getting-started.md)，完整规范见 [AGENTS.md](AGENTS.md)。
 
-## 开始之前
+## 开发与提交
 
-- 先阅读 [README.md](README.md)，确认项目定位、启动方式和主要模块。
-- 如果是较大的功能改动，建议先提交 Issue 说明背景、目标和大致方案。
-- 如果改动涉及权限、路由守卫、菜单、按钮或 WebSocket 访问，请先更新后端 RBAC enforcement，再同步前端展示。
+- 后端业务放在对应 Django app；前端页面、API、路由和状态分别放在既有目录中。
+- Python 使用 4 空格缩进；Vue 页面使用 PascalCase 文件名，API 和 store 延续现有命名。
+- 涉及权限时先落实后端 RBAC，再同步路由、菜单、按钮及 WebSocket 校验；遵循项目 [RBAC 集成规范](.codex/skills/sxdevops-rbac-feature-integration/SKILL.md)。
+- 界面遵循项目[工作台 UI 规范](.codex/skills/sxdevops-feishu-ui/SKILL.md)，适配浅色、炭灰和深蓝灰。
+- 提交使用 `feat:`、`fix(scope):`、`docs:` 等既有风格，一次提交围绕同一目的。
 
-## 本地开发
+PR 说明用户可见变化、涉及模块、迁移与配置影响、验证结果；界面改动附真实截图。安全漏洞按 [SECURITY.md](SECURITY.md) 私密反馈。
 
-后端：
+## 验证
 
 ```bash
 cd backend
-pip install -r requirements.txt
-python manage.py migrate
-python manage.py seed_data
-python manage.py seed_templates
-python -m daphne -b 0.0.0.0 -p 8000 sxdevops.asgi:application
+python manage.py check
+python manage.py test --noinput
+cd ../frontend
+npm ci
+npm run build
 ```
 
-前端：
+后端测试使用隔离测试数据库，数据库账号须有对应建库权限。针对行为变化在邻近 `tests.py` 或 `test_*.py` 增加有意义的回归；Windows 不能覆盖的 PTY / Shell 场景在 Linux 镜像中补验。
 
-```bash
-cd frontend
-npm install
-npm run dev
-```
+前端当前没有统一自动化测试套件。界面修改至少通过生产构建，并在浏览器检查权限、三套主题和窄屏。后端无热更新，修改后重启 Daphne 及受影响 worker。
 
-常用校验：
+全量测试仍有已知失败，最近结果见 [v2.0.0 验证记录](docs/releases/v2.0.0-validation.md)。记录实际失败、环境和基线对比，不把专项通过写成全量通过。
 
-```bash
-cd backend && python manage.py test
-cd frontend && npm run build
-```
+## 文档维护
 
-## 代码风格
+- 正式文档统一从 [docs/README.md](docs/README.md) 导航，按功能维护单一说明。
+- 使用指南只写当前行为；运行边界和未实现能力明确标注，方案不能当作交付结果。
+- 发布记录集中于 `docs/releases/`，写明提交、日期、环境和验证限制。临时逐轮日志留在忽略的运行目录。
+- 中文文件保存为 UTF-8，提交前检查替换字符、常见乱码、本地链接和 `git diff --check`。
+- 修改 README 产品展示内容时同步检查[截图](docs/screenshots/README.md)，不使用占位图或生产敏感信息。
 
-- Python 使用 4 空格缩进，模块、函数和 app-local helper 使用 snake_case。
-- Vue view 和 layout 文件使用 PascalCase，例如 `K8sManage.vue`。
-- API、store、utility 模块使用小写文件名，例如 `request.js` 和 `app.js`。
-- 当前仓库没有统一 formatter 或 linter，提交前请匹配周边代码风格并移除未使用 import。
-- 中文 UI、接口响应、日志和注释请保持 UTF-8 编码，避免提交乱码。
+## 发布检查
 
-## 前端约定
+1. 验证候选提交的测试、前端构建、迁移、关键权限与全新环境启动；明确未通过项。
+2. 核对版本元数据、更新说明和升级要求，记录源码 SHA 及镜像摘要。
+3. 执行敏感信息和第三方依赖许可检查；保留 MIT `LICENSE` 与依赖要求的许可声明。
+4. 确认配置、密钥、数据库、日志和构建产物未被跟踪；历史泄露须轮换凭据，删除文件不等于清理 Git 历史。
+5. 备份、排空并升级应用和两个后台服务，按[运维指南](docs/deployment.md)验证和准备回退。
+6. 新版本使用新的 SemVer 标签；正式发布后的标签保持稳定，不用移动标签代替后续补丁版本。
 
-管理台和控制台页面优先沿用现有飞书风格工作台节奏：
-
-- 使用紧凑顶部 hero，主标题只放第一行。
-- 适合时采用 `hero + stats cards + compact hint strip + tabs/content` 结构。
-- 顶部指标复用 `release-stat-card` 视觉语言。
-- 环境、集群、命名空间、域名等筛选器放在 tabs 或顶部控制附近的紧凑工具栏。
-- 避免旧式 `page-header`、重复内部统计和过大的营销式区块。
-
-## 提交 Pull Request
-
-PR 描述建议包含：
-
-- 改了什么。
-- 为什么需要改。
-- 如何验证。
-- 是否涉及数据库迁移、权限变更、配置变更或外部服务。
-
-提交前请尽量完成：
-
-- 后端改动运行相关测试或说明未运行原因。
-- 前端改动运行 `npm run build`。
-- 涉及中文文案的改动做一次乱码检查。
-- 涉及截图或 README 的改动确认 Markdown 链接可访问。
-
-## 贡献许可
-
-除非你在提交时明确说明，否则你提交给 SxDevOps 的贡献将按照项目当前的 Apache License 2.0 授权。
-
-## 不应提交的内容
-
-- 生产密钥、真实 Token、Kubeconfig、SSH 私钥、客户数据和主机凭据。
-- 本地 SQLite 数据库、运行日志、临时截图、构建产物和依赖目录。
-- 一次性过程笔记、私有演示材料和不可复现的本地配置。
+本清单是每次发布的检查要求，不代表历史版本全部通过。安全联系方式的可用性、依赖许可和凭据历史应逐次复核。

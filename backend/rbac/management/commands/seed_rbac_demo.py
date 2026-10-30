@@ -9,7 +9,6 @@ from rbac.services import ensure_builtin_rbac
 
 
 User = get_user_model()
-DEFAULT_PASSWORD = os.getenv('SXDEVOPS_DEMO_PASSWORD') or secrets.token_urlsafe(18)
 
 DEMO_USERS = [
     {
@@ -48,16 +47,6 @@ DEMO_USERS = [
         'groups': ['visitors'],
         'is_staff': False,
     },
-    {
-        'username': 'demo',
-        'email': 'demo@example.com',
-        'first_name': 'Demo',
-        'last_name': 'User',
-        'password': 'Demo#123',
-        'roles': ['platform-admin'],
-        'groups': ['visitors'],
-        'is_staff': True,
-    },
 ]
 
 DEMO_GROUPS = [
@@ -74,6 +63,7 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         ensure_builtin_rbac()
         role_map = {role.code: role for role in Role.objects.all()}
+        initial_password = os.getenv('SXDEVOPS_DEMO_PASSWORD') or secrets.token_urlsafe(24)
 
         self.stdout.write('正在同步演示用户组...')
         group_map = {}
@@ -103,14 +93,13 @@ class Command(BaseCommand):
             user.email = item['email']
             user.first_name = item['first_name']
             user.last_name = item['last_name']
-            user.is_active = True
-            user.is_staff = item['is_staff']
-            user.set_password(item.get('password') or DEFAULT_PASSWORD)
+            if created:
+                user.set_password(initial_password)
             user.save()
 
             user.rbac_roles.set([role_map[code] for code in item['roles'] if code in role_map])
             user.rbac_groups.set([group_map[code] for code in item['groups'] if code in group_map])
             action = '创建' if created else '更新'
-            self.stdout.write(self.style.SUCCESS(f"{action}演示用户: {user.username} / {item.get('password') or DEFAULT_PASSWORD}"))
+            self.stdout.write(self.style.SUCCESS(f"{action}演示用户: {user.username}"))
 
         self.stdout.write(self.style.SUCCESS('RBAC 演示数据已同步完成。'))

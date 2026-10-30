@@ -11,12 +11,15 @@ from rest_framework.authtoken.models import Token
 
 from ops.models import K8sCluster
 from ops.k8s_views import _get_k8s_client, _is_demo
+from ops.k8s_shell import interactive_shell_command
 from rbac.services import user_has_permissions
+from rbac.k8s_access import can_access_k8s
 
 logger = logging.getLogger(__name__)
 
 
 class K8sExecConsumer(WebsocketConsumer):
+    channel_layer_alias = None
     exec_stream = None
     _reading = False
     _demo_buffer = ''
@@ -29,7 +32,7 @@ class K8sExecConsumer(WebsocketConsumer):
         self.pod_name = query.get('pod_name', [''])[0]
         self.namespace = query.get('namespace', ['default'])[0] or 'default'
         self.container = query.get('container', [''])[0]
-        self.shell = query.get('shell', ['/bin/sh'])[0] or '/bin/sh'
+        self.shell = query.get('shell', ['auto'])[0] or 'auto'
 
         token = Token.objects.filter(key=token_key).select_related('user').first()
         if not token or not token.user.is_active:
@@ -49,6 +52,9 @@ class K8sExecConsumer(WebsocketConsumer):
             return
 
         self.user = token.user
+        if not can_access_k8s(self.user, self.cluster_id, self.namespace, execute=True):
+            self.close(code=4403)
+            return
         self.accept()
 
         if _is_demo(self.cluster):
@@ -72,25 +78,25 @@ class K8sExecConsumer(WebsocketConsumer):
             kwargs = {
                 'name': self.pod_name,
                 'namespace': self.namespace,
-                'command': [self.shell],
+                'command': interactive_shell_command(self.shell),
                 'stderr': True,
                 'stdin': True,
                 'stdout': True,
                 'tty': True,
                 '_preload_content': False,
+                '_request_timeout': (3, 20),
             }
             if self.container:
                 kwargs['container'] = self.container
 
             self.exec_stream = stream(v1.connect_get_namespaced_pod_exec, **kwargs)
             self._reading = True
-            self._read_thread = threading.Thread(target=self._read_exec_output, daemon=True)
-            self._read_thread.start()
-
             self.send(text_data=json.dumps({
                 'type': 'connected',
                 'message': f'Connected to {self.pod_name} ({self.namespace})',
             }))
+            self._read_thread = threading.Thread(target=self._read_exec_output, daemon=True)
+            self._read_thread.start()
         except Exception as exc:
             logger.exception('K8s exec connection failed')
             self.send(text_data=json.dumps({
@@ -129,8 +135,8 @@ class K8sExecConsumer(WebsocketConsumer):
             if msg_type == 'input':
                 self.exec_stream.write_stdin(data.get('data', ''))
             elif msg_type == 'resize':
-                cols = max(20, int(data.get('cols', 120) or 120))
-                rows = max(10, int(data.get('rows', 40) or 40))
+                cols = min(500, max(20, int(data.get('cols', 120) or 120)))
+                rows = min(300, max(5, int(data.get('rows', 40) or 40)))
                 self.exec_stream.write_channel(
                     RESIZE_CHANNEL,
                     json.dumps({'Width': cols, 'Height': rows}),
@@ -139,14 +145,15 @@ class K8sExecConsumer(WebsocketConsumer):
             logger.error('K8s exec input error: %s', exc)
 
     def _read_exec_output(self):
-        while self._reading and self.exec_stream and self.exec_stream.is_open():
+        connection = self.exec_stream
+        while self._reading and connection and connection.is_open():
             try:
-                self.exec_stream.update(timeout=1)
+                connection.update(timeout=1)
                 output = ''
-                if self.exec_stream.peek_stdout():
-                    output += self.exec_stream.read_stdout()
-                if self.exec_stream.peek_stderr():
-                    output += self.exec_stream.read_stderr()
+                if connection.peek_stdout():
+                    output += connection.read_stdout()
+                if connection.peek_stderr():
+                    output += connection.read_stderr()
                 if output:
                     self.send(text_data=json.dumps({
                         'type': 'output',
@@ -161,6 +168,11 @@ class K8sExecConsumer(WebsocketConsumer):
                         'message': f'Terminal disconnected: {str(exc)}',
                     }))
                 break
+        if self._reading:
+            self._reading = False
+            if connection:
+                connection.close()
+            self.close()
 
     def _handle_demo_input(self, incoming):
         for char in incoming:

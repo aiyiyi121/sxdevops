@@ -4,9 +4,9 @@
       <section class="auth-overview">
         <header class="brand-row">
           <div class="brand-identity">
-            <img src="@/assets/brand-mark.svg" alt="SxDevOps" class="brand-mark-image" />
+            <img :src="siteStore.siteIcon" :alt="siteStore.siteName" class="brand-mark-image" />
             <div class="brand-copy">
-              <strong>SxDevOps · AI Agent</strong>
+              <strong>{{ siteStore.siteName }} · AI Agent</strong>
               <span class="brand-motto">
                 <span>思而后行</span>
                 <el-icon class="brand-motto-icon"><TrendCharts /></el-icon>
@@ -14,7 +14,7 @@
               </span>
             </div>
           </div>
-          <router-link class="promo-link" to="/ai-agent-promo">
+          <router-link class="promo-link" to="/product">
             查看产品介绍
             <el-icon><ArrowRight /></el-icon>
           </router-link>
@@ -58,7 +58,7 @@
       <section class="auth-panel">
         <div class="auth-panel-inner">
           <h2>登录工作台</h2>
-          <p class="auth-subtitle">使用平台账号进入 SxDevOps</p>
+          <p class="auth-subtitle">使用平台账号进入 {{ siteStore.siteName }}</p>
 
           <el-form class="login-form" :model="form" label-position="top" @submit.prevent="handleLogin">
             <el-form-item label="用户名">
@@ -92,6 +92,7 @@
               进入工作台
             </el-button>
           </el-form>
+
         </div>
       </section>
     </main>
@@ -100,7 +101,7 @@
 
 <script setup>
 import { reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
   ArrowRight,
@@ -112,9 +113,13 @@ import {
   User,
 } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
+import { useSiteStore } from '@/stores/site'
+import { authorizedLandingPath } from '@/utils/permission'
 
 const router = useRouter()
+const route = useRoute()
 const authStore = useAuthStore()
+const siteStore = useSiteStore()
 const loading = ref(false)
 const form = reactive({
   username: '',
@@ -158,9 +163,9 @@ async function handleLogin() {
 
   loading.value = true
   try {
-    await authStore.login(form)
+    const response = await authStore.login(form)
     ElMessage.success('登录成功')
-    router.replace('/dashboard')
+    await router.replace(authorizedLandingPath(router, [route.query.redirect, response.default_page]))
   } finally {
     loading.value = false
   }
@@ -245,6 +250,7 @@ async function handleLogin() {
   height: 48px;
   display: block;
   flex: 0 0 auto;
+  object-fit: contain;
 }
 
 .brand-copy {

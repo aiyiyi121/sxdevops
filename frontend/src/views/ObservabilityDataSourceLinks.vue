@@ -94,12 +94,12 @@
       </el-table>
     </div>
 
-    <el-dialog
+    <el-dialog :close-on-click-modal="false"
       v-model="dialogVisible"
-      class="datasource-link-dialog"
+      class="workbench-edit-dialog datasource-link-dialog"
       :title="editingId ? '编辑数据源关联' : '新增数据源关联'"
       width="980px"
-      top="4vh"
+      top="5vh"
       append-to-body
       destroy-on-close
     >
@@ -151,7 +151,7 @@
           </div>
         </div>
 
-        <el-form :model="form" label-width="104px" class="dialog-form">
+        <el-form label-position="top" :model="form" label-width="104px" class="dialog-form">
           <section class="form-section">
             <div class="section-title">
               <h4>基础信息</h4>
@@ -639,23 +639,8 @@ onMounted(fetchAll)
   padding-right: 4px;
 }
 
-.datasource-link-dialog :deep(.el-dialog) {
-  display: flex;
-  flex-direction: column;
-  max-height: 92vh;
-}
 
-.datasource-link-dialog :deep(.el-dialog__body) {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-  padding-right: 16px;
-}
 
-.datasource-link-dialog :deep(.el-dialog__footer) {
-  border-top: 1px solid rgba(226, 232, 240, 0.9);
-  padding-top: 12px;
-}
 
 .dialog-summary {
   align-items: center;

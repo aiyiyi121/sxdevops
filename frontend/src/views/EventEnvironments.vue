@@ -119,37 +119,47 @@
       </el-table>
     </section>
 
-    <el-dialog
+    <el-dialog top="5vh" :close-on-click-modal="false"
       v-model="dialogVisible"
       :title="editingCode ? '编辑事件环境' : '新建事件环境'"
       width="560px"
       append-to-body
       destroy-on-close
-      class="event-env-dialog"
+      class="workbench-edit-dialog event-env-dialog"
     >
-      <el-form label-position="top" :model="form" class="env-form">
-        <el-form-item label="环境标识">
-          <el-input v-model="form.code" :disabled="Boolean(editingCode)" placeholder="例如：ecommerce-prod" />
-          <div class="field-help">外部事件 payload 的 environment 建议填写这个标识，创建后不建议修改。</div>
-        </el-form-item>
-        <el-form-item label="显示名称">
-          <el-input v-model="form.name" placeholder="例如：电商生产环境" />
-        </el-form-item>
-        <el-form-item label="环境别名">
-          <el-input v-model="aliasText" type="textarea" :rows="3" placeholder="例如：支付生产、订单测试环境-k3s" />
-        </el-form-item>
-        <el-form-item label="排序">
-          <div class="sort-control-row">
-            <el-input-number v-model="form.sort_order" :min="0" :step="10" />
-            <span>越小越靠前</span>
+      <el-form label-position="top" :model="form" class="workbench-editor-form--sectioned env-form">
+        <section class="workbench-editor-section">
+          <div class="workbench-editor-heading"><span class="workbench-editor-step">01</span><h3>环境信息</h3></div>
+          <div>
+            <el-form-item label="环境标识">
+              <el-input v-model="form.code" :disabled="Boolean(editingCode)" placeholder="例如：ecommerce-prod" />
+              <div class="field-help">外部事件 payload 的 environment 建议填写这个标识，创建后不建议修改。</div>
+            </el-form-item>
+            <el-form-item label="显示名称">
+              <el-input v-model="form.name" placeholder="例如：电商生产环境" />
+            </el-form-item>
+            <el-form-item label="环境别名">
+              <el-input v-model="aliasText" type="textarea" :rows="3" placeholder="例如：支付生产、订单测试环境-k3s" />
+            </el-form-item>
           </div>
-        </el-form-item>
-        <el-form-item label="启用状态">
-          <el-switch v-model="form.enabled" active-text="启用" inactive-text="停用" />
-        </el-form-item>
-        <el-form-item label="说明">
-          <el-input v-model="form.description" type="textarea" :rows="3" />
-        </el-form-item>
+        </section>
+        <section class="workbench-editor-section workbench-editor-section--tinted">
+          <div class="workbench-editor-heading"><span class="workbench-editor-step">02</span><h3>排序与状态</h3></div>
+          <div class="workbench-editor-grid">
+            <el-form-item label="排序">
+              <div class="sort-control-row">
+                <el-input-number v-model="form.sort_order" :min="0" :step="10" />
+                <span>越小越靠前</span>
+              </div>
+            </el-form-item>
+            <el-form-item label="启用状态">
+              <el-switch v-model="form.enabled" active-text="启用" inactive-text="停用" />
+            </el-form-item>
+            <el-form-item class="workbench-editor-full" label="说明">
+              <el-input v-model="form.description" type="textarea" :rows="3" />
+            </el-form-item>
+          </div>
+        </section>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
@@ -621,18 +631,8 @@ onMounted(loadAll)
   border-radius: 10px;
 }
 
-.event-env-dialog :deep(.el-dialog__header) {
-  margin-right: 0;
-  padding: 16px 18px 10px;
-}
 
-.event-env-dialog :deep(.el-dialog__body) {
-  padding: 10px 18px 14px;
-}
 
-.event-env-dialog :deep(.el-dialog__footer) {
-  padding: 10px 18px 16px;
-}
 
 @media (max-width: 900px) {
   .section-toolbar {

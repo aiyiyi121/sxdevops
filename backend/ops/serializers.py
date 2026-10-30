@@ -2,7 +2,9 @@ import re
 import uuid
 
 from django.contrib.auth import get_user_model
+from django.db import transaction
 from rest_framework import serializers
+from rest_framework.exceptions import PermissionDenied
 
 from cmdb.models import CIRelation, ConfigItem, ResourceNode
 
@@ -27,6 +29,8 @@ from .models import (
     DeploymentApprovalNode,
     DeploymentApprovalStep,
     DockerHost,
+    SystemPostureEnvironment,
+    SystemPostureSystem,
     GrafanaSetting,
     Host,
     HostTask,
@@ -48,6 +52,7 @@ from .models import (
     TaskResource,
     TaskResourceGroup,
 )
+from .task_resources import apply_cmdb_resource_groups, cmdb_resource_defaults, cmdb_resource_group_names, cmdb_resource_kind, scope_task_resources, visible_cmdb_resources
 
 
 User = get_user_model()
@@ -72,6 +77,25 @@ METRIC_SENSITIVE_KEYS = {
     'authorization',
     'client_secret',
 }
+
+
+def mask_config_credentials(value, key=''):
+    normalized = re.sub(r'[-_.]', '', str(key).lower())
+    if any(part in normalized for part in ('password', 'secret', 'token', 'authorization', 'apikey', 'accesskey', 'privatekey', 'authconfig')):
+        return 'configured' if value else ''
+    if normalized in ('headers', 'prometheusheaders', 'env') and isinstance(value, dict):
+        return {name: 'configured' if item else '' for name, item in value.items()}
+    if isinstance(value, dict):
+        return {name: mask_config_credentials(item, name) for name, item in value.items()}
+    if isinstance(value, list):
+        return [mask_config_credentials(item) for item in value]
+    return value
+
+
+def datasource_config_representation(config, context, manage_permission):
+    from rbac.services import user_has_permissions
+    actor = getattr(context.get('request'), 'user', None)
+    return config if user_has_permissions(actor, [manage_permission]) else mask_config_credentials(config)
 
 
 def normalize_json_object(value):
@@ -175,85 +199,6 @@ class HostSerializer(serializers.ModelSerializer):
         return attrs
 
 
-class LogDataSourceSerializer(serializers.ModelSerializer):
-    provider_display = serializers.CharField(source='get_provider_display', read_only=True)
-
-    class Meta:
-        model = LogDataSource
-        fields = '__all__'
-
-
-class TracingDataSourceSerializer(serializers.ModelSerializer):
-    provider_display = serializers.CharField(source='get_provider_display', read_only=True)
-
-    class Meta:
-        model = TracingDataSource
-        fields = '__all__'
-
-
-class MetricDataSourceSerializer(serializers.ModelSerializer):
-    provider_display = serializers.CharField(source='get_provider_display', read_only=True)
-
-    class Meta:
-        model = MetricDataSource
-        fields = '__all__'
-
-
-class ObservabilityDataSourceLinkSerializer(serializers.ModelSerializer):
-    log_datasource_name = serializers.CharField(source='log_datasource.name', read_only=True)
-    tracing_datasource_name = serializers.CharField(source='tracing_datasource.name', read_only=True)
-
-    class Meta:
-        model = ObservabilityDataSourceLink
-        fields = '__all__'
-
-
-class GrafanaSettingSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = GrafanaSetting
-        fields = '__all__'
-
-
-class DockerHostSerializer(serializers.ModelSerializer):
-    status_display = serializers.CharField(source='get_status_display', read_only=True)
-
-    class Meta:
-        model = DockerHost
-        fields = '__all__'
-        extra_kwargs = {
-            'ssh_password': {
-                'write_only': True,
-                'required': False,
-                'allow_blank': True,
-            },
-        }
-
-
-class K8sClusterSerializer(serializers.ModelSerializer):
-    status_display = serializers.CharField(source='get_status_display', read_only=True)
-
-    class Meta:
-        model = K8sCluster
-        fields = [
-            'id',
-            'name',
-            'api_server',
-            'kubeconfig',
-            'status',
-            'status_display',
-            'description',
-            'created_at',
-            'updated_at',
-        ]
-        extra_kwargs = {
-            'kubeconfig': {
-                'write_only': True,
-                'required': False,
-                'allow_blank': True,
-            },
-        }
-
-
 class TaskResourceGroupSerializer(serializers.ModelSerializer):
     group_type_display = serializers.CharField(source='get_group_type_display', read_only=True)
     parent_name = serializers.CharField(source='parent.name', read_only=True)
@@ -270,6 +215,7 @@ class TaskResourceGroupSerializer(serializers.ModelSerializer):
             'group_type_display',
             'parent',
             'parent_name',
+            'cmdb_node',
             'event_environment',
             'event_environment_code',
             'event_environment_name',
@@ -280,9 +226,13 @@ class TaskResourceGroupSerializer(serializers.ModelSerializer):
             'created_at',
             'updated_at',
         ]
-        read_only_fields = ['created_by', 'updated_by', 'created_at', 'updated_at']
+        read_only_fields = ['cmdb_node', 'created_by', 'updated_by', 'created_at', 'updated_at']
 
     def validate(self, attrs):
+        if self.instance and self.instance.cmdb_node_id:
+            for field in ('name', 'group_type', 'parent'):
+                if field in attrs and attrs[field] != getattr(self.instance, field):
+                    raise serializers.ValidationError({field: 'CMDB 归属节点请在资产台账中维护'})
         group_type = attrs.get('group_type') or getattr(self.instance, 'group_type', '')
         parent = attrs.get('parent') if 'parent' in attrs else getattr(self.instance, 'parent', None)
         name = (attrs.get('name') if 'name' in attrs else getattr(self.instance, 'name', '')) or ''
@@ -304,6 +254,13 @@ class TaskResourceGroupSerializer(serializers.ModelSerializer):
 
 
 class TaskResourceSerializer(serializers.ModelSerializer):
+    cmdb_ci = serializers.PrimaryKeyRelatedField(queryset=ConfigItem.objects.all(), required=False, allow_null=True)
+    source_type_display = serializers.CharField(source='get_source_type_display', read_only=True)
+    cmdb_ci_name = serializers.CharField(source='cmdb_ci.name', read_only=True, default='')
+    cmdb_ci_status = serializers.CharField(source='cmdb_ci.status', read_only=True, default='')
+    cmdb_fields = serializers.SerializerMethodField()
+    execution_blocked_reason = serializers.CharField(read_only=True)
+    has_ssh_password = serializers.SerializerMethodField()
     resource_type_display = serializers.CharField(source='get_resource_type_display', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     environment_name = serializers.CharField(source='environment.name', read_only=True)
@@ -319,6 +276,14 @@ class TaskResourceSerializer(serializers.ModelSerializer):
         model = TaskResource
         fields = [
             'id',
+            'source_type',
+            'source_type_display',
+            'cmdb_ci',
+            'cmdb_ci_name',
+            'cmdb_ci_status',
+            'cmdb_fields',
+            'execution_blocked_reason',
+            'has_ssh_password',
             'name',
             'hostname',
             'resource_type',
@@ -348,9 +313,10 @@ class TaskResourceSerializer(serializers.ModelSerializer):
             'created_at',
             'updated_at',
         ]
-        read_only_fields = ['created_by', 'updated_by', 'created_at', 'updated_at']
+        read_only_fields = ['source_type', 'created_by', 'updated_by', 'created_at', 'updated_at']
         extra_kwargs = {
             'name': {'required': False, 'allow_blank': True},
+            'environment': {'required': False},
             'ssh_password': {'write_only': True, 'required': False, 'allow_blank': True},
         }
 
@@ -365,8 +331,50 @@ class TaskResourceSerializer(serializers.ModelSerializer):
             return obj.cluster.name if obj.cluster else ''
         return str(obj.ip_address or '')
 
+    def get_has_ssh_password(self, obj):
+        return bool(obj.ssh_password)
+
+    def get_cmdb_fields(self, obj):
+        if not obj.cmdb_ci_id:
+            return []
+        fields = list(cmdb_resource_defaults(obj.cmdb_ci))
+        environment_name, system_name = cmdb_resource_group_names(obj.cmdb_ci)
+        if environment_name:
+            fields.append('environment')
+        if system_name:
+            fields.append('system')
+        return fields
+
     def validate(self, attrs):
         resource_type = attrs.get('resource_type') or getattr(self.instance, 'resource_type', TaskResource.RESOURCE_HOST)
+        if self.instance and resource_type != self.instance.resource_type:
+            raise serializers.ValidationError({'resource_type': '已接入资源不可修改类型'})
+        config_item = attrs.get('cmdb_ci') if 'cmdb_ci' in attrs else getattr(self.instance, 'cmdb_ci', None)
+        if self.instance and self.instance.source_type == TaskResource.SOURCE_CMDB:
+            if not config_item or config_item.pk != self.instance.cmdb_ci_id:
+                raise serializers.ValidationError({'cmdb_ci': '已有 CMDB 关联不可清空或更换，请移除后重新接入'})
+        if config_item:
+            request = self.context.get('request')
+            if request:
+                from rbac.services import user_has_permissions
+
+                is_new_link = not self.instance or self.instance.cmdb_ci_id != config_item.pk
+                if is_new_link and not user_has_permissions(request.user, ['cmdb.ci.view']):
+                    raise PermissionDenied('从 CMDB 接入需要资产查看权限')
+                if not visible_cmdb_resources(request.user).filter(pk=config_item.pk).exists():
+                    raise PermissionDenied('无权接入该 CMDB 资产')
+            if cmdb_resource_kind(config_item) != resource_type:
+                raise serializers.ValidationError({'cmdb_ci': '资产类型与执行资源不匹配，请选择主机或 K8s 集群资产'})
+            linked = TaskResource.objects.filter(cmdb_ci=config_item)
+            if self.instance:
+                linked = linked.exclude(pk=self.instance.pk)
+            if linked.exists():
+                raise serializers.ValidationError({'cmdb_ci': '该 CMDB 资产已接入资源底座'})
+            attrs.update(cmdb_resource_defaults(config_item))
+            attrs['source_type'] = TaskResource.SOURCE_CMDB
+        else:
+            attrs['source_type'] = TaskResource.SOURCE_MANUAL
+        cmdb_environment, cmdb_system = cmdb_resource_group_names(config_item) if config_item else ('', '')
         environment = attrs.get('environment') if 'environment' in attrs else getattr(self.instance, 'environment', None)
         system = attrs.get('system') if 'system' in attrs else getattr(self.instance, 'system', None)
         name = (attrs.get('name') if 'name' in attrs else getattr(self.instance, 'name', '')) or ''
@@ -377,12 +385,12 @@ class TaskResourceSerializer(serializers.ModelSerializer):
         attrs['name'] = name.strip()
         if not attrs['name']:
             raise serializers.ValidationError({'name': '请填写资源名称'})
-        if not environment or environment.group_type != TaskResourceGroup.GROUP_ENVIRONMENT:
+        if not cmdb_environment and (not environment or environment.group_type != TaskResourceGroup.GROUP_ENVIRONMENT):
             raise serializers.ValidationError({'environment': '请选择环境'})
-        if system:
+        if system and not cmdb_system:
             if system.group_type != TaskResourceGroup.GROUP_SYSTEM:
                 raise serializers.ValidationError({'system': '请选择系统'})
-            if system.parent_id != environment.id:
+            if not cmdb_environment and system.parent_id != environment.id:
                 raise serializers.ValidationError({'system': '系统必须归属到所选环境'})
         if resource_type == TaskResource.RESOURCE_HOST:
             ip_address = attrs.get('ip_address') if 'ip_address' in attrs else getattr(self.instance, 'ip_address', None)
@@ -394,7 +402,7 @@ class TaskResourceSerializer(serializers.ModelSerializer):
             cluster = attrs.get('cluster') if 'cluster' in attrs else getattr(self.instance, 'cluster', None)
             if not cluster:
                 raise serializers.ValidationError({'cluster': '请选择 K8s 集群'})
-            attrs['name'] = cluster.name
+            attrs['name'] = config_item.name if config_item else cluster.name
             attrs['ip_address'] = None
             attrs['ssh_password'] = ''
             attrs['namespace'] = ''
@@ -402,6 +410,21 @@ class TaskResourceSerializer(serializers.ModelSerializer):
         else:
             raise serializers.ValidationError({'resource_type': '不支持的资源类型'})
         return attrs
+
+    @transaction.atomic
+    def create(self, validated_data):
+        if validated_data.get('cmdb_ci'):
+            apply_cmdb_resource_groups(validated_data, validated_data['cmdb_ci'])
+        return super().create(validated_data)
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        config_item = validated_data.get('cmdb_ci', instance.cmdb_ci)
+        if config_item:
+            validated_data.setdefault('environment', instance.environment)
+            validated_data.setdefault('system', instance.system)
+            apply_cmdb_resource_groups(validated_data, config_item)
+        return super().update(instance, validated_data)
 
 
 class HostTaskExecutionSerializer(serializers.ModelSerializer):
@@ -683,6 +706,11 @@ class HostTaskSubmitSerializer(serializers.Serializer):
                     resource_type=TaskResource.RESOURCE_K8S,
                 )
             }
+            request = self.context.get('request')
+            if request and resource_ids:
+                visible_ids = set(scope_task_resources(TaskResource.objects.filter(id__in=resource_ids), request.user).values_list('id', flat=True))
+                if set(resource_ids) - visible_ids:
+                    raise PermissionDenied('无权使用所选 CMDB 执行资源')
             normalized_targets = []
             for item, cluster_id, resource_id, namespace, name, kind in normalized_source_items:
                 resource = resource_map.get(resource_id) or (resource_map.get(cluster_id) if cluster_id not in cluster_map else None)
@@ -695,6 +723,10 @@ class HostTaskSubmitSerializer(serializers.Serializer):
                         cluster = K8sCluster.objects.filter(name=cluster_name).first() or K8sCluster.objects.filter(name__icontains=cluster_name).first()
                 if not cluster:
                     raise serializers.ValidationError({'k8s_targets': '请选择有效的 K8s 集群'})
+                if resource and resource.execution_blocked_reason:
+                    raise serializers.ValidationError({'k8s_targets': resource.execution_blocked_reason})
+                if resource and resource.source_type == TaskResource.SOURCE_CMDB and resource.cluster_id != cluster.pk:
+                    raise serializers.ValidationError({'k8s_targets': '执行资源与所选 K8s 集群不匹配'})
                 if task_type == HostTask.TASK_K8S_RESTART_POD and not name:
                     raise serializers.ValidationError({'k8s_targets': '请填写 Pod 名称'})
                 if task_type == HostTask.TASK_K8S_SCALE_WORKLOAD and not name:
@@ -731,6 +763,10 @@ class HostTaskSubmitSerializer(serializers.Serializer):
                     'container': (item.get('container') or '').strip(),
                 })
             attrs['k8s_targets'] = normalized_targets
+            request = self.context.get('request')
+            if request:
+                from rbac.k8s_access import validate_k8s_task_access
+                validate_k8s_task_access(request.user, task_type, normalized_targets, attrs.get('payload'))
             attrs['execution_mode'] = HostTask.EXECUTION_MODE_K8S_API
         if task_type == HostTask.TASK_RUN_PLAYBOOK:
             attrs['execution_mode'] = HostTask.EXECUTION_MODE_ANSIBLE
@@ -1422,6 +1458,15 @@ class AlertIntegrationSerializer(serializers.ModelSerializer):
         path = f'/api/alerts/webhooks/{obj.provider}/{obj.token}/'
         return request.build_absolute_uri(path) if request else path
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        from rbac.services import user_has_permissions
+        actor = getattr(self.context.get('request'), 'user', None)
+        if not user_has_permissions(actor, ['ops.alert.config.manage']):
+            data['token'] = 'configured' if instance.token else ''
+            data['webhook_url'] = ''
+        return data
+
 
 class AlertRecipientSerializer(serializers.ModelSerializer):
     user_detail = AlertUserLiteSerializer(source='user', read_only=True)
@@ -1469,6 +1514,14 @@ class AlertNotificationChannelSerializer(serializers.ModelSerializer):
     class Meta:
         model = AlertNotificationChannel
         fields = '__all__'
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        from rbac.services import user_has_permissions
+        actor = getattr(self.context.get('request'), 'user', None)
+        if not user_has_permissions(actor, ['ops.alert.config.manage']):
+            data['config'] = {'configured': bool(instance.config)}
+        return data
 
 
 class AlertAggregationRuleSerializer(serializers.ModelSerializer):
@@ -1636,6 +1689,494 @@ class LogEntrySerializer(serializers.ModelSerializer):
     class Meta:
         model = LogEntry
         fields = '__all__'
+
+
+class SystemPostureEnvironmentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SystemPostureEnvironment
+        fields = '__all__'
+        read_only_fields = ['created_by', 'updated_by', 'created_at', 'updated_at']
+        extra_kwargs = {
+            'key': {'required': False, 'allow_blank': True},
+        }
+
+    def validate_name(self, value):
+        name = str(value or '').strip()
+        if not name:
+            raise serializers.ValidationError('请填写环境名称')
+        return name
+
+    def validate_key(self, value):
+        return str(value or '').strip()[:64]
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        if not attrs.get('key') and not getattr(self.instance, 'key', ''):
+            base = re.sub(r'[^a-zA-Z0-9_-]+', '-', str(attrs.get('name') or '').strip().lower()).strip('-')[:64]
+            attrs['key'] = base or f'env-{uuid.uuid4().hex[:8]}'
+        return attrs
+
+
+class SystemPostureSystemSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SystemPostureSystem
+        fields = '__all__'
+        read_only_fields = ['created_by', 'updated_by', 'created_at', 'updated_at']
+
+    def _validate_json_list(self, value, field_name):
+        if value in (None, ''):
+            return []
+        if not isinstance(value, list):
+            raise serializers.ValidationError(f'{field_name} 必须是数组')
+        return value
+
+    def _validate_json_object(self, value, field_name):
+        if value in (None, ''):
+            return {}
+        if not isinstance(value, dict):
+            raise serializers.ValidationError(f'{field_name} 必须是对象')
+        return value
+
+    def validate_name(self, value):
+        name = str(value or '').strip()
+        if not name:
+            raise serializers.ValidationError('请填写业务系统名称')
+        return name
+
+    def validate_environment(self, value):
+        return str(value or 'prod').strip() or 'prod'
+
+    def validate_domain(self, value):
+        return str(value or '').strip()
+
+    def validate_tier(self, value):
+        return str(value or '').strip()
+
+    def validate_owner(self, value):
+        return str(value or '').strip()
+
+    def validate_summary(self, value):
+        return str(value or '').strip()
+
+    def validate_keywords(self, value):
+        items = self._validate_json_list(value, 'keywords')
+        return [str(item).strip() for item in items if str(item).strip()]
+
+    def validate_core_metric(self, value):
+        item = self._validate_json_object(value, 'core_metric')
+        label = str(item.get('label') or '').strip()
+        if not label:
+            label = '可用率'
+        return {
+            'label': label,
+            'value': item.get('value', 99),
+            'target': item.get('target', 99.9),
+            'unit': str(item.get('unit') or '%').strip(),
+            'direction': str(item.get('direction') or 'higher').strip() or 'higher',
+        }
+
+    def validate_metrics(self, value):
+        return self._validate_json_list(value, 'metrics')
+
+    def validate_service_specs(self, value):
+        return self._validate_json_list(value, 'service_specs')
+
+    def validate_dependencies(self, value):
+        return self._validate_json_list(value, 'dependencies')
+
+    def validate_rule_config(self, value):
+        return self._validate_json_object(value, 'rule_config')
+
+    def validate_playbook(self, value):
+        items = self._validate_json_list(value, 'playbook')
+        return [str(item).strip() for item in items if str(item).strip()]
+
+    def validate(self, attrs):
+        attrs.setdefault('core_metric', {
+            'label': '可用率',
+            'value': 99,
+            'target': 99.9,
+            'unit': '%',
+            'direction': 'higher',
+        })
+        attrs.setdefault('rule_config', {})
+        if attrs.get('health_score') is not None:
+            attrs['health_score'] = max(0, min(100, int(attrs['health_score'])))
+        return attrs
+
+class LogDataSourceSerializer(serializers.ModelSerializer):
+    provider_display = serializers.CharField(source='get_provider_display', read_only=True)
+
+    class Meta:
+        model = LogDataSource
+        fields = '__all__'
+
+    def validate_config(self, value):
+        if value in (None, ''):
+            return {}
+        if not isinstance(value, dict):
+            raise serializers.ValidationError('config 必须是对象')
+        return value
+
+    def validate(self, attrs):
+        provider = attrs.get('provider') or getattr(self.instance, 'provider', None)
+        config = dict(getattr(self.instance, 'config', {}) or {})
+        incoming = attrs.get('config', {})
+
+        for key, value in incoming.items():
+            if key in LOG_SENSITIVE_KEYS and value in ('', None, 'configured'):
+                if self.instance and key in config:
+                    continue
+                config.pop(key, None)
+                continue
+            config[key] = value
+
+        attrs['config'] = config
+        return attrs
+
+    def _sync_default(self, instance):
+        if instance.is_default:
+            LogDataSource.objects.filter(provider=instance.provider, is_default=True).exclude(pk=instance.pk).update(
+                is_default=False
+            )
+
+    def create(self, validated_data):
+        instance = super().create(validated_data)
+        self._sync_default(instance)
+        return instance
+
+    def update(self, instance, validated_data):
+        instance = super().update(instance, validated_data)
+        self._sync_default(instance)
+        return instance
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        masked = {}
+        is_demo = bool((instance.config or {}).get('demo_mode'))
+        for key, value in (instance.config or {}).items():
+            if key in LOG_SENSITIVE_KEYS and not is_demo:
+                masked[key] = 'configured' if value else ''
+            else:
+                masked[key] = value
+        data['config'] = datasource_config_representation(masked, self.context, 'ops.log.datasource.manage')
+        return data
+
+
+class TracingDataSourceSerializer(serializers.ModelSerializer):
+    provider_display = serializers.CharField(source='get_provider_display', read_only=True)
+
+    class Meta:
+        model = TracingDataSource
+        fields = '__all__'
+
+    def validate_config(self, value):
+        if value in (None, ''):
+            return {}
+        if not isinstance(value, dict):
+            raise serializers.ValidationError('config 必须是对象')
+        return value
+
+    def validate(self, attrs):
+        provider = attrs.get('provider') or getattr(self.instance, 'provider', None)
+        config = dict(getattr(self.instance, 'config', {}) or {})
+        incoming = attrs.get('config', {})
+
+        for key, value in incoming.items():
+            if key in LOG_SENSITIVE_KEYS and value in ('', None, 'configured'):
+                if self.instance and key in config:
+                    continue
+                config.pop(key, None)
+                continue
+            config[key] = value
+
+        if provider == 'skywalking':
+            config.setdefault('graphql_path', '/graphql')
+        config['demo_mode'] = False
+
+        attrs['config'] = config
+        return attrs
+
+    def _sync_default(self, instance):
+        if instance.is_default:
+            TracingDataSource.objects.filter(provider=instance.provider, is_default=True).exclude(pk=instance.pk).update(
+                is_default=False
+            )
+
+    def create(self, validated_data):
+        instance = super().create(validated_data)
+        self._sync_default(instance)
+        return instance
+
+    def update(self, instance, validated_data):
+        instance = super().update(instance, validated_data)
+        self._sync_default(instance)
+        return instance
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        masked = {}
+        is_demo = bool((instance.config or {}).get('demo_mode'))
+        for key, value in (instance.config or {}).items():
+            if key in LOG_SENSITIVE_KEYS and not is_demo:
+                masked[key] = 'configured' if value else ''
+            else:
+                masked[key] = value
+        data['config'] = datasource_config_representation(masked, self.context, 'ops.trace.datasource.manage')
+        return data
+
+
+class MetricDataSourceSerializer(serializers.ModelSerializer):
+    provider_display = serializers.CharField(source='get_provider_display', read_only=True)
+
+    class Meta:
+        model = MetricDataSource
+        fields = '__all__'
+
+    def validate_config(self, value):
+        if value in (None, ''):
+            return {}
+        if not isinstance(value, dict):
+            raise serializers.ValidationError('config 必须是对象')
+        return value
+
+    def validate(self, attrs):
+        provider = attrs.get('provider') or getattr(self.instance, 'provider', MetricDataSource.PROVIDER_PROMETHEUS)
+        config = dict(getattr(self.instance, 'config', {}) or {})
+        incoming = attrs.get('config', {})
+
+        for key, value in incoming.items():
+            if key in METRIC_SENSITIVE_KEYS and value in ('', None, 'configured'):
+                if self.instance and key in config:
+                    continue
+                config.pop(key, None)
+                continue
+            if key in {'headers', 'prometheus.headers'} and isinstance(value, dict):
+                current_headers = dict(config.get(key) or {}) if isinstance(config.get(key), dict) else {}
+                for header_key, header_value in value.items():
+                    if str(header_key).lower() == 'authorization' and header_value in ('', None, 'configured'):
+                        if self.instance and header_key in current_headers:
+                            continue
+                        current_headers.pop(header_key, None)
+                        continue
+                    current_headers[header_key] = header_value
+                config[key] = current_headers
+                continue
+            if key == 'prometheus.basic' and isinstance(value, dict):
+                current_basic = dict(config.get(key) or {}) if isinstance(config.get(key), dict) else {}
+                for basic_key, basic_value in value.items():
+                    if basic_key in METRIC_SENSITIVE_KEYS and basic_value in ('', None, 'configured'):
+                        if self.instance and basic_key in current_basic:
+                            continue
+                        current_basic.pop(basic_key, None)
+                        continue
+                    current_basic[basic_key] = basic_value
+                config[key] = current_basic
+                continue
+            config[key] = value
+
+        if provider == MetricDataSource.PROVIDER_PROMETHEUS:
+            config.setdefault('query_url', '')
+            config.setdefault('headers', {})
+            config.setdefault('auth_type', 'none')
+            config.setdefault('timeout', 6)
+            config.setdefault('tls_skip_verify', False)
+        attrs['config'] = config
+        return attrs
+
+    def _sync_default(self, instance):
+        if instance.is_default:
+            queryset = MetricDataSource.objects.filter(is_default=True)
+            if instance.environment:
+                queryset = queryset.filter(environment=instance.environment)
+            else:
+                queryset = queryset.filter(environment='')
+            queryset.exclude(pk=instance.pk).update(is_default=False)
+
+    def create(self, validated_data):
+        instance = super().create(validated_data)
+        self._sync_default(instance)
+        return instance
+
+    def update(self, instance, validated_data):
+        instance = super().update(instance, validated_data)
+        self._sync_default(instance)
+        return instance
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        masked = {}
+        for key, value in (instance.config or {}).items():
+            if key in METRIC_SENSITIVE_KEYS:
+                masked[key] = 'configured' if value else ''
+            elif key == 'prometheus.basic' and isinstance(value, dict):
+                masked[key] = {
+                    basic_key: ('configured' if basic_value else '') if basic_key in METRIC_SENSITIVE_KEYS else basic_value
+                    for basic_key, basic_value in value.items()
+                }
+            elif key == 'headers' and isinstance(value, dict):
+                safe_headers = {}
+                for header_key, header_value in value.items():
+                    if str(header_key).lower() == 'authorization':
+                        safe_headers[header_key] = 'configured' if header_value else ''
+                    else:
+                        safe_headers[header_key] = header_value
+                masked[key] = safe_headers
+            else:
+                masked[key] = value
+        data['config'] = datasource_config_representation(masked, self.context, 'ops.metric.datasource.manage')
+        return data
+
+
+DEFAULT_TRACE_ID_FIELDS = ['trace_id', 'traceId', 'traceID']
+DEFAULT_TRACE_ID_REGEX = r'"trace_id"\s*:\s*"([0-9a-fA-F]{16,32})"'
+DEFAULT_LOG_QUERY_TEMPLATE = '${__tags} | json | trace_id="${__trace.traceId}"'
+DEFAULT_LOG_LABEL_MAPPINGS = [
+    {'trace_tag': 'service.name', 'log_label': 'container'},
+    {'trace_tag': 'service.namespace', 'log_label': 'namespace'},
+]
+DEFAULT_GRAFANA_VARIABLE_MAPPINGS = [
+    {'trace_tag': 'service.name', 'variable': 'workload'},
+    {'trace_tag': 'service.namespace', 'variable': 'namespace'},
+]
+
+
+class ObservabilityDataSourceLinkSerializer(serializers.ModelSerializer):
+    log_datasource_name = serializers.CharField(source='log_datasource.name', read_only=True)
+    log_provider = serializers.CharField(source='log_datasource.provider', read_only=True)
+    tracing_datasource_name = serializers.CharField(source='tracing_datasource.name', read_only=True)
+    tracing_provider = serializers.CharField(source='tracing_datasource.provider', read_only=True)
+
+    class Meta:
+        model = ObservabilityDataSourceLink
+        fields = '__all__'
+
+    def validate_trace_id_fields(self, value):
+        if value in (None, ''):
+            return DEFAULT_TRACE_ID_FIELDS
+        if not isinstance(value, list):
+            raise serializers.ValidationError('trace_id_fields 必须是数组')
+        return [str(item).strip() for item in value if str(item).strip()]
+
+    def validate_log_label_mappings(self, value):
+        if value in (None, ''):
+            return DEFAULT_LOG_LABEL_MAPPINGS
+        if not isinstance(value, list):
+            raise serializers.ValidationError('log_label_mappings 必须是数组')
+        mappings = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            trace_tag = str(item.get('trace_tag') or '').strip()
+            log_label = str(item.get('log_label') or '').strip()
+            if trace_tag and log_label:
+                mappings.append({'trace_tag': trace_tag, 'log_label': log_label})
+        return mappings
+
+    def validate_grafana_variable_mappings(self, value):
+        if value in (None, ''):
+            return DEFAULT_GRAFANA_VARIABLE_MAPPINGS
+        if not isinstance(value, list):
+            raise serializers.ValidationError('grafana_variable_mappings 必须是数组')
+        mappings = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            trace_tag = str(item.get('trace_tag') or '').strip()
+            variable = str(item.get('variable') or '').strip()
+            if trace_tag and variable:
+                mappings.append({'trace_tag': trace_tag, 'variable': variable})
+        return mappings
+
+    def validate(self, attrs):
+        log_datasource = attrs.get('log_datasource') or getattr(self.instance, 'log_datasource', None)
+        tracing_datasource = attrs.get('tracing_datasource') or getattr(self.instance, 'tracing_datasource', None)
+        if log_datasource and log_datasource.provider != 'loki':
+            raise serializers.ValidationError({'log_datasource': '当前关联跳转仅支持 Loki 日志数据源'})
+        if tracing_datasource and tracing_datasource.provider != 'tempo':
+            raise serializers.ValidationError({'tracing_datasource': '当前默认关联模板面向 Tempo 链路数据源'})
+
+        attrs.setdefault('trace_id_fields', DEFAULT_TRACE_ID_FIELDS)
+        attrs.setdefault('trace_id_regex', DEFAULT_TRACE_ID_REGEX)
+        attrs.setdefault('log_query_template', DEFAULT_LOG_QUERY_TEMPLATE)
+        attrs.setdefault('log_label_mappings', DEFAULT_LOG_LABEL_MAPPINGS)
+        attrs.setdefault('grafana_variable_mappings', DEFAULT_GRAFANA_VARIABLE_MAPPINGS)
+        return attrs
+
+    def _sync_default(self, instance):
+        if instance.is_default:
+            ObservabilityDataSourceLink.objects.filter(is_default=True).exclude(pk=instance.pk).update(
+                is_default=False
+            )
+
+    def create(self, validated_data):
+        instance = super().create(validated_data)
+        self._sync_default(instance)
+        return instance
+
+    def update(self, instance, validated_data):
+        instance = super().update(instance, validated_data)
+        self._sync_default(instance)
+        return instance
+
+
+class GrafanaSettingSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = GrafanaSetting
+        fields = '__all__'
+        read_only_fields = ['name', 'updated_by', 'created_at', 'updated_at']
+
+    def validate_dashboards(self, value):
+        if value in (None, ''):
+            return []
+        if not isinstance(value, list):
+            raise serializers.ValidationError('dashboards 必须为数组')
+        normalized = []
+        for item in value:
+            if not isinstance(item, dict):
+                raise serializers.ValidationError('dashboards 中的每一项都必须为对象')
+            normalized.append(item)
+        return normalized
+
+    def validate_folders(self, value):
+        if value in (None, ''):
+            return []
+        if not isinstance(value, list):
+            raise serializers.ValidationError('folders 必须为数组')
+        normalized = []
+        for item in value:
+            if not isinstance(item, dict):
+                raise serializers.ValidationError('folders 中的每一项都必须为对象')
+            normalized.append(item)
+        return normalized
+
+
+class K8sClusterSerializer(serializers.ModelSerializer):
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    access_scope = serializers.SerializerMethodField()
+
+    def get_access_scope(self, obj):
+        from rbac.k8s_access import k8s_scope
+        request = self.context.get('request')
+        return k8s_scope(request.user, obj.pk) if request else None
+
+    class Meta:
+        model = K8sCluster
+        fields = '__all__'
+        extra_kwargs = {
+            'kubeconfig': {'write_only': True},
+        }
+
+
+class DockerHostSerializer(serializers.ModelSerializer):
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+
+    class Meta:
+        model = DockerHost
+        fields = '__all__'
+        extra_kwargs = {
+            'ssh_password': {'write_only': True},
+        }
 
 
 class NginxEnvironmentSerializer(serializers.ModelSerializer):

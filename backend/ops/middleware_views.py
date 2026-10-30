@@ -7,7 +7,6 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from rbac.permissions import build_rbac_permission
-from rbac.services import DEMO_ACCOUNT_MUTATION_MESSAGE, is_demo_account
 
 MIDDLEWARE_DEMO_CACHE_KEY = 'ops:middleware:demo:state'
 MIDDLEWARE_DEMO_CACHE_TTL = 86400
@@ -833,11 +832,6 @@ def middleware_action(request):
     action_name = request.data.get('action')
     target_id = request.data.get('target_id')
     payload = request.data.get('payload') or {}
-    if is_demo_account(request.user) and (
-        str(action_name or '').startswith(('create_', 'delete_', 'remove_'))
-        or action_name == 'import_template'
-    ):
-        return Response({'detail': DEMO_ACCOUNT_MUTATION_MESSAGE}, status=403)
     is_targetless_action = str(action_name or '').startswith('create_') or action_name == 'import_template'
     if not module_name or not action_name or (not is_targetless_action and not target_id):
         return Response({'detail': 'module and action are required, and target_id is required for update, delete and runtime actions.'}, status=400)

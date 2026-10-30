@@ -7,7 +7,7 @@ let isHandlingSessionExpired = false
 
 const request = axios.create({
     baseURL: '/api',
-    timeout: 15000,
+    timeout: 30000,
 })
 
 function flattenErrorPayload(payload, parentKey = '') {
@@ -33,6 +33,17 @@ function flattenErrorPayload(payload, parentKey = '') {
     })
 }
 
+function htmlErrorMessage(text, status) {
+    if (typeof text !== 'string') return ''
+    const normalized = text.trim()
+    if (!/^<!doctype\s+html/i.test(normalized) && !/^<html[\s>]/i.test(normalized)) return ''
+    const titleMatch = normalized.match(/<title[^>]*>([\s\S]*?)<\/title>/i)
+    const title = titleMatch?.[1]?.replace(/\s+/g, ' ').trim()
+    if (title) return title
+    if (status === 404) return '接口不存在，请检查后端路由或代理配置'
+    return '接口返回了异常 HTML 页面，请检查后端服务状态'
+}
+
 async function extractErrorMessage(error) {
     if (error.code === 'ECONNABORTED' || String(error.message || '').toLowerCase().includes('timeout')) {
         return '请求超时，请稍后重试'
@@ -45,6 +56,8 @@ async function extractErrorMessage(error) {
         try {
             const text = await data.text()
             if (!text) return error.message || '请求失败'
+            const htmlMessage = htmlErrorMessage(text, response?.status)
+            if (htmlMessage) return htmlMessage
             try {
                 const parsed = JSON.parse(text)
                 const messages = flattenErrorPayload(parsed)
@@ -56,6 +69,9 @@ async function extractErrorMessage(error) {
             return error.message || '请求失败'
         }
     }
+
+    const htmlMessage = htmlErrorMessage(data, response?.status)
+    if (htmlMessage) return htmlMessage
 
     const messages = flattenErrorPayload(data)
     if (messages.length) {
@@ -99,7 +115,9 @@ request.interceptors.response.use(
         const status = error.response?.status
         const requestUrl = String(error.config?.url || '')
         const isProfileRequest = requestUrl.includes('/auth/me/')
-        const skipErrorMessage = Boolean(error.config?.skipErrorMessage)
+        const skipErrorMessage = Boolean(
+            error.config?.skipErrorMessage || error.config?.suppressErrorMessage
+        )
         const msg = await extractErrorMessage(error)
 
         if (status === 401 && !isProfileRequest) {

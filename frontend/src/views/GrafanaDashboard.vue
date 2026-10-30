@@ -61,6 +61,10 @@
           </div>
           <div class="list-head-actions">
             <el-button size="small" plain @click="collapseAllFolders">全部折叠</el-button>
+            <el-button v-if="canManageGrafana" size="small" type="primary" plain @click="openBatchDialog">
+              <el-icon><Plus /></el-icon>
+              批量导入看板
+            </el-button>
             <el-button v-if="canManageGrafana" size="small" type="primary" plain @click="openFolderDialog()">新增目录</el-button>
             <el-button size="small" plain @click="embedHelpVisible = true">
               <el-icon><QuestionFilled /></el-icon>
@@ -213,7 +217,23 @@
       </section>
     </template>
 
-    <el-dialog v-model="folderDialog.visible" :title="folderDialogTitle" width="420px" destroy-on-close>
+    <el-dialog top="5vh" :close-on-click-modal="false" append-to-body class="workbench-edit-dialog" v-model="batchDialog.visible" title="批量导入 Grafana 看板" width="680px" destroy-on-close>
+      <div class="batch-import-form">
+        <el-alert title="一行一个看板，格式：看板名称 | Grafana URL | 目录；也支持直接粘贴 URL。保存时会一次性写入全部看板。" type="info" :closable="false" />
+        <el-input v-model="batchDialog.text" type="textarea" :rows="9" resize="vertical" placeholder="订单总览 | https://grafana.example.com/d/orders | 业务/订单&#10;节点资源 | https://grafana.example.com/d/nodes | 基础设施/节点" />
+        <div class="batch-import-options">
+          <el-input v-model.trim="batchDialog.defaultFolder" size="small" placeholder="未填写目录时使用（可选）" style="width: 240px" />
+          <el-switch v-model="batchDialog.appendKioskParams" active-text="自动追加 kiosk=true 并跟随平台主题" />
+          <span class="batch-import-count">{{ batchImportRows.length }} 条有效记录</span>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="batchDialog.visible = false">取消</el-button>
+        <el-button type="primary" :loading="configSaving" :disabled="!batchImportRows.length" @click="submitBatchDialog">批量保存</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog top="5vh" :close-on-click-modal="false" append-to-body class="workbench-edit-dialog" v-model="folderDialog.visible" :title="folderDialogTitle" width="420px" destroy-on-close>
       <div class="dialog-form">
         <div v-if="folderDialog.parentPath" class="dialog-field">
           <label>{{ folderDialog.mode === 'edit' ? '上级路径' : '上级目录' }}</label>
@@ -305,7 +325,7 @@ org_role = Viewer</pre>
       </template>
     </el-dialog>
 
-    <el-drawer v-model="dashboardDrawer.visible" :title="dashboardDrawer.mode === 'edit' ? '编辑看板' : '新建看板'" size="560px" destroy-on-close>
+    <el-dialog v-model="dashboardDrawer.visible" :title="dashboardDrawer.mode === 'edit' ? '编辑看板' : '新建看板'" class="workbench-edit-dialog" width="min(720px, 94vw)" top="5vh" append-to-body destroy-on-close :close-on-click-modal="false">
       <div class="drawer-form">
         <div class="drawer-field">
           <label>看板名称</label>
@@ -364,8 +384,8 @@ org_role = Viewer</pre>
         <div class="drawer-field drawer-field--inline">
           <label>展示参数</label>
           <div class="drawer-inline-control">
-            <el-switch v-model="dashboardDrawer.appendKioskParams" active-text="自动追加 kiosk=true&theme=light" inactive-text="不追加" />
-            <span class="config-url-hint">用于嵌入展示时隐藏 Grafana 菜单并使用浅色主题。</span>
+            <el-switch v-model="dashboardDrawer.appendKioskParams" active-text="自动追加 kiosk=true 并跟随平台主题" inactive-text="不追加" />
+            <span class="config-url-hint">用于嵌入展示时隐藏 Grafana 菜单并跟随平台主题。</span>
           </div>
         </div>
         <div class="drawer-field__hint">
@@ -378,7 +398,7 @@ org_role = Viewer</pre>
           <el-button type="primary" :loading="configSaving" @click="submitDashboardDrawer">保存看板</el-button>
         </div>
       </template>
-    </el-drawer>
+    </el-dialog>
   </div>
 </template>
 
@@ -389,6 +409,7 @@ import { ArrowDown, ArrowRight, Delete, EditPen, Folder, FolderAdd, FolderOpened
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getGrafanaConfig, getObservabilityOverview, resolveGrafanaToLogs, resolveGrafanaToTrace, updateGrafanaConfig } from '@/api/modules/ops'
 import { useAuthStore } from '@/stores/auth'
+import { colorScheme } from '@/theme'
 import { openRouteInNewTab } from '@/utils/router'
 import ObservabilityRouteTabs from '@/components/observability/ObservabilityRouteTabs.vue'
 
@@ -425,6 +446,12 @@ const folderDialog = reactive({
   name: '',
   description: '',
   folder_collapsed: false,
+})
+const batchDialog = reactive({
+  visible: false,
+  text: '',
+  defaultFolder: '',
+  appendKioskParams: true,
 })
 const dashboardDrawer = reactive({
   visible: false,
@@ -747,6 +774,7 @@ const canViewTracing = computed(() => authStore.hasPermission('ops.trace.view'))
 const canQueryLogs = computed(() => authStore.hasPermission('ops.log.query'))
 const canViewAlerts = computed(() => authStore.hasPermission('ops.alert.view'))
 const canManageGrafana = computed(() => authStore.hasPermission('ops.grafana.manage'))
+const batchImportRows = computed(() => parseBatchImport(batchDialog.text))
 
 function normalizeDashboard(item = {}, index = null) {
   const fallbackKey = index === null ? '' : `dashboard-${index + 1}`
@@ -836,12 +864,12 @@ function appendGrafanaDisplayParams(url = '') {
   try {
     const parsed = new URL(value)
     parsed.searchParams.set('kiosk', 'true')
-    parsed.searchParams.set('theme', 'light')
+    parsed.searchParams.set('theme', colorScheme.value)
     return parsed.toString()
   } catch {
     const base = value.replace(/[?&](?:kiosk|theme)=[^&#]*/g, '').replace(/[?&]$/, '')
     const separator = base.includes('?') ? '&' : '?'
-    return `${base}${separator}kiosk=true&theme=light`
+    return `${base}${separator}kiosk=true&theme=${colorScheme.value}`
   }
 }
 
@@ -852,6 +880,34 @@ function queryFolderSuggestions(queryString, callback) {
     .slice(0, 12)
     .map((item) => ({ value: item }))
   callback(matches)
+}
+
+function parseBatchImport(text = '') {
+  return String(text)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const parts = line.split('|').map((part) => part.trim())
+      if (parts.length === 1) {
+        const url = parts[0]
+        let title = url
+        try {
+          const parsed = new URL(url)
+          const segments = parsed.pathname.split('/').filter(Boolean)
+          title = segments[segments.length - 1] || parsed.hostname
+        } catch {
+          title = url
+        }
+        return { title, full_url: url, folder: batchDialog.defaultFolder }
+      }
+      return {
+        title: parts[0],
+        full_url: parts[1],
+        folder: parts[2] || batchDialog.defaultFolder,
+      }
+    })
+    .filter((item) => item.title && item.full_url)
 }
 
 function applyGrafanaConfig(data = {}) {
@@ -1145,6 +1201,51 @@ function openDashboardDrawer(source = null) {
   dashboardDrawer.visible = true
 }
 
+function openBatchDialog() {
+  batchDialog.text = ''
+  batchDialog.defaultFolder = selectedFolderPath.value || ''
+  batchDialog.appendKioskParams = true
+  batchDialog.visible = true
+}
+
+async function submitBatchDialog() {
+  const existingKeys = new Set(grafanaConfig.dashboards.map((item) => item.key).filter(Boolean))
+  const importedDashboards = []
+  for (const [index, row] of batchImportRows.value.entries()) {
+    const urlError = getDashboardUrlError(row.full_url)
+    if (urlError) {
+      ElMessage.error(`第 ${index + 1} 行 URL 无效：${urlError}`)
+      return
+    }
+    const resolvedKey = buildDashboardKey(row, existingKeys)
+    existingKeys.add(resolvedKey)
+    importedDashboards.push({
+      ...createEmptyDashboard(row.folder),
+      key: resolvedKey,
+      slug: resolvedKey,
+      title: row.title,
+      folder: normalizeFolderPath(row.folder),
+      full_url: batchDialog.appendKioskParams ? appendGrafanaDisplayParams(row.full_url) : row.full_url,
+      tags: [],
+    })
+  }
+  if (!importedDashboards.length) {
+    ElMessage.error('请至少输入一条有效记录')
+    return
+  }
+  try {
+    await persistGrafanaConfig({
+      foldersSource: grafanaConfig.folders,
+      dashboardsSource: [...grafanaConfig.dashboards, ...importedDashboards],
+    }, `已批量导入 ${importedDashboards.length} 个看板`)
+    selectedKey.value = importedDashboards[0].key
+    selectedFolderPath.value = importedDashboards[0].folder || selectedFolderPath.value
+    batchDialog.visible = false
+  } catch {
+    // validation message already shown
+  }
+}
+
 async function submitDashboardDrawer() {
   const title = String(dashboardDraft.title || '').trim()
   const rawFullUrl = String(dashboardDraft.full_url || '').trim()
@@ -1418,7 +1519,7 @@ function appendGrafanaContext(url) {
   const normalizedUrl = normalizeGrafanaUrl(url)
   const params = new URLSearchParams()
   params.set('kiosk', 'true')
-  params.set('theme', 'light')
+  params.set('theme', colorScheme.value)
   Object.entries(route.query).forEach(([key, raw]) => {
     if (['dashboard', 'folder', 'keyword', 'tag', 'fullscreen'].includes(key)) return
     if (!['traceId', 'service', 'workload', 'namespace', 'provider', 'source', 'from', 'to'].includes(key) && !key.startsWith('var-')) return
@@ -2276,6 +2377,25 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+
+.batch-import-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.batch-import-options {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.batch-import-count {
+  margin-left: auto;
+  color: #64748b;
+  font-size: 12px;
 }
 
 .help-section h4 {

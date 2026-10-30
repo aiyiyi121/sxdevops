@@ -10,24 +10,44 @@ import copy
 import base64
 import difflib
 import ssl
+import shlex
+import shutil
+import subprocess
+from concurrent.futures import ThreadPoolExecutor
 import yaml
 from django.core.cache import cache
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework.exceptions import ValidationError
+from .k8s_access import K8sAccessMixin
+from .k8s_capacity import build_cluster_capacity, demo_cluster_capacity
+from .k8s_logs import pod_log_page, LogSnapshotError
+from .k8s_resources import K8sResourceMixin, RESOURCE_TYPES, patch_demo_manifest
 
 from .models import K8sCluster, K8sConfigRevision
 from .serializers import K8sClusterSerializer
 from rbac.permissions import RBACPermissionMixin
+from eventwall.services import record_event
 
 logger = logging.getLogger(__name__)
 K8S_SUMMARY_CACHE_TTL = 15
+K8S_SERVER_VERSION_CACHE_TTL = 300
+K8S_SERVER_VERSION_FAILURE_CACHE_TTL = 30
 K8S_RESOURCE_CACHE_TTL = 8
 K8S_DEMO_STATE_CACHE_TTL = 86400
 K8S_STALE_SUMMARY_CACHE_TTL = 300
 K8S_STALE_RESOURCE_CACHE_TTL = 300
 K8S_API_CONNECT_TIMEOUT = 1.5
 K8S_API_READ_TIMEOUT = 3
+K8S_KUBECTL_TIMEOUT = 30
+K8S_KUBECTL_MAX_OUTPUT = 200000
+K8S_KUBECTL_BLOCKED_OPTIONS = {
+    '--kubeconfig', '--context', '--cluster', '--user', '--server', '-s', '--token', '--as', '--as-group', '--as-uid',
+    '--certificate-authority', '--client-certificate', '--client-key',
+    '--insecure-skip-tls-verify', '--cache-dir', '--kuberc', '-f', '--filename',
+    '-k', '--kustomize',
+}
 
 
 class _K8sApiProxy:
@@ -118,6 +138,65 @@ def _prepare_kubeconfig(cluster):
     return kubeconfig_text
 
 
+def _kubectl_audit_summary(args):
+    """Return a useful audit label without persisting command arguments."""
+    meaningful = [arg for arg in args if not arg.startswith('-')]
+    return ' '.join(meaningful[:3]) or 'kubectl'
+
+
+def _parse_kubectl_command(command):
+    try:
+        args = shlex.split(str(command or '').strip())
+    except ValueError as exc:
+        raise ValueError(f'命令格式错误: {exc}') from exc
+    if not args or args[0] != 'kubectl':
+        raise ValueError('仅支持以 kubectl 开头的命令')
+    if len(args) == 1:
+        raise ValueError('请输入 kubectl 子命令')
+    if any(any(char in arg for char in ';|&$`\n\r') for arg in args):
+        raise ValueError('命令中不允许使用 shell 控制符')
+    for arg in args[1:]:
+        option = arg.split('=', 1)[0]
+        if option in K8S_KUBECTL_BLOCKED_OPTIONS:
+            raise ValueError(f'不允许使用 {option}，控制台会自动绑定当前集群')
+    return args[1:]
+
+
+def _run_kubectl_command(cluster, command):
+    args = _parse_kubectl_command(command)
+    if _is_demo(cluster):
+        resource = next((arg for arg in args if not arg.startswith('-')), '')
+        if args[:2] == ['get', 'pods']:
+            return 0, 'NAME                              READY   STATUS    RESTARTS   AGE\napi-server-5f8b7c6d4-r9p2w        1/1     Running   1          3d\nnginx-deployment-7c5b4f9d8-x2k9p  1/1     Running   0          4d\n', ''
+        if args[:2] == ['get', 'nodes']:
+            return 0, 'NAME        STATUS   ROLES           AGE   VERSION\nmaster-01   Ready    control-plane   53d   v1.29.3\nnode-01     Ready    worker          53d   v1.29.3\n', ''
+        return 0, f'[演示模式] 已在集群 {cluster.name} 执行 kubectl {" ".join(args)}\n资源: {resource or "cluster"}\n', ''
+
+    kubectl_path = shutil.which('kubectl')
+    if not kubectl_path:
+        raise RuntimeError('服务端未安装 kubectl，无法打开集群控制台')
+
+    kubeconfig_file = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False, encoding='utf-8')
+    try:
+        kubeconfig_file.write(_prepare_kubeconfig(cluster))
+        kubeconfig_file.close()
+        result = subprocess.run(
+            [kubectl_path, '--kubeconfig', kubeconfig_file.name, *args],
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            timeout=K8S_KUBECTL_TIMEOUT,
+            check=False,
+        )
+        return result.returncode, result.stdout[-K8S_KUBECTL_MAX_OUTPUT:], result.stderr[-K8S_KUBECTL_MAX_OUTPUT:]
+    finally:
+        try:
+            os.unlink(kubeconfig_file.name)
+        except OSError:
+            pass
+
+
 # ====== Demo 模拟数据 ======
 DEMO_NAMESPACES = [
     {'name': 'default', 'status': 'Active', 'created': '2026-01-15T08:00:00+08:00', 'labels': {}},
@@ -146,7 +225,7 @@ DEMO_PODS = [
 ]
 
 DEMO_SERVICES = [
-    {'name': 'nginx-service', 'namespace': 'production', 'type': 'LoadBalancer', 'cluster_ip': '10.96.10.50', 'external_ip': '203.0.113.100', 'ports': '80→30080/TCP, 443→30443/TCP', 'created': '2026-03-05T09:00:00+08:00'},
+    {'name': 'nginx-service', 'namespace': 'production', 'type': 'LoadBalancer', 'cluster_ip': '10.96.10.50', 'external_ip': '47.95.15.100', 'ports': '80→30080/TCP, 443→30443/TCP', 'created': '2026-03-05T09:00:00+08:00'},
     {'name': 'api-service', 'namespace': 'production', 'type': 'ClusterIP', 'cluster_ip': '10.96.20.100', 'external_ip': '', 'ports': '8080/TCP', 'created': '2026-03-04T11:30:00+08:00'},
     {'name': 'redis-master', 'namespace': 'production', 'type': 'ClusterIP', 'cluster_ip': '10.96.30.10', 'external_ip': '', 'ports': '6379/TCP', 'created': '2026-02-20T08:00:00+08:00'},
     {'name': 'mysql-primary', 'namespace': 'production', 'type': 'ClusterIP', 'cluster_ip': '10.96.30.20', 'external_ip': '', 'ports': '3306/TCP', 'created': '2026-02-18T09:00:00+08:00'},
@@ -173,9 +252,9 @@ DEMO_NODES = [
 ]
 
 DEMO_STATEFULSETS = [
-    {'name': 'redis-master', 'namespace': 'production', 'replicas': 1, 'ready_replicas': 1, 'images': 'redis:7.2-alpine', 'created': '2026-02-20T08:00:00+08:00'},
-    {'name': 'mysql-primary', 'namespace': 'production', 'replicas': 1, 'ready_replicas': 1, 'images': 'mysql:8.0', 'created': '2026-02-18T09:00:00+08:00'},
-    {'name': 'prometheus-server', 'namespace': 'monitoring', 'replicas': 1, 'ready_replicas': 1, 'images': 'prom/prometheus:v2.51.0', 'created': '2026-02-01T10:30:00+08:00'},
+    {'name': 'redis-master', 'namespace': 'production', 'replicas': 1, 'ready_replicas': 1, 'current_replicas': 1, 'images': 'redis:7.2-alpine', 'created': '2026-02-20T08:00:00+08:00'},
+    {'name': 'mysql-primary', 'namespace': 'production', 'replicas': 1, 'ready_replicas': 1, 'current_replicas': 1, 'images': 'mysql:8.0', 'created': '2026-02-18T09:00:00+08:00'},
+    {'name': 'prometheus-server', 'namespace': 'monitoring', 'replicas': 1, 'ready_replicas': 1, 'current_replicas': 1, 'images': 'prom/prometheus:v2.51.0', 'created': '2026-02-01T10:30:00+08:00'},
 ]
 
 DEMO_DAEMONSETS = [
@@ -196,9 +275,9 @@ DEMO_CRONJOBS = [
 ]
 
 DEMO_INGRESSES = [
-    {'name': 'web-ingress', 'namespace': 'production', 'class': 'nginx', 'hosts': 'app.example.com', 'address': '203.0.113.100', 'ports': '80, 443', 'created': '2026-03-05T09:00:00+08:00'},
-    {'name': 'api-ingress', 'namespace': 'production', 'class': 'nginx', 'hosts': 'api.example.com', 'address': '203.0.113.100', 'ports': '80, 443', 'created': '2026-03-04T11:30:00+08:00'},
-    {'name': 'grafana-ingress', 'namespace': 'monitoring', 'class': 'nginx', 'hosts': 'grafana.example.com', 'address': '203.0.113.100', 'ports': '80, 443', 'created': '2026-02-01T10:35:00+08:00'},
+    {'name': 'web-ingress', 'namespace': 'production', 'class': 'nginx', 'hosts': 'app.example.com', 'address': '47.95.15.100', 'ports': '80, 443', 'created': '2026-03-05T09:00:00+08:00'},
+    {'name': 'api-ingress', 'namespace': 'production', 'class': 'nginx', 'hosts': 'api.example.com', 'address': '47.95.15.100', 'ports': '80, 443', 'created': '2026-03-04T11:30:00+08:00'},
+    {'name': 'grafana-ingress', 'namespace': 'monitoring', 'class': 'nginx', 'hosts': 'grafana.example.com', 'address': '47.95.15.100', 'ports': '80, 443', 'created': '2026-02-01T10:35:00+08:00'},
 ]
 
 DEMO_PVS = [
@@ -265,6 +344,33 @@ def _summary_cache_key(cluster_id):
 
 def _summary_stale_cache_key(cluster_id):
     return f'ops:k8s:summary-stale:{cluster_id}'
+
+
+def _server_version_cache_key(cluster_id):
+    return f'ops:k8s:server-version:{cluster_id}'
+
+
+def _get_cluster_server_version(cluster, k8s=None):
+    """Read the API server version independently of resource-list permissions."""
+    if _is_demo(cluster):
+        return 'v1.29.3'
+    cache_key = _server_version_cache_key(cluster.pk)
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+    owns_client = k8s is None
+    version = ''
+    try:
+        if owns_client:
+            k8s = _get_k8s_client(cluster)
+        version = k8s.VersionApi().get_code().git_version or ''
+    except Exception:
+        logger.debug('Could not read Kubernetes server version for cluster %s', cluster.pk, exc_info=True)
+    finally:
+        if owns_client and k8s is not None:
+            k8s.ApiClient().close()
+    cache.set(cache_key, version, K8S_SERVER_VERSION_CACHE_TTL if version else K8S_SERVER_VERSION_FAILURE_CACHE_TTL)
+    return version
 
 
 def _clear_summary_cache(cluster_or_id):
@@ -367,8 +473,33 @@ def _serialize_pod_item(pod):
         'ip': pod.status.pod_ip or '',
         'containers': containers,
         'restarts': sum(container.get('restart_count', 0) for container in containers),
+        'controlled_by': next((
+            f'{reference.kind}/{reference.name}'
+            for reference in (pod.metadata.owner_references or [])
+            if reference.controller
+        ), ''),
+        'qos': pod.status.qos_class or '',
         'created': pod.metadata.creation_timestamp.isoformat() if pod.metadata.creation_timestamp else '',
     }
+
+
+def _serialize_demo_pod_item(pod):
+    item = copy.deepcopy(pod)
+    name = item.get('name', '')
+    controlled_by = ''
+    if name.startswith('nginx-deployment'):
+        controlled_by = 'ReplicaSet/nginx-deployment-7c5b4f9d8'
+    elif name.startswith('api-server'):
+        controlled_by = 'ReplicaSet/api-server-5f8b7c6d4'
+    elif name.startswith('web-frontend'):
+        controlled_by = 'ReplicaSet/web-frontend-6d9f8b7c5'
+    elif name.startswith(('redis-master', 'mysql-primary', 'prometheus-server', 'alertmanager-main')):
+        controlled_by = f'StatefulSet/{name.rsplit("-", 1)[0]}'
+    elif name.startswith(('kube-proxy', 'node-exporter')):
+        controlled_by = f'DaemonSet/{name.rsplit("-", 1)[0]}'
+    item['controlled_by'] = controlled_by
+    item['qos'] = 'Burstable' if controlled_by else 'BestEffort'
+    return item
 
 
 def _serialize_service_item(svc):
@@ -377,7 +508,7 @@ def _serialize_service_item(svc):
         'namespace': svc.metadata.namespace,
         'type': svc.spec.type,
         'cluster_ip': svc.spec.cluster_ip or '',
-        'external_ip': ','.join(svc.spec.external_i_ps or []) if svc.spec.external_i_ps else '',
+        'external_ip': ','.join(svc.spec.external_ips or []),
         'ports': ', '.join([
             f"{port.port}{'->'+str(port.node_port) if port.node_port else ''}/{port.protocol}"
             for port in (svc.spec.ports or [])
@@ -416,6 +547,7 @@ def _serialize_node_item(node):
         'cpu': capacity.get('cpu', ''),
         'memory': capacity.get('memory', ''),
         'pods_count': 0,
+        'unschedulable': bool(node.spec.unschedulable),
         'age': '',
         'created': node.metadata.creation_timestamp.isoformat() if node.metadata.creation_timestamp else '',
     }
@@ -478,12 +610,12 @@ def get_k8s_pods_snapshot(cluster, namespaces=None):
         pod_list = v1.list_pod_for_all_namespaces() if namespace == '_all' else v1.list_namespaced_pod(namespace=namespace)
         return [_serialize_pod_item(item) for item in pod_list.items]
 
-    return _collect_namespaced_resource(cluster, 'pods', namespaces, DEMO_PODS, loader)
+    return _collect_namespaced_resource(cluster, 'pods', namespaces, _get_demo_state(cluster.id, 'pods', DEMO_PODS), loader)
 
 
 def get_k8s_nodes_snapshot(cluster):
     if _is_demo(cluster):
-        return list(DEMO_NODES)
+        return _get_demo_state(cluster.id, 'nodes', DEMO_NODES)
 
     def loader():
         k8s = _get_k8s_client(cluster)
@@ -526,6 +658,7 @@ def get_k8s_resource_snapshot(cluster, resource_type, namespaces=None):
                 'namespace': item.metadata.namespace,
                 'replicas': item.spec.replicas or 0,
                 'ready_replicas': item.status.ready_replicas or 0,
+                'current_replicas': item.status.current_replicas or 0,
                 'images': ', '.join([container.image for container in item.spec.template.spec.containers]),
                 'created': item.metadata.creation_timestamp.isoformat() if item.metadata.creation_timestamp else '',
             },
@@ -827,6 +960,7 @@ def _build_unavailable_summary(cluster, reason=''):
         message = f'{message}：{reason}'
     return {
         'cluster_name': cluster.name,
+        'server_version': cache.get(_server_version_cache_key(cluster.pk)) or '',
         'status': cluster.status or 'error',
         'namespaces_total': 0,
         'nodes_total': 0,
@@ -909,33 +1043,48 @@ def _cache_summary_snapshot(cluster, summary, *, update_stale=True):
 
 
 def _build_demo_summary(cluster):
-    ready_nodes = _count_ready_nodes(DEMO_NODES)
-    abnormal_pods, restarting_pods, total_restarts = _pod_status_summary(DEMO_PODS)
+    nodes = _get_demo_state(cluster.id, 'nodes', DEMO_NODES)
+    pods = _get_demo_state(cluster.id, 'pods', DEMO_PODS)
+    deployments = _get_demo_state(cluster.id, 'deployments', DEMO_DEPLOYMENTS)
+    statefulsets = _get_demo_state(cluster.id, 'statefulsets', DEMO_STATEFULSETS)
+    daemonsets = _get_demo_state(cluster.id, 'daemonsets', DEMO_DAEMONSETS)
+    jobs = _get_demo_state(cluster.id, 'jobs', DEMO_JOBS)
+    cronjobs = _get_demo_state(cluster.id, 'cronjobs', DEMO_CRONJOBS)
+    pvcs = _get_demo_state(cluster.id, 'pvcs', DEMO_PVCS)
+    namespaces = _get_demo_state(cluster.id, 'namespaces', DEMO_NAMESPACES)
+    services = _get_demo_state(cluster.id, 'services', DEMO_SERVICES)
+    ingresses = _get_demo_state(cluster.id, 'ingresses', DEMO_INGRESSES)
+    configmaps = _get_demo_state(cluster.id, 'configmaps', DEMO_CONFIGMAPS)
+    secrets = _get_demo_state(cluster.id, 'secrets', DEMO_SECRETS)
+
+    ready_nodes = _count_ready_nodes(nodes)
+    abnormal_pods, restarting_pods, total_restarts = _pod_status_summary(pods)
     degraded_workloads = (
-        sum(1 for item in DEMO_DEPLOYMENTS if item.get('ready_replicas', 0) < item.get('replicas', 0))
-        + sum(1 for item in DEMO_STATEFULSETS if item.get('ready_replicas', 0) < item.get('replicas', 0))
-        + sum(1 for item in DEMO_DAEMONSETS if item.get('ready', 0) < item.get('desired', 0))
+        sum(1 for item in deployments if item.get('ready_replicas', 0) < item.get('replicas', 0))
+        + sum(1 for item in statefulsets if item.get('ready_replicas', 0) < item.get('replicas', 0))
+        + sum(1 for item in daemonsets if item.get('ready', 0) < item.get('desired', 0))
     )
-    pending_pvcs = sum(1 for pvc in DEMO_PVCS if pvc.get('status') != 'Bound')
+    pending_pvcs = sum(1 for pvc in pvcs if pvc.get('status') != 'Bound')
     return {
         'cluster_name': cluster.name,
+        'server_version': _get_cluster_server_version(cluster),
         'status': cluster.status or 'connected',
-        'namespaces_total': len(DEMO_NAMESPACES),
-        'nodes_total': len(DEMO_NODES),
+        'namespaces_total': len(namespaces),
+        'nodes_total': len(nodes),
         'nodes_ready': ready_nodes,
-        'pods_total': len(DEMO_PODS),
+        'pods_total': len(pods),
         'pods_abnormal': abnormal_pods,
         'pods_restarting': restarting_pods,
         'total_restarts': total_restarts,
-        'services_total': len(DEMO_SERVICES),
-        'ingresses_total': len(DEMO_INGRESSES),
-        'workloads_total': len(DEMO_DEPLOYMENTS) + len(DEMO_STATEFULSETS) + len(DEMO_DAEMONSETS) + len(DEMO_JOBS) + len(DEMO_CRONJOBS),
+        'services_total': len(services),
+        'ingresses_total': len(ingresses),
+        'workloads_total': len(deployments) + len(statefulsets) + len(daemonsets) + len(jobs) + len(cronjobs),
         'workloads_degraded': degraded_workloads,
-        'pvcs_total': len(DEMO_PVCS),
+        'pvcs_total': len(pvcs),
         'pvcs_pending': pending_pvcs,
-        'configmaps_total': len(DEMO_CONFIGMAPS),
-        'secrets_total': len(DEMO_SECRETS),
-        'alerts': _build_summary_alerts(ready_nodes, len(DEMO_NODES), abnormal_pods, restarting_pods, total_restarts, degraded_workloads, pending_pvcs),
+        'configmaps_total': len(configmaps),
+        'secrets_total': len(secrets),
+        'alerts': _build_summary_alerts(ready_nodes, len(nodes), abnormal_pods, restarting_pods, total_restarts, degraded_workloads, pending_pvcs),
     }
 
 
@@ -947,19 +1096,43 @@ def _build_live_summary(cluster):
     net_v1 = k8s.NetworkingV1Api()
     unavailable_resources = []
 
-    namespaces = _safe_collection('namespaces', lambda: v1.list_namespace().items, issues=unavailable_resources)
-    nodes = _safe_collection('nodes', lambda: v1.list_node().items, issues=unavailable_resources)
-    pods = _safe_collection('pods', lambda: v1.list_pod_for_all_namespaces().items, issues=unavailable_resources)
-    services = _safe_collection('services', lambda: v1.list_service_for_all_namespaces().items, issues=unavailable_resources)
-    ingresses = _safe_collection('ingresses', lambda: net_v1.list_ingress_for_all_namespaces().items, issues=unavailable_resources)
-    pvcs = _safe_collection('pvcs', lambda: v1.list_persistent_volume_claim_for_all_namespaces().items, issues=unavailable_resources)
-    configmaps = _safe_collection('configmaps', lambda: v1.list_config_map_for_all_namespaces().items, issues=unavailable_resources)
-    secrets = _safe_collection('secrets', lambda: v1.list_secret_for_all_namespaces().items, issues=unavailable_resources)
-    deployments = _safe_collection('deployments', lambda: apps_v1.list_deployment_for_all_namespaces().items, issues=unavailable_resources)
-    statefulsets = _safe_collection('statefulsets', lambda: apps_v1.list_stateful_set_for_all_namespaces().items, issues=unavailable_resources)
-    daemonsets = _safe_collection('daemonsets', lambda: apps_v1.list_daemon_set_for_all_namespaces().items, issues=unavailable_resources)
-    jobs = _safe_collection('jobs', lambda: batch_v1.list_job_for_all_namespaces().items, issues=unavailable_resources)
-    cronjobs = _safe_collection('cronjobs', lambda: batch_v1.list_cron_job_for_all_namespaces().items, issues=unavailable_resources)
+    loaders = {
+        'namespaces': lambda: v1.list_namespace().items,
+        'nodes': lambda: v1.list_node().items,
+        'pods': lambda: v1.list_pod_for_all_namespaces().items,
+        'services': lambda: v1.list_service_for_all_namespaces().items,
+        'ingresses': lambda: net_v1.list_ingress_for_all_namespaces().items,
+        'pvcs': lambda: v1.list_persistent_volume_claim_for_all_namespaces().items,
+        'configmaps': lambda: v1.list_config_map_for_all_namespaces().items,
+        'secrets': lambda: v1.list_secret_for_all_namespaces().items,
+        'deployments': lambda: apps_v1.list_deployment_for_all_namespaces().items,
+        'statefulsets': lambda: apps_v1.list_stateful_set_for_all_namespaces().items,
+        'daemonsets': lambda: apps_v1.list_daemon_set_for_all_namespaces().items,
+        'jobs': lambda: batch_v1.list_job_for_all_namespaces().items,
+        'cronjobs': lambda: batch_v1.list_cron_job_for_all_namespaces().items,
+    }
+    with ThreadPoolExecutor(max_workers=4, thread_name_prefix='k8s-summary') as executor:
+        version_future = executor.submit(_get_cluster_server_version, cluster, k8s)
+        futures = {
+            label: executor.submit(_safe_collection, label, loader, issues=unavailable_resources)
+            for label, loader in loaders.items()
+        }
+        collections = {label: future.result() for label, future in futures.items()}
+        server_version = version_future.result()
+    unavailable_resources = [label for label in loaders if label in unavailable_resources]
+    namespaces = collections['namespaces']
+    nodes = collections['nodes']
+    pods = collections['pods']
+    services = collections['services']
+    ingresses = collections['ingresses']
+    pvcs = collections['pvcs']
+    configmaps = collections['configmaps']
+    secrets = collections['secrets']
+    deployments = collections['deployments']
+    statefulsets = collections['statefulsets']
+    daemonsets = collections['daemonsets']
+    jobs = collections['jobs']
+    cronjobs = collections['cronjobs']
 
     ready_nodes = _count_ready_nodes(nodes)
     abnormal_pods, restarting_pods, total_restarts = _pod_status_summary(pods)
@@ -972,6 +1145,7 @@ def _build_live_summary(cluster):
 
     summary = {
         'cluster_name': cluster.name,
+        'server_version': server_version,
         'status': cluster.status or 'connected',
         'namespaces_total': len(namespaces),
         'nodes_total': len(nodes),
@@ -1005,7 +1179,7 @@ def _build_live_summary(cluster):
     return summary
 
 
-class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
+class K8sClusterViewSet(K8sAccessMixin, K8sResourceMixin, RBACPermissionMixin, viewsets.ModelViewSet):
     """K8s 集群连接管理"""
     queryset = K8sCluster.objects.all()
     serializer_class = K8sClusterSerializer
@@ -1019,12 +1193,14 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         'destroy': ['ops.k8s.manage'],
         'test_connection': ['ops.k8s.manage'],
         'summary': ['ops.k8s.view'],
+        'capacity': ['ops.k8s.view'],
         'namespaces': ['ops.k8s.view'],
         'pods': ['ops.k8s.view'],
         'services': ['ops.k8s.view'],
         'deployments': ['ops.k8s.view'],
         'restart_pod': ['ops.k8s.manage'],
         'pod_exec': ['ops.k8s.exec'],
+        'kubectl': ['ops.k8s.kubectl'],
         'scale_workload': ['ops.k8s.manage'],
         'nodes': ['ops.k8s.view'],
         'statefulsets': ['ops.k8s.view'],
@@ -1049,17 +1225,29 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         'workload_pods': ['ops.k8s.view'],
         'pod_logs': ['ops.k8s.view'],
         'resource_events': ['ops.k8s.view'],
+        'resources': ['ops.k8s.view'],
+        'yaml_preview': ['ops.k8s.manage'],
+        'yaml_apply': ['ops.k8s.manage'],
+        'resource_delete': ['ops.k8s.manage'],
+        'workload_action': ['ops.k8s.manage'],
+        'node_action': ['ops.k8s.manage'],
     }
 
     def perform_create(self, serializer):
+        from rbac.k8s_access import get_k8s_grants
+        from rest_framework.exceptions import PermissionDenied
+        if get_k8s_grants(self.request.user) is not None:
+            raise PermissionDenied('指定集群授权的用户不能新增集群连接。')
         instance = serializer.save()
         _invalidate_cluster_runtime_cache(instance)
 
     def perform_update(self, serializer):
         instance = serializer.save()
+        cache.delete_many([_server_version_cache_key(instance.pk), _summary_stale_cache_key(instance.pk)])
         _invalidate_cluster_runtime_cache(instance)
 
     def perform_destroy(self, instance):
+        cache.delete(_server_version_cache_key(instance.pk))
         _invalidate_cluster_runtime_cache(instance)
         instance.delete()
 
@@ -1099,6 +1287,19 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     def summary(self, request, pk=None):
         """Get cluster summary."""
         cluster = self.get_object()
+        allowed_namespaces = self.k8s_access_scope['namespaces']
+        if allowed_namespaces:
+            pods = get_k8s_pods_snapshot(cluster, allowed_namespaces)
+            workloads = [item for kind in ('deployments', 'statefulsets', 'daemonsets', 'jobs', 'cronjobs')
+                         for item in get_k8s_resource_snapshot(cluster, kind, allowed_namespaces)]
+            pvcs = get_k8s_resource_snapshot(cluster, 'pvcs', allowed_namespaces)
+            return Response({
+                'status': cluster.status, 'scoped': True, 'nodes_total': 0, 'nodes_ready': 0,
+                'server_version': _get_cluster_server_version(cluster),
+                'pods_total': len(pods), 'pods_abnormal': sum(item.get('status') not in {'Running', 'Succeeded'} for item in pods),
+                'total_restarts': sum(item.get('restarts', 0) for item in pods),
+                'workloads_total': len(workloads), 'pvcs_pending': sum(item.get('status') != 'Bound' for item in pvcs), 'alerts': [],
+            })
         cache_key = _summary_cache_key(cluster.id)
         cached = cache.get(cache_key)
         if cached:
@@ -1128,11 +1329,34 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             return Response(payload)
 
     @action(detail=True, methods=['get'])
+    def capacity(self, request, pk=None):
+        """Full-cluster capacity, cached independently from resource lists."""
+        cluster = self.get_object()
+        cache_key = _resource_cache_key(cluster.id, 'capacity')
+        payload = cache.get(cache_key)
+        if payload is not None:
+            return Response(payload)
+        if _is_demo(cluster):
+            pods = _get_demo_state(cluster.id, 'pods', DEMO_PODS)
+            payload = demo_cluster_capacity(sum(item.get('status') not in {'Succeeded', 'Failed'} for item in pods))
+        else:
+            try:
+                k8s = _get_k8s_client(cluster)
+                try:
+                    payload = build_cluster_capacity(k8s)
+                finally:
+                    k8s.ApiClient().close()
+            except Exception:
+                return Response({'detail': '获取集群容量失败，请检查集群连接后重试。'}, status=503)
+        cache.set(cache_key, payload, 30 if not payload['unavailable_resources'] else 5)
+        return Response(payload)
+
+    @action(detail=True, methods=['get'])
     def namespaces(self, request, pk=None):
         """获取命名空间列表"""
         cluster = self.get_object()
         if _is_demo(cluster):
-            return Response(DEMO_NAMESPACES)
+            return Response(_get_demo_state(cluster.id, 'namespaces', DEMO_NAMESPACES))
         try:
             def loader():
                 k8s = _get_k8s_client(cluster)
@@ -1156,7 +1380,7 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         cluster = self.get_object()
         namespace = request.query_params.get('namespace', 'default')
         if _is_demo(cluster):
-            return Response(_filter_by_ns(DEMO_PODS, namespace))
+            return Response(_filter_by_ns([_serialize_demo_pod_item(pod) for pod in _get_demo_state(cluster.id, 'pods', DEMO_PODS)], namespace))
         try:
             def loader():
                 k8s = _get_k8s_client(cluster)
@@ -1166,37 +1390,52 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
                 else:
                     pod_list = v1.list_namespaced_pod(namespace=namespace)
 
-                data = []
-                for pod in pod_list.items:
-                    containers = [{
-                        'name': c.name,
-                        'image': c.image,
-                        'ready': False,
-                    } for c in (pod.spec.containers or [])]
-
-                    if pod.status.container_statuses:
-                        for cs in pod.status.container_statuses:
-                            for c in containers:
-                                if c['name'] == cs.name:
-                                    c['ready'] = cs.ready or False
-                                    c['restart_count'] = cs.restart_count or 0
-
-                    data.append({
-                        'name': pod.metadata.name,
-                        'namespace': pod.metadata.namespace,
-                        'status': pod.status.phase,
-                        'node': pod.spec.node_name or '',
-                        'ip': pod.status.pod_ip or '',
-                        'containers': containers,
-                        'restarts': sum(c.get('restart_count', 0) for c in containers),
-                        'created': pod.metadata.creation_timestamp.isoformat() if pod.metadata.creation_timestamp else '',
-                    })
-                return data
+                return [_serialize_pod_item(pod) for pod in pod_list.items]
 
             data = _get_or_set_resource_cache(cluster, 'pods', namespace, loader)
             return Response(data)
         except Exception as e:
             return Response({'detail': f'获取 Pod 列表失败: {str(e)}'}, status=400)
+
+    @action(detail=True, methods=['post'])
+    def kubectl(self, request, pk=None):
+        """Run one kubectl command against this cluster without invoking a shell."""
+        cluster = self.get_object()
+        command = str(request.data.get('command', '')).strip()
+        try:
+            args = _parse_kubectl_command(command)
+            return_code, stdout, stderr = _run_kubectl_command(cluster, command)
+        except subprocess.TimeoutExpired:
+            return Response({'success': False, 'message': f'命令执行超过 {K8S_KUBECTL_TIMEOUT} 秒，已停止'}, status=408)
+        except (ValueError, RuntimeError) as exc:
+            return Response({'success': False, 'message': str(exc)}, status=400)
+        except Exception as exc:
+            logger.exception('K8s kubectl console failed for cluster %s', cluster.id)
+            return Response({'success': False, 'message': f'kubectl 执行失败: {exc}'}, status=400)
+
+        success = return_code == 0
+        record_event(
+            module='ops',
+            category='k8s',
+            action='kubectl',
+            title=f'K8s 控制台执行: {cluster.name}',
+            summary=f'kubectl {_kubectl_audit_summary(args)}',
+            result='success' if success else 'failed',
+            severity='info' if success else 'warning',
+            request=request,
+            resource_module='ops',
+            resource_type='k8s_cluster',
+            resource_id=cluster.id,
+            resource_name=cluster.name,
+            metadata={'command_summary': _kubectl_audit_summary(args), 'exit_code': return_code},
+            is_demo=_is_demo(cluster),
+        )
+        return Response({
+            'success': success,
+            'exit_code': return_code,
+            'stdout': stdout,
+            'stderr': stderr,
+        }, status=200 if success else 400)
 
     @action(detail=True, methods=['get'])
     def services(self, request, pk=None):
@@ -1219,7 +1458,7 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
                     'namespace': svc.metadata.namespace,
                     'type': svc.spec.type,
                     'cluster_ip': svc.spec.cluster_ip or '',
-                    'external_ip': ','.join(svc.spec.external_i_ps or []) if svc.spec.external_i_ps else '',
+                    'external_ip': ','.join(svc.spec.external_ips or []),
                     'ports': ', '.join([
                         f"{p.port}{'→'+str(p.node_port) if p.node_port else ''}/{p.protocol}"
                         for p in (svc.spec.ports or [])
@@ -1287,7 +1526,7 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         """Get node list."""
         cluster = self.get_object()
         if _is_demo(cluster):
-            return Response(DEMO_NODES)
+            return Response(_get_demo_state(cluster.id, 'nodes', DEMO_NODES))
         try:
             def loader():
                 k8s = _get_k8s_client(cluster)
@@ -1308,6 +1547,7 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
                         'cpu': capacity.get('cpu', ''),
                         'memory': capacity.get('memory', ''),
                         'pods_count': 0,
+                        'unschedulable': bool(node.spec.unschedulable),
                         'age': '',
                         'created': node.metadata.creation_timestamp.isoformat() if node.metadata.creation_timestamp else '',
                     })
@@ -1333,6 +1573,7 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
                          else apps_v1.list_namespaced_stateful_set(namespace=namespace)).items
                 return [{'name': i.metadata.name, 'namespace': i.metadata.namespace,
                          'replicas': i.spec.replicas or 0, 'ready_replicas': i.status.ready_replicas or 0,
+                         'current_replicas': i.status.current_replicas or 0,
                          'images': ', '.join([c.image for c in i.spec.template.spec.containers]),
                          'created': i.metadata.creation_timestamp.isoformat() if i.metadata.creation_timestamp else ''
                          } for i in items]
@@ -1347,7 +1588,7 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         cluster = self.get_object()
         namespace = request.query_params.get('namespace', 'default')
         if _is_demo(cluster):
-            return Response(_filter_by_ns(DEMO_DAEMONSETS, namespace))
+            return Response(_filter_by_ns(_get_demo_state(cluster.id, 'daemonsets', DEMO_DAEMONSETS), namespace))
         try:
             def loader():
                 k8s = _get_k8s_client(cluster)
@@ -1372,7 +1613,7 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         cluster = self.get_object()
         namespace = request.query_params.get('namespace', 'default')
         if _is_demo(cluster):
-            return Response(_filter_by_ns(DEMO_JOBS, namespace))
+            return Response(_filter_by_ns(_get_demo_state(cluster.id, 'jobs', DEMO_JOBS), namespace))
         try:
             def loader():
                 k8s = _get_k8s_client(cluster)
@@ -1396,7 +1637,7 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         cluster = self.get_object()
         namespace = request.query_params.get('namespace', 'default')
         if _is_demo(cluster):
-            return Response(_filter_by_ns(DEMO_CRONJOBS, namespace))
+            return Response(_filter_by_ns(_get_demo_state(cluster.id, 'cronjobs', DEMO_CRONJOBS), namespace))
         try:
             def loader():
                 k8s = _get_k8s_client(cluster)
@@ -1422,7 +1663,7 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         cluster = self.get_object()
         namespace = request.query_params.get('namespace', 'default')
         if _is_demo(cluster):
-            return Response(_filter_by_ns(DEMO_INGRESSES, namespace))
+            return Response(_filter_by_ns(_get_demo_state(cluster.id, 'ingresses', DEMO_INGRESSES), namespace))
         try:
             def loader():
                 k8s = _get_k8s_client(cluster)
@@ -1447,7 +1688,7 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     def pvs(self, request, pk=None):
         cluster = self.get_object()
         if _is_demo(cluster):
-            return Response(DEMO_PVS)
+            return Response(_get_demo_state(cluster.id, 'pvs', DEMO_PVS))
         try:
             def loader():
                 k8s = _get_k8s_client(cluster)
@@ -1471,7 +1712,7 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         cluster = self.get_object()
         namespace = request.query_params.get('namespace', 'default')
         if _is_demo(cluster):
-            return Response(_filter_by_ns(DEMO_PVCS, namespace))
+            return Response(_filter_by_ns(_get_demo_state(cluster.id, 'pvcs', DEMO_PVCS), namespace))
         try:
             def loader():
                 k8s = _get_k8s_client(cluster)
@@ -1495,7 +1736,7 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     def storageclasses(self, request, pk=None):
         cluster = self.get_object()
         if _is_demo(cluster):
-            return Response(DEMO_STORAGECLASSES)
+            return Response(_get_demo_state(cluster.id, 'storageclasses', DEMO_STORAGECLASSES))
         try:
             def loader():
                 k8s = _get_k8s_client(cluster)
@@ -1544,7 +1785,10 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         namespace = request.query_params.get('namespace', 'default')
         if _is_demo(cluster):
             demo_items = _get_demo_state(cluster.id, 'secrets', DEMO_SECRETS)
-            return Response(_filter_by_ns(demo_items, namespace))
+            return Response([
+                {key: value for key, value in item.items() if key not in {'data', 'stringData', 'data_payload'}}
+                for item in _filter_by_ns(demo_items, namespace)
+            ])
         try:
             def loader():
                 k8s = _get_k8s_client(cluster)
@@ -1610,6 +1854,14 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
                 item['updated_at'] = now
                 item['updated_by'] = username
                 _set_demo_state(cluster.id, cache_name, items)
+                manifests = _get_demo_state(cluster.id, 'manifests', {})
+                manifest = manifests.get(f'{resource_type}/{namespace}/{name}')
+                if manifest is not None:
+                    manifest.pop('data', None)
+                    manifest.pop('stringData', None)
+                    _set_demo_state(cluster.id, 'manifests', manifests)
+                    patch_demo_manifest(cluster.id, resource_type, namespace, name,
+                                        {'stringData' if resource_type == 'secret' else 'data': data})
                 cache.set(_demo_config_backup_key(cluster.id, resource_type, namespace, name), backup, K8S_DEMO_STATE_CACHE_TTL)
                 return {
                     'resource_type': resource_type,
@@ -1784,6 +2036,7 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
                     if workload_type == 'deployment':
                         item['available_replicas'] = min(item.get('available_replicas', item.get('ready_replicas', 0)), replicas)
                     _set_demo_state(cluster.id, cache_name, items)
+                    patch_demo_manifest(cluster.id, workload_type, namespace, name, {'spec': {'replicas': replicas}})
                     _invalidate_cluster_runtime_cache(cluster)
                     return Response({'success': True, 'message': f'{name} scaled to {replicas} replicas'})
             return Response({'detail': f'Resource not found: {workload_type}/{namespace}/{name}'}, status=404)
@@ -2137,59 +2390,17 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         name = request.query_params.get('name', '')
         namespace = request.query_params.get('namespace', 'default')
 
-        if not resource_type or not name:
-            return Response({'detail': '缺少 type 或 name 参数'}, status=400)
+        if resource_type in RESOURCE_TYPES:
+            namespace = self._resource_context(cluster, resource_type, namespace, name=name)
+            try:
+                manifest = self._read_manifest(cluster, resource_type, name, namespace)
+                if manifest is None:
+                    return Response({'detail': '资源不存在。'}, status=404)
+                return Response({'yaml': yaml.safe_dump(manifest, sort_keys=False, allow_unicode=True)})
+            except Exception as exc:
+                return Response({'detail': f'获取 YAML 失败: {exc}'}, status=400)
 
-        if _is_demo(cluster):
-            demo_map = {
-                'node': DEMO_NODES, 'namespace': DEMO_NAMESPACES, 'pod': DEMO_PODS,
-                'deployment': _get_demo_state(cluster.id, 'deployments', DEMO_DEPLOYMENTS), 'statefulset': _get_demo_state(cluster.id, 'statefulsets', DEMO_STATEFULSETS),
-                'daemonset': DEMO_DAEMONSETS, 'job': DEMO_JOBS, 'cronjob': DEMO_CRONJOBS,
-                'service': DEMO_SERVICES, 'ingress': DEMO_INGRESSES,
-                'pv': DEMO_PVS, 'pvc': DEMO_PVCS, 'storageclass': DEMO_STORAGECLASSES,
-                'configmap': _get_demo_state(cluster.id, 'configmaps', DEMO_CONFIGMAPS), 'secret': _get_demo_state(cluster.id, 'secrets', DEMO_SECRETS),
-            }
-            demo_list = demo_map.get(resource_type, [])
-            yaml_content = self._build_demo_yaml(resource_type, name, namespace, demo_list)
-            return Response({'yaml': yaml_content})
-
-        try:
-            k8s = _get_k8s_client(cluster)
-            v1 = k8s.CoreV1Api()
-            apps_v1 = k8s.AppsV1Api()
-            batch_v1 = k8s.BatchV1Api()
-            net_v1 = k8s.NetworkingV1Api()
-            storage_v1 = k8s.StorageV1Api()
-
-            read_funcs = {
-                'node': lambda: v1.read_node(name),
-                'namespace': lambda: v1.read_namespace(name),
-                'pod': lambda: v1.read_namespaced_pod(name, namespace),
-                'service': lambda: v1.read_namespaced_service(name, namespace),
-                'deployment': lambda: apps_v1.read_namespaced_deployment(name, namespace),
-                'statefulset': lambda: apps_v1.read_namespaced_stateful_set(name, namespace),
-                'daemonset': lambda: apps_v1.read_namespaced_daemon_set(name, namespace),
-                'job': lambda: batch_v1.read_namespaced_job(name, namespace),
-                'cronjob': lambda: batch_v1.read_namespaced_cron_job(name, namespace),
-                'ingress': lambda: net_v1.read_namespaced_ingress(name, namespace),
-                'pv': lambda: v1.read_persistent_volume(name),
-                'pvc': lambda: v1.read_namespaced_persistent_volume_claim(name, namespace),
-                'storageclass': lambda: storage_v1.read_storage_class(name),
-                'configmap': lambda: v1.read_namespaced_config_map(name, namespace),
-                'secret': lambda: v1.read_namespaced_secret(name, namespace),
-            }
-
-            read_func = read_funcs.get(resource_type)
-            if not read_func:
-                return Response({'detail': f'不支持的资源类型: {resource_type}'}, status=400)
-
-            resource_obj = read_func()
-            api_client = k8s.ApiClient()
-            resource_dict = api_client.sanitize_for_serialization(resource_obj)
-            yaml_content = yaml.dump(resource_dict, default_flow_style=False, allow_unicode=True, sort_keys=False)
-            return Response({'yaml': yaml_content})
-        except Exception as e:
-            return Response({'detail': f'获取 YAML 失败: {str(e)}'}, status=400)
+        return Response({'detail': '不支持的资源类型。'}, status=400)
 
     # ------ 工作负载 Pod 列表 ------
     @action(detail=True, methods=['get'])
@@ -2322,7 +2533,40 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         pod_name = request.query_params.get('pod_name', '')
         namespace = request.query_params.get('namespace', 'default')
         container = request.query_params.get('container', '')
-        tail_lines = int(request.query_params.get('tail_lines', 200))
+        if not pod_name:
+            return Response({'detail': '请选择 Pod。'}, status=400)
+        if request.query_params.get('paged') == '1':
+            previous = request.query_params.get('previous') == 'true'
+            scope = [str(request.user.pk), str(cluster.pk), namespace, pod_name, container, previous]
+
+            def load_log_stream(tail_lines):
+                if _is_demo(cluster):
+                    from io import BytesIO
+                    from urllib3.response import HTTPResponse
+                    content = ''.join(f'2026-10-20T08:00:{index % 60:02d}.000000000Z [{index + 1:05d}] {pod_name}: 请求处理完成\n' for index in range(6000 - tail_lines if tail_lines else 0, 6000))
+                    return HTTPResponse(body=BytesIO(content.encode('utf-8')), preload_content=False)
+                kwargs = {
+                    'name': pod_name, 'namespace': namespace, 'timestamps': False,
+                    'previous': previous, '_preload_content': False,
+                    '_request_timeout': (3, 20),
+                }
+                if container:
+                    kwargs['container'] = container
+                if tail_lines is not None:
+                    kwargs['tail_lines'] = tail_lines
+                return _get_k8s_client(cluster).CoreV1Api().read_namespaced_pod_log(**kwargs)
+
+            try:
+                return Response({**pod_log_page(request.query_params, scope, load_log_stream), 'container': container})
+            except (LogSnapshotError, ValidationError):
+                raise
+            except Exception:
+                logger.exception('K8s paged logs failed for cluster=%s pod=%s namespace=%s', cluster.pk, pod_name, namespace)
+                return Response({'detail': '读取容器日志失败，请检查容器状态或切换“上次运行”。'}, status=502)
+        try:
+            tail_lines = max(1, min(int(request.query_params.get('tail_lines', 200)), 10000))
+        except (TypeError, ValueError):
+            return Response({'detail': '无效的日志行数。'}, status=400)
 
         if _is_demo(cluster):
             import datetime as _dt

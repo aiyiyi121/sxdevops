@@ -1,20 +1,28 @@
-# README 截图说明
+# 产品截图
 
-本目录存放 README 和产品介绍页使用的产品截图。
+保留 README 使用的当前产品截图和会话示例；逐轮验收、旧界面及临时 smoke 截图不作为正式文档资产。
 
-## 当前保留截图
+## 素材目录
 
-- `sxdevops-operation-flow.png`：SxDevOps 运转逻辑总览图。
-- `智能助手.png`：AIOps 智能助手页面截图。
-- `链路追踪.png`：日志/链路排障取证入口截图。
-- `事件中心.png`：事件中心、失败事件定位和操作审计截图。
-- `任务中心.png`：任务中心资源底座与执行入口截图。
-- `日志中心.png`：日志查询与分析页面截图。
-- `知识图谱.png`：知识图谱页面截图。
-- `收款码.png`：项目打赏收款码。
+| 文件 | 展示内容 |
+| --- | --- |
+| [sxdevops-operation-flow.png](sxdevops-operation-flow.png) | 产品运转逻辑总览 |
+| [v2-system-settings-charcoal.png](v2-system-settings-charcoal.png) | 炭灰主题、侧栏和系统设置 |
+| [v2-cmdb-overview.png](v2-cmdb-overview.png) | CMDB 容量、资产及治理入口 |
+| [v2-aiops-execution.png](v2-aiops-execution.png) | 模拟处置案例、告警恢复证据和验证节点 |
+| [v2-aiops-sessions.png](v2-aiops-sessions.png) | 会话历史及执行追踪入口 |
+| [v2-k8s-workbench.png](v2-k8s-workbench.png) | 集群容量、Requests / Limits 与 Pod 摘要 |
+| [v2-docker-workbench.png](v2-docker-workbench.png) | 演示容器、镜像及分页操作 |
+| [v2-logs-query.png](v2-logs-query.png) | ELK 演示查询条件、趋势和结果 |
+
+v2 产品截图采集于 2026-10-25，炭灰系统设置截图补充于 2026-10-28。它们用于说明页面和流程，不证明当前线上容量、查询性能或故障修复成功率。
 
 ## 维护约定
 
-- README 优先引用真实产品 PNG 截图，不保留占位 SVG。
-- 替换截图时优先同步更新 README 和本说明文件，避免链接失效。
-- 新截图应来自运行中的产品页面，并避免包含真实生产凭据、主机密码、Token 或客户信息。
+- 使用运行中产品的真实 PNG，不使用占位图。
+- 修改 README 产品展示时同步检查素材；单纯修正文档导航或安装说明无需重拍界面。
+- 替换或删除素材前检查 README、文档及产品页引用，更新对应链接。
+- 不包含生产密码、Token、连接配置、客户数据或未脱敏的主机信息。
+- 临时测试截图放在忽略的运行目录，历史素材通过 Git 查询，不在此目录逐轮积累。
+
+[文档目录](../README.md)

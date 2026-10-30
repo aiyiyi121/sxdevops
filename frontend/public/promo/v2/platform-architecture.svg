@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="820" viewBox="0 0 1200 820" role="img" aria-labelledby="title desc">
+  <title id="title">SxDevOps 平台架构</title>
+  <desc id="desc">Vue 工作台通过 REST API 和 Channels 访问 Django 控制面。LangGraph 负责编排，数据库队列与独立 worker 运行异步分析，checkpoint 保存阶段状态。受控工具连接可观测数据、CMDB、容器与 SSH。RBAC 和审计由平台后端统一执行。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="m0 0 8 4-8 4" fill="#7a9a90"/></marker>
+    <marker id="mint-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="m0 0 8 4-8 4" fill="#a6efd0"/></marker>
+    <style>text{font-family:Inter,"Microsoft YaHei","PingFang SC",sans-serif}.heading{fill:#f1f5f3;font-size:21px;font-weight:650}.body{fill:#b4c2bf;font-size:15px}.small{fill:#8fa6a0;font-size:13px}.label{fill:#a6efd0;font-size:12px;letter-spacing:2px}.node{fill:#192126;stroke:#35463f;stroke-width:1}.connector{fill:none;stroke:#7a9a90;stroke-width:1.5;marker-end:url(#arrow)}</style>
+  </defs>
+  <rect width="1200" height="820" rx="16" fill="#101619"/>
+  <text x="36" y="39" class="label">SXDEVOPS / PLATFORM ARCHITECTURE</text>
+  <text x="36" y="72" class="heading">统一工作台 · 受控编排 · 平台执行</text>
+  <text x="1164" y="70" text-anchor="end" class="small">依据当前 v2 实现绘制</text>
+
+  <rect x="36" y="100" width="1128" height="72" rx="10" class="node"/>
+  <circle cx="68" cy="136" r="7" fill="#a6efd0"/>
+  <text x="88" y="131" class="heading">Vue 3 运维工作台</text>
+  <text x="88" y="154" class="small">资产 · 可观测性 · 智能助手 · 容器 · 任务 · 事件 · 工单</text>
+  <text x="1136" y="141" text-anchor="end" class="body">Vue Router / Pinia / Element Plus / ECharts</text>
+  <path d="M225 172v39M600 172v39M1000 172v39" class="connector"/>
+  <rect x="36" y="212" width="1128" height="286" rx="12" fill="#131c1b" stroke="#426253"/>
+  <text x="60" y="242" class="label">DJANGO CONTROL PLANE</text>
+  <text x="1140" y="242" text-anchor="end" class="body" fill="#a6efd0">身份认证 / RBAC / 资源范围 / 操作审计</text>
+
+  <rect x="60" y="266" width="310" height="108" rx="9" class="node"/>
+  <text x="80" y="297" class="heading">Django REST API</text>
+  <text x="80" y="325" class="body">CMDB / 任务 / 工单 / 事件</text>
+  <text x="80" y="350" class="small">预检、人工确认与业务执行边界</text>
+  <rect x="390" y="266" width="420" height="108" rx="9" fill="#163029" stroke="#5c8c75"/>
+  <text x="410" y="297" class="heading">AIOps · LangGraph</text>
+  <text x="410" y="325" class="body">Action 路由 / 分阶段取证 / 模型与工具循环</text>
+  <text x="410" y="350" class="small">Skill 整形、证据汇总与待确认动作</text>
+  <rect x="830" y="266" width="310" height="108" rx="9" class="node"/>
+  <text x="850" y="297" class="heading">Channels / Daphne</text>
+  <text x="850" y="325" class="body">WebSocket 交互通道</text>
+  <text x="850" y="350" class="small">终端会话与实时消息，沿用范围授权</text>
+  <path d="M370 320h19M600 374v30M985 374v30" class="connector"/>
+  <rect x="60" y="405" width="500" height="67" rx="8" class="node"/>
+  <text x="80" y="432" class="body">任务队列 ↔ 独立 AIOps worker</text>
+  <text x="80" y="455" class="small">领取任务、租约接管、异步聊天与处置效果验证</text>
+  <rect x="580" y="405" width="230" height="67" rx="8" class="node"/>
+  <text x="600" y="432" class="body">Checkpoint</text>
+  <text x="600" y="455" class="small">阶段状态 / 恢复位置</text>
+  <rect x="830" y="405" width="310" height="67" rx="8" class="node"/>
+  <text x="850" y="432" class="body">Redis / Channels Redis</text>
+  <text x="850" y="455" class="small">缓存与实时通信支撑</text>
+  <path d="M560 438h19" class="connector"/>
+  <path d="M600 498v33" fill="none" stroke="#a6efd0" stroke-width="2" marker-end="url(#mint-arrow)"/>
+  <rect x="36" y="533" width="1128" height="68" rx="10" fill="#163029" stroke="#5c8c75"/>
+  <text x="60" y="561" class="heading">受控工具层 / MCP Tool Registry</text>
+  <text x="60" y="584" class="small">由工具白名单、MCP 可用性、用户权限与 Action 策略共同约束；写操作交回平台确认层</text>
+  <text x="1138" y="564" text-anchor="end" class="body">内置平台工具 + 外部 MCP</text>
+  <path d="M225 601v30M600 601v30M975 601v30" class="connector"/>
+
+  <rect x="36" y="633" width="360" height="95" rx="9" class="node"/>
+  <text x="56" y="662" class="heading">可观测数据</text>
+  <text x="56" y="690" class="body">Prometheus / Grafana / Loki / ELK / SLS</text>
+  <text x="56" y="712" class="small">SkyWalking / Tempo / Jaeger / Zipkin</text>
+  <rect x="420" y="633" width="360" height="95" rx="9" class="node"/>
+  <text x="440" y="662" class="heading">资源与执行现场</text>
+  <text x="440" y="690" class="body">Kubernetes API / Docker / SSH</text>
+  <text x="440" y="712" class="small">资产上下文、容器资源与任务返回结果</text>
+  <rect x="804" y="633" width="360" height="95" rx="9" class="node"/>
+  <text x="824" y="662" class="heading">平台业务与存储</text>
+  <text x="824" y="690" class="body">CMDB / 工单 / 事件 / 任务 / 审计</text>
+  <text x="824" y="712" class="small">本地 SQLite；Compose 使用 MySQL 8</text>
+  <path d="M36 754h1128" stroke="#283b34"/>
+  <text x="36" y="785" class="small">模型参与理解与规划，工具提供事实；后端负责校验、确认、执行与审计。</text>
+  <text x="1164" y="785" text-anchor="end" class="label">OPEN SOURCE / MIT</text>
+</svg>

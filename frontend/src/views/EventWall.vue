@@ -1,5 +1,5 @@
 <template>
-  <div class="event-wall-page fade-in">
+  <div class="event-wall-page fade-in workbench-page-shell">
     <section class="hero panel">
       <div class="hero-copy">
         <div class="hero-title-row">
@@ -175,7 +175,7 @@
       </div>
     </section>
 
-    <section class="panel category-panel">
+    <section class="panel category-panel workbench-fill-panel">
       <div class="section-head">
         <h3>分类事件列表</h3>
         <span>{{ formatTransactionWindow }} · {{ activeCategorySection.events.length }} / {{ activeCategorySection.total }} 条 · 失败 {{ activeCategorySection.failed }}</span>
@@ -1055,7 +1055,7 @@ onUnmounted(cleanupTimelineSelection)
 }
 
 .query-panel {
-  margin-top: -6px;
+  margin-top: 0;
   padding: 10px 12px;
   display: flex;
   flex-direction: column;

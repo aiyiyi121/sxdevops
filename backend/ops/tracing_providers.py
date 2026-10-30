@@ -990,13 +990,18 @@ def _load_skywalking_instances(config, service_id, service_name=''):
 
 
 def _search_skywalking_traces(config, payload, services):
-    limit = max(1, min(int(payload.get('limit') or DEFAULT_TRACE_LIMIT), 50))
-    default_service_id = payload.get('service_id') or (services[0]['id'] if services else '')
-    if not default_service_id and not (payload.get('trace_id') or '').strip():
+    try:
+        limit = int(payload.get('limit') or DEFAULT_TRACE_LIMIT)
+    except (TypeError, ValueError):
+        limit = DEFAULT_TRACE_LIMIT
+    limit = max(1, min(limit, 50))
+    trace_id = (payload.get('trace_id') or '').strip()
+    requested_service_id = (payload.get('service_id') or '').strip()
+    default_service_id = requested_service_id or (services[0]['id'] if services and not trace_id else '')
+    if not default_service_id and not trace_id:
         return []
     condition = {
-        'serviceId': default_service_id,
-        'traceId': payload.get('trace_id') or '',
+        'traceId': trace_id,
         'queryDuration': _duration_strings(payload),
         'minTraceDuration': payload.get('min_duration_ms') or 0,
         'maxTraceDuration': payload.get('max_duration_ms') or 0,
@@ -1004,6 +1009,8 @@ def _search_skywalking_traces(config, payload, services):
         'queryOrder': 'BY_START_TIME',
         'paging': {'pageNum': 1, 'pageSize': limit},
     }
+    if default_service_id:
+        condition['serviceId'] = default_service_id
     query = """
     query SearchTraces($condition: TraceQueryCondition) {
       queryBasicTraces(condition: $condition) {
@@ -1019,14 +1026,14 @@ def _search_skywalking_traces(config, payload, services):
     }
     """
     traces_payload = _skywalking_query(query, {'condition': condition}, config).get('queryBasicTraces') or {}
-    service_name = next((item['name'] for item in services if item['id'] == condition['serviceId']), '')
+    service_name = next((item['name'] for item in services if item['id'] == condition.get('serviceId')), '')
     traces = []
     for item in traces_payload.get('traces') or []:
         trace_ids = item.get('traceIds') or []
         traces.append({
             'trace_id': trace_ids[0] if trace_ids else item.get('segmentId') or '',
             'segment_id': item.get('segmentId') or '',
-            'service_id': condition['serviceId'],
+            'service_id': condition.get('serviceId', ''),
             'service_name': service_name,
             'instance_name': '',
             'endpoint_names': item.get('endpointNames') or [],

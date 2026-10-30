@@ -47,7 +47,9 @@ frontend/screenshots/
 docs/screenshots/*-smoke.png
 
 # Local dev runtime
-.codex/
+.codex/*
+!.codex/skills/
+!.codex/skills/**
 .runlogs/
 backend/run/
 backend/runtime/

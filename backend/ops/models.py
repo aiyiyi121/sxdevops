@@ -70,6 +70,10 @@ class TaskResourceGroup(models.Model):
         related_name='children',
         verbose_name='上级节点',
     )
+    cmdb_node = models.ForeignKey(
+        'cmdb.ResourceNode', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='task_resource_groups', verbose_name='CMDB 归属节点',
+    )
     event_environment = models.ForeignKey(
         'eventwall.EventEnvironment',
         on_delete=models.SET_NULL,
@@ -103,6 +107,9 @@ class TaskResourceGroup(models.Model):
 
 
 class TaskResource(models.Model):
+    SOURCE_MANUAL = 'manual'
+    SOURCE_CMDB = 'cmdb'
+    SOURCE_CHOICES = [(SOURCE_MANUAL, '手工添加'), (SOURCE_CMDB, 'CMDB 接入')]
     RESOURCE_HOST = 'host'
     RESOURCE_K8S = 'k8s'
     RESOURCE_TYPE_CHOICES = [
@@ -121,6 +128,11 @@ class TaskResource(models.Model):
 
     name = models.CharField('资源名称', max_length=128)
     resource_type = models.CharField('资源类型', max_length=16, choices=RESOURCE_TYPE_CHOICES, default=RESOURCE_HOST)
+    source_type = models.CharField('资源来源', max_length=16, choices=SOURCE_CHOICES, default=SOURCE_MANUAL)
+    cmdb_ci = models.OneToOneField(
+        'cmdb.ConfigItem', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='task_resource', verbose_name='关联 CMDB 资产',
+    )
     environment = models.ForeignKey(
         TaskResourceGroup,
         on_delete=models.PROTECT,
@@ -161,6 +173,15 @@ class TaskResource(models.Model):
 
     def __str__(self):
         return f'{self.get_resource_type_display()} / {self.name}'
+
+    @property
+    def execution_blocked_reason(self):
+        if self.source_type == self.SOURCE_CMDB:
+            if not self.cmdb_ci_id:
+                return '关联 CMDB 资产已删除，请重新接入'
+            if self.cmdb_ci.status != 'active':
+                return f'关联 CMDB 资产{self.cmdb_ci.get_status_display()}，暂停执行'
+        return ''
 
 
 class HostTask(models.Model):
@@ -1212,6 +1233,127 @@ class LogEntry(models.Model):
         return f'[{self.level}] {self.service}: {self.message[:50]}'
 
 
+class SystemPostureSystem(models.Model):
+    STATUS_UNKNOWN = 'unknown'
+    STATUS_HEALTHY = 'healthy'
+    STATUS_WARNING = 'warning'
+    STATUS_CRITICAL = 'critical'
+    STATUS_OFFLINE = 'offline'
+    STATUS_CHOICES = [
+        (STATUS_UNKNOWN, '未知'),
+        (STATUS_HEALTHY, '健康'),
+        (STATUS_WARNING, '风险'),
+        (STATUS_CRITICAL, '故障'),
+        (STATUS_OFFLINE, '离线'),
+    ]
+
+    name = models.CharField('业务系统名称', max_length=128, unique=True)
+    environment = models.CharField('环境', max_length=32, blank=True, default='prod')
+    domain = models.CharField('业务域', max_length=64, blank=True, default='')
+    tier = models.CharField('分层', max_length=64, blank=True, default='')
+    owner = models.CharField('负责人', max_length=64, blank=True, default='')
+    summary = models.CharField('摘要', max_length=255, blank=True, default='')
+    base_status = models.CharField('基础状态', max_length=16, choices=STATUS_CHOICES, default=STATUS_UNKNOWN)
+    health_score = models.PositiveSmallIntegerField(
+        '健康分',
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+    )
+    keywords = models.JSONField('匹配关键字', default=list, blank=True)
+    core_metric = models.JSONField('核心指标', default=dict, blank=True)
+    metrics = models.JSONField('核心指标', default=list, blank=True)
+    service_specs = models.JSONField('服务分解', default=list, blank=True)
+    dependencies = models.JSONField('依赖关系', default=list, blank=True)
+    rule_config = models.JSONField('系统态势规则配置', default=dict, blank=True)
+    playbook = models.JSONField('处置步骤', default=list, blank=True)
+    focus_service_id = models.CharField('默认服务节点', max_length=128, blank=True, default='')
+    focus_interface_id = models.CharField('默认接口节点', max_length=128, blank=True, default='')
+    focus_keyword = models.CharField('默认排障关键字', max_length=128, blank=True, default='')
+    sort_order = models.PositiveIntegerField('排序', default=100)
+    is_enabled = models.BooleanField('启用', default=True)
+    created_by = models.CharField('创建人', max_length=64, blank=True, default='system')
+    updated_by = models.CharField('更新人', max_length=64, blank=True, default='')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        db_table = 'ops_system_posturesystem'
+        verbose_name = '系统态势业务系统'
+        verbose_name_plural = '系统态势业务系统'
+        ordering = ['sort_order', 'name', '-id']
+
+    def __str__(self):
+        return self.name
+
+class SystemPostureEnvironment(models.Model):
+    key = models.CharField('环境标识', max_length=64, unique=True)
+    name = models.CharField('环境名称', max_length=64)
+    sort_order = models.PositiveIntegerField('排序', default=100)
+    is_enabled = models.BooleanField('启用', default=True)
+    created_by = models.CharField('创建人', max_length=64, blank=True, default='system')
+    updated_by = models.CharField('更新人', max_length=64, blank=True, default='')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        db_table = 'ops_systempostureenvironment'
+        verbose_name = '系统态势环境'
+        verbose_name_plural = '系统态势环境'
+        ordering = ['sort_order', 'id']
+
+    def __str__(self):
+        return self.name
+
+
+class SystemPostureSLAHistory(models.Model):
+    STATUS_UNKNOWN = 'unknown'
+    STATUS_HEALTHY = 'healthy'
+    STATUS_WARNING = 'warning'
+    STATUS_CRITICAL = 'critical'
+    STATUS_CHOICES = [
+        (STATUS_UNKNOWN, '未知'),
+        (STATUS_HEALTHY, '健康'),
+        (STATUS_WARNING, '风险'),
+        (STATUS_CRITICAL, '故障'),
+    ]
+
+    day = models.DateField('统计日期')
+    system_key = models.CharField('系统标识', max_length=128)
+    system_name = models.CharField('系统名称', max_length=128)
+    environment = models.CharField('环境', max_length=32, blank=True, default='prod')
+    domain = models.CharField('业务域', max_length=64, blank=True, default='')
+    status = models.CharField('状态', max_length=16, choices=STATUS_CHOICES, default=STATUS_UNKNOWN)
+    sla_value = models.DecimalField('SLA', max_digits=6, decimal_places=3, null=True, blank=True)
+    sla_target = models.DecimalField('SLA 目标', max_digits=6, decimal_places=3, null=True, blank=True)
+    health_score = models.PositiveSmallIntegerField(
+        '健康分',
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+    )
+    metric_label = models.CharField('指标名称', max_length=64, blank=True, default='SLA')
+    metric_unit = models.CharField('指标单位', max_length=16, blank=True, default='%')
+    snapshot = models.JSONField('快照', default=dict, blank=True)
+    captured_at = models.DateTimeField('采集时间', auto_now=True)
+
+    class Meta:
+        db_table = 'ops_systemposture_sla_history'
+        verbose_name = '系统态势 SLA 历史'
+        verbose_name_plural = '系统态势 SLA 历史'
+        ordering = ['-day', 'environment', 'system_name']
+        constraints = [
+            models.UniqueConstraint(fields=['day', 'system_key'], name='ops_posture_sla_day_system_uniq'),
+        ]
+        indexes = [
+            models.Index(fields=['day', 'status'], name='ops_posture_sla_day_status_idx'),
+            models.Index(fields=['system_key', '-day'], name='ops_posture_sla_system_day_idx'),
+        ]
+
+    def __str__(self):
+        return f'{self.system_name} / {self.day} / {self.sla_value}'
+
+
 class LogDataSource(models.Model):
     PROVIDER_CHOICES = [
         ('loki', 'Loki'),
@@ -1593,11 +1735,13 @@ class TransactionTicket(models.Model):
     TYPE_INSPECTION = 'inspection'
     TYPE_ACCESS = 'access'
     TYPE_INCIDENT = 'incident'
+    TYPE_VULNERABILITY = 'vulnerability'
     TYPE_CHOICES = [
         (TYPE_CHANGE, '变更执行'),
         (TYPE_INSPECTION, '巡检任务'),
         (TYPE_ACCESS, '权限开通'),
         (TYPE_INCIDENT, '故障处理'),
+        (TYPE_VULNERABILITY, '漏洞处理'),
     ]
 
     PRIORITY_HIGH = 'high'

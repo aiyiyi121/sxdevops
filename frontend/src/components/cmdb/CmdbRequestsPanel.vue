@@ -57,8 +57,8 @@
     </el-table>
   </div>
 
-  <el-dialog v-if="canSubmitRequests" v-model="requestDialogVisible" title="新建主机申请" width="90%" style="max-width: 680px" top="5vh" append-to-body destroy-on-close>
-    <el-form :model="requestForm" label-width="96px">
+  <el-dialog :close-on-click-modal="false" class="workbench-edit-dialog" v-if="canSubmitRequests" v-model="requestDialogVisible" title="新建主机申请" width="90%" style="max-width: 680px" top="5vh" append-to-body destroy-on-close>
+    <el-form label-position="top" :model="requestForm" label-width="96px">
       <el-form-item label="申请标题"><el-input v-model="requestForm.title" placeholder="例如：订单服务生产主机扩容" /></el-form-item>
       <div class="form-row">
         <el-form-item label="申请类型" class="form-col">

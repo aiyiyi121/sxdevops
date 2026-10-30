@@ -1,5 +1,5 @@
 ﻿<template>
-  <div class="observability-page" :class="{ 'is-embedded': embeddedMode }">
+  <div class="observability-page workbench-page-shell" :class="{ 'is-embedded': embeddedMode }">
     <section v-if="!embeddedMode" class="hero panel">
       <div class="hero-copy">
         <div class="hero-title-row">
@@ -234,7 +234,7 @@
       </div>
     </section>
 
-    <div v-if="!topologyOnly" class="content-grid" :class="{ 'has-selected-trace': Boolean(selectedTraceId) }">
+    <div v-if="!topologyOnly" class="content-grid">
       <section class="panel traces-panel">
         <div class="section-head">
           <h3>链路列表</h3>
@@ -586,7 +586,7 @@
     </template>
 
     <template v-else-if="activeTraceTab === 'datasources' && canViewTraceDataSources">
-      <TracingDataSources ref="tracingDataSourcesPanelRef" embedded />
+      <TracingDataSources ref="tracingDataSourcesPanelRef" class="workbench-fill-panel" embedded />
     </template>
 
   </div>
@@ -3012,10 +3012,6 @@ onUnmounted(() => {
   align-items: start;
   display: grid;
   gap: 8px;
-  grid-template-columns: minmax(340px, 0.8fr) minmax(0, 1.4fr);
-}
-
-.content-grid.has-selected-trace {
   grid-template-columns: minmax(280px, 0.52fr) minmax(0, 1.68fr);
 }
 
@@ -4016,10 +4012,6 @@ onUnmounted(() => {
   .trace-header-meta {
     align-items: flex-start;
     flex-direction: column;
-  }
-
-  .content-grid.has-selected-trace {
-    grid-template-columns: 1fr;
   }
 
   .timeline-axis-row,

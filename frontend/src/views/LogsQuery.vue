@@ -1,5 +1,5 @@
 ﻿<template>
-  <div class="logs-query-page">
+  <div class="logs-query-page workbench-page-shell">
     <section class="hero panel hero-panel">
       <div class="release-hero-copy">
         <div class="release-hero-title-row release-hero-title-inline">
@@ -150,6 +150,39 @@
                     </el-select>
                   </div>
                 </div>
+                <div class="elk-quick-filters">
+                  <div class="elk-quick-filters__head">
+                    <span class="elk-quick-filters__title">快捷条件</span>
+                    <div class="elk-presets">
+                      <el-button
+                        v-for="preset in elkPresets"
+                        :key="preset.key"
+                        size="small"
+                        :type="currentTab.elkPreset === preset.key ? 'primary' : 'default'"
+                        plain
+                        @click="applyElkPreset(currentTab, preset.key)"
+                      >
+                        {{ preset.label }}
+                      </el-button>
+                      <el-button v-if="hasElkFilters(currentTab)" size="small" link @click="clearElkFilters(currentTab)">清除</el-button>
+                    </div>
+                  </div>
+                  <div class="elk-quick-filters__grid">
+                    <el-select v-model="currentTab.elkFilters.level" size="small" clearable placeholder="级别" @change="currentTab.elkPreset = ''">
+                      <el-option label="ERROR" value="error" />
+                      <el-option label="WARN" value="warning" />
+                      <el-option label="INFO" value="info" />
+                      <el-option label="DEBUG" value="debug" />
+                    </el-select>
+                    <el-input v-model.trim="currentTab.elkFilters.service" size="small" clearable placeholder="服务，如 payment-service" @input="currentTab.elkPreset = ''" />
+                    <el-input v-model.trim="currentTab.elkFilters.host" size="small" clearable placeholder="主机，如 payment-02" @input="currentTab.elkPreset = ''" />
+                    <el-input v-model.trim="currentTab.elkFilters.traceId" size="small" clearable placeholder="Trace ID" @input="currentTab.elkPreset = ''" />
+                  </div>
+                  <div v-if="elkGeneratedQuery(currentTab)" class="elk-query-preview">
+                    <span>组合查询</span>
+                    <code>{{ elkGeneratedQuery(currentTab) }}</code>
+                  </div>
+                </div>
                 <el-form-item class="syntax-form-item">
                   <template #label>
                     <span class="field-label-with-help">
@@ -157,7 +190,7 @@
                       <el-button link type="primary" @click="openSyntaxHelp('elk')">查询语法帮助</el-button>
                     </span>
                   </template>
-                  <el-input v-model="currentTab.queryText" type="textarea" :rows="2" placeholder='service.name:"payment" AND level:error' />
+                  <el-input v-model="currentTab.queryText" type="textarea" :rows="2" placeholder='可选：补充自定义 Lucene，例如 status:500 OR message:"timeout"' />
                 </el-form-item>
               </template>
 
@@ -169,6 +202,13 @@
                       <el-option v-for="item in currentTab.catalogItems" :key="item.name" :label="item.name" :value="item.name" />
                     </el-select>
                   </div>
+                </div>
+                <div class="sls-query-presets">
+                  <span>常用查询</span>
+                  <el-button v-for="preset in slsPresets" :key="preset.query" size="small" plain :type="currentTab.queryText === preset.query ? 'primary' : 'default'" @click="currentTab.queryText = preset.query">
+                    {{ preset.label }}
+                  </el-button>
+                  <el-button v-if="currentTab.queryText" size="small" link @click="currentTab.queryText = ''">清除</el-button>
                 </div>
                 <el-form-item class="syntax-form-item">
                   <template #label>
@@ -226,7 +266,7 @@
         <div ref="chartRef" class="chart"></div>
       </section>
 
-      <section v-if="currentTab" class="panel compact-panel">
+      <section v-if="currentTab" class="panel compact-panel workbench-fill-panel">
         <div class="panel-head slim-head">
           <h3>查询结果</h3>
           <div class="result-tags">
@@ -413,6 +453,16 @@ const quickRanges = [
   { key: '1h', label: '最近1小时', minutes: 60 },
   { key: '6h', label: '最近6小时', minutes: 360 },
 ]
+const elkPresets = [
+  { key: 'errors', label: '仅看错误' },
+  { key: 'warnings', label: '仅看告警' },
+  { key: 'slow', label: '慢请求/超时' },
+]
+const slsPresets = [
+  { label: '全部日志', query: '*' },
+  { label: '错误日志', query: 'level:ERROR OR level:error' },
+  { label: '超时请求', query: 'timeout OR 504 OR 超时' },
+]
 const logTimeRangeShortcuts = quickRanges.map((item) => ({
   text: item.label,
   value: () => {
@@ -477,6 +527,9 @@ const querySummaryPills = computed(() => {
   }
   if (currentTab.value?.sourceName) {
     items.push({ label: isElk.value ? '索引' : '来源', value: currentTab.value.sourceName })
+  }
+  if (isElk.value && hasElkFilters(currentTab.value)) {
+    items.push({ label: '快捷条件', value: formatElkFilters(currentTab.value.elkFilters) })
   }
   items.push({ label: '时间', value: formatTimeRangeSummary(currentTab.value?.timeRange) })
   items.push({ label: '数量', value: String(currentTab.value?.limit || 0) })
@@ -585,6 +638,15 @@ function makeLabelFilter() {
   return { key: '', operator: '=', value: '', options: [] }
 }
 
+function makeElkFilters(filters = {}) {
+  return {
+    level: filters.level || '',
+    service: filters.service || '',
+    host: filters.host || '',
+    traceId: filters.traceId || '',
+  }
+}
+
 function emptyResults() {
   return { provider: '', source: '', total: 0, took_ms: null, progress: '', logs: [] }
 }
@@ -600,6 +662,8 @@ function createQueryTab(seed = {}) {
     limit: seed.limit || 200,
     sourceName: seed.sourceName || '',
     queryText: seed.queryText || '',
+    elkFilters: makeElkFilters(seed.elkFilters),
+    elkPreset: seed.elkPreset || '',
     lokiLabels: [],
     labelFilters: [makeLabelFilter()],
     lokiContentQuery: '',
@@ -708,7 +772,7 @@ function buildSavedTitle(snapshot) {
   const text = (
     snapshot.provider === 'loki'
       ? snapshot.lokiManualQuery || snapshot.lokiContentQuery
-      : snapshot.queryText || snapshot.sourceName
+      : snapshot.queryText || formatElkFilters(snapshot.elkFilters) || snapshot.sourceName
   )?.trim()
   return text ? text.slice(0, 30) : `${providerLabel(snapshot.provider)} 查询`
 }
@@ -721,6 +785,8 @@ function createSnapshot(tab) {
     datasourceName: datasource?.name || '',
     sourceName: tab.sourceName || '',
     queryText: tab.queryText || '',
+    elkFilters: makeElkFilters(tab.elkFilters),
+    elkPreset: tab.elkPreset || '',
     quickRange: tab.quickRange || '',
     timeRange: normalizeTimeRange(tab.timeRange).map((item) => item.getTime()),
     limit: tab.limit,
@@ -740,6 +806,8 @@ function snapshotFingerprint(snapshot) {
     datasourceId: snapshot.datasourceId,
     sourceName: snapshot.sourceName,
     queryText: snapshot.queryText,
+    elkFilters: snapshot.elkFilters,
+    elkPreset: snapshot.elkPreset,
     quickRange: snapshot.quickRange,
     timeRange: snapshot.timeRange,
     limit: snapshot.limit,
@@ -753,7 +821,7 @@ function formatSavedSummary(item) {
   const source = item.sourceName ? `来源：${item.sourceName}` : '来源：默认'
   const query = item.provider === 'loki'
     ? item.lokiManualQuery || item.lokiContentQuery || '未填写关键字'
-    : item.queryText || '未填写关键字'
+    : item.queryText || formatElkFilters(item.elkFilters) || '未填写关键字'
   return `${source} · 条数：${item.limit} · 条件：${query}`
 }
 
@@ -802,6 +870,8 @@ async function refreshLogDataSources() {
 function resetTabState(tab) {
   tab.sourceName = ''
   tab.queryText = ''
+  tab.elkFilters = makeElkFilters()
+  tab.elkPreset = ''
   tab.lokiLabels = []
   tab.catalogItems = []
   tab.labelFilters = [makeLabelFilter()]
@@ -1349,6 +1419,8 @@ async function applySavedQuery(item) {
   await prepareTab(currentTab.value)
   currentTab.value.sourceName = item.sourceName || ''
   currentTab.value.queryText = item.queryText || ''
+  currentTab.value.elkFilters = makeElkFilters(item.elkFilters)
+  currentTab.value.elkPreset = item.elkPreset || ''
   currentTab.value.lokiContentQuery = item.lokiContentQuery || ''
   currentTab.value.labelFilters = (item.labelFilters || []).length
     ? item.labelFilters.map((filter) => ({ ...makeLabelFilter(), ...filter }))
@@ -1368,6 +1440,8 @@ function addQueryTab() {
         timeRange: currentTab.value.timeRange,
         quickRange: currentTab.value.quickRange,
         limit: currentTab.value.limit,
+        elkFilters: currentTab.value.elkFilters,
+        elkPreset: currentTab.value.elkPreset,
       }
     : { datasourceId: getPreferredDatasourceId() }
   const tab = createQueryTab(base)
@@ -1524,7 +1598,7 @@ function applyLokiQueryToControls(tab, query, fallbackTraceId = '') {
 function emptyResultReason(tab, response) {
   const datasource = dataSources.value.find((item) => item.id === tab.datasourceId)
   const provider = providerLabel(datasource?.provider || '')
-  const query = datasource?.provider === 'loki' ? tab.lokiManualQuery : tab.queryText
+  const query = datasource?.provider === 'loki' ? tab.lokiManualQuery : datasource?.provider === 'elk' ? buildElkQuery(tab) : tab.queryText
   const reasons = [
     `数据源：${datasource?.name || provider || '未选择'}`,
     `时间范围：${formatTimeRangeSummary(tab.timeRange)}`,
@@ -1546,6 +1620,55 @@ function friendlyLogError(error) {
   return message
 }
 
+function escapeLuceneValue(value) {
+  return String(value || '').trim().replace(/[+\-=&|><!(){}[\]^"~*?:\\/]/g, '\\$&')
+}
+
+function buildElkFilterClauses(filters = {}) {
+  const clauses = []
+  if (filters.level) clauses.push(`level:${escapeLuceneValue(filters.level)}`)
+  if (filters.service) clauses.push(`service.name:"${escapeLuceneValue(filters.service)}"`)
+  if (filters.host) clauses.push(`host.name:"${escapeLuceneValue(filters.host)}"`)
+  if (filters.traceId) clauses.push(`trace.id:"${escapeLuceneValue(filters.traceId)}"`)
+  return clauses
+}
+
+function formatElkFilters(filters = {}) {
+  return buildElkFilterClauses(filters).join(' AND ')
+}
+
+function buildElkQuery(tab) {
+  if (!tab) return ''
+  const structured = formatElkFilters(tab.elkFilters)
+  const manual = String(tab.queryText || '').trim()
+  if (structured && manual) return `${structured} AND (${manual})`
+  return structured || manual
+}
+
+function elkGeneratedQuery(tab) {
+  return buildElkQuery(tab)
+}
+
+function hasElkFilters(tab) {
+  return Boolean(formatElkFilters(tab?.elkFilters) || tab?.elkPreset)
+}
+
+function clearElkFilters(tab) {
+  if (!tab) return
+  if (tab.elkPreset === 'slow' && tab.queryText === 'message:(timeout OR slow OR latency)') tab.queryText = ''
+  tab.elkFilters = makeElkFilters()
+  tab.elkPreset = ''
+}
+
+function applyElkPreset(tab, preset) {
+  if (!tab) return
+  tab.elkPreset = preset
+  if (preset === 'errors') tab.elkFilters = makeElkFilters({ level: 'error' })
+  if (preset === 'warnings') tab.elkFilters = makeElkFilters({ level: 'warning' })
+  if (preset === 'slow') tab.elkFilters = makeElkFilters({})
+  if (preset === 'slow') tab.queryText = 'message:(timeout OR slow OR latency)'
+}
+
 function buildPayload(tab) {
   const datasource = dataSources.value.find((item) => item.id === tab.datasourceId)
   const payload = {
@@ -1559,7 +1682,7 @@ function buildPayload(tab) {
   if (datasource?.provider === 'loki') {
     payload.query = tab.lokiManualQuery.trim()
   } else if (datasource?.provider === 'elk') {
-    payload.query = tab.queryText.trim()
+    payload.query = buildElkQuery(tab)
     payload.source = tab.sourceName || datasource.config?.index_pattern
     payload.index_pattern = payload.source
     payload.time_field = datasource.config?.time_field || '@timestamp'
@@ -1576,7 +1699,7 @@ function buildPayload(tab) {
 async function runQuery(tab) {
   if (!tab?.datasourceId) return ElMessage.warning('请先选择日志数据源')
   const payload = buildPayload(tab)
-  if (!String(payload.query || '').trim()) return ElMessage.warning('请先【设置标签过滤】或【填写查询语句】')
+  if (payload.provider === 'loki' && !String(payload.query || '').trim()) return ElMessage.warning('请先【设置标签过滤】或【填写查询语句】')
   tab.queryLoading = true
   tab.errorMessage = ''
   tab.expandedRows = []
@@ -2105,6 +2228,76 @@ onUnmounted(() => {
   align-items: center;
   column-gap: 8px;
   grid-template-columns: 1fr;
+}
+
+.elk-quick-filters {
+  background: rgba(241, 245, 249, 0.62);
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 8px 10px;
+}
+
+.elk-quick-filters__head {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.elk-quick-filters__title {
+  color: #475569;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.elk-presets {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.elk-quick-filters__grid {
+  display: grid;
+  gap: 7px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.elk-query-preview {
+  align-items: baseline;
+  color: #64748b;
+  display: flex;
+  font-size: 11px;
+  gap: 7px;
+  line-height: 1.4;
+}
+
+.elk-query-preview code {
+  color: #334155;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sls-query-presets {
+  align-items: center;
+  background: rgba(241, 245, 249, 0.62);
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  border-radius: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 7px 10px;
+}
+
+.sls-query-presets > span {
+  color: #475569;
+  font-size: 12px;
+  font-weight: 600;
+  margin-right: 2px;
 }
 
 .log-inline-filter {
@@ -2833,6 +3026,15 @@ pre {
   .summary-list {
     align-items: stretch;
     grid-template-columns: 1fr;
+  }
+
+  .elk-quick-filters__grid {
+    grid-template-columns: 1fr;
+  }
+
+  .elk-quick-filters__head {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .log-filter-datasource-row,

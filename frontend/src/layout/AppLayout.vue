@@ -3,10 +3,10 @@
     <aside class="sidebar" :class="{ collapsed: appStore.sidebarCollapsed }">
       <div class="sidebar-logo">
         <div class="logo-icon">
-          <img src="@/assets/brand-mark.svg" alt="SxDevOps" class="brand-mark" />
+          <img :src="siteStore.siteIcon" :alt="siteStore.siteName" class="brand-mark" />
         </div>
         <div class="logo-copy">
-          <span class="logo-text">SxDevOps</span>
+          <span class="logo-text" :title="siteStore.siteName">{{ siteStore.siteName }}</span>
           <span class="logo-subtext">AI Agent</span>
         </div>
       </div>
@@ -23,7 +23,10 @@
           <el-sub-menu v-if="item.children?.length" :index="item.menuKey || item.moduleKey || item.title">
             <template #title>
               <el-icon><component :is="item.icon" /></el-icon>
-              <span>{{ item.title }}</span>
+              <span class="menu-title-row">
+                <span>{{ item.title }}</span>
+                <span v-if="item.badge" class="menu-status-badge">{{ item.badge }}</span>
+              </span>
             </template>
             <el-menu-item
               v-for="child in item.children"
@@ -33,7 +36,10 @@
             >
               <template #title>
                 <el-icon v-if="child.icon"><component :is="child.icon" /></el-icon>
-                <span>{{ child.title }}</span>
+                <span class="menu-title-row">
+                  <span>{{ child.title }}</span>
+                  <span v-if="child.badge" class="menu-status-badge">{{ child.badge }}</span>
+                </span>
               </template>
             </el-menu-item>
           </el-sub-menu>
@@ -45,39 +51,26 @@
             :route="item.route || item.path"
           >
             <el-icon><component :is="item.icon" /></el-icon>
-            <template #title>
+            <span class="menu-title-row">
               <span>{{ item.title }}</span>
-            </template>
+              <span v-if="item.badge" class="menu-status-badge">{{ item.badge }}</span>
+            </span>
+            <template v-if="appStore.sidebarCollapsed" #title>{{ item.title }}</template>
           </el-menu-item>
         </template>
       </el-menu>
-    </aside>
 
-    <div class="main-area">
-      <header class="header">
-        <div class="header-left">
-          <button class="collapse-btn" @click="appStore.toggleSidebar">
-            <el-icon><Fold v-if="!appStore.sidebarCollapsed" /><Expand v-else /></el-icon>
-          </button>
-          <span class="breadcrumb">{{ currentTitle }}</span>
-        </div>
-        <div class="header-right">
-          <el-tooltip content="查看 AI Agent 产品介绍" placement="bottom">
-            <button class="promo-trigger" type="button" @click="openAIAgentPromo">
+      <div class="sidebar-footer">
+        <div class="sidebar-shortcuts" role="group" aria-label="快捷操作">
+          <el-tooltip content="产品介绍" placement="right">
+            <button class="sidebar-tool promo-trigger" type="button" aria-label="产品介绍" @click="openProductIntro">
               <el-icon :size="17"><Promotion /></el-icon>
-              <span>产品介绍</span>
             </button>
           </el-tooltip>
 
-          <el-tooltip v-if="canOpenAIOpsAssistant" content="打开智能助手" placement="bottom">
-            <button class="assistant-trigger" type="button" @click="openAIOpsAssistant">
-              <el-icon :size="18"><Service /></el-icon>
-            </button>
-          </el-tooltip>
-
-          <el-popover placement="bottom-end" :width="360" trigger="click" popper-class="header-notice-popover">
+          <el-popover placement="right-end" width="min(360px, calc(100vw - 100px))" trigger="click" popper-class="sidebar-notice-popover">
             <template #reference>
-              <button class="notice-trigger" type="button" @click="handleNoticeOpen">
+              <button class="sidebar-tool notice-trigger" type="button" :aria-label="notificationCount ? `平台提醒，${notificationCount} 条待关注动态` : '平台提醒'" @click="handleNoticeOpen">
                 <el-badge :value="notificationCount" :max="99" :hidden="!notificationCount">
                   <el-icon :size="18"><Bell /></el-icon>
                 </el-badge>
@@ -146,26 +139,53 @@
             </div>
           </el-popover>
 
-          <el-dropdown @command="handleUserCommand">
-            <div class="user-trigger">
-              <el-avatar :size="36" class="user-avatar">
-                <span>{{ userInitials }}</span>
-              </el-avatar>
-              <div class="user-meta">
-                <span class="user-name">{{ authStore.displayName || '未登录' }}</span>
-                <span class="user-role">{{ primaryRoleLabel }}</span>
-              </div>
-            </div>
+          <el-dropdown trigger="click" placement="top-start" @command="setTheme">
+            <button class="sidebar-tool theme-trigger" type="button" :aria-label="`主题选择，当前${themeLabel}`" :title="`当前主题：${themeLabel}，点击切换`">
+              <el-icon :size="18"><Sunny v-if="theme === 'light'" /><Moon v-else /></el-icon>
+            </button>
             <template #dropdown>
               <el-dropdown-menu>
-                <el-dropdown-item command="refresh">刷新权限</el-dropdown-item>
-                <el-dropdown-item divided command="logout">退出登录</el-dropdown-item>
+                <el-dropdown-item v-for="option in themeOptions" :key="option.value" :command="option.value" :class="{ 'theme-option--active': theme === option.value }" :aria-current="theme === option.value ? 'true' : undefined">
+                  <span class="theme-option">
+                    <span class="theme-option__swatch" :class="`theme-option__swatch--${option.value}`" aria-hidden="true"></span>
+                    <span>{{ option.label }}</span>
+                    <span v-if="option.recommended" class="theme-option__hint">推荐</span>
+                    <el-icon v-if="theme === option.value" class="theme-option__check"><Check /></el-icon>
+                  </span>
+                </el-dropdown-item>
               </el-dropdown-menu>
             </template>
           </el-dropdown>
-        </div>
-      </header>
 
+          <el-tooltip :content="appStore.sidebarCollapsed ? '展开侧栏' : '收起侧栏'" placement="right">
+            <button class="sidebar-tool collapse-btn" type="button" :aria-label="appStore.sidebarCollapsed ? '展开侧栏' : '收起侧栏'" :aria-expanded="!appStore.sidebarCollapsed" @click="appStore.toggleSidebar">
+              <el-icon :size="18"><Fold v-if="!appStore.sidebarCollapsed" /><Expand v-else /></el-icon>
+            </button>
+          </el-tooltip>
+        </div>
+
+        <el-dropdown class="sidebar-account" placement="top-start" trigger="click" @command="handleUserCommand">
+          <button class="user-trigger" type="button" :aria-label="`${authStore.displayName || '未登录'}，账号菜单`">
+            <el-avatar :size="28" class="user-avatar">
+              <span>{{ userInitials }}</span>
+            </el-avatar>
+            <span class="user-meta">
+              <span class="user-name">{{ authStore.displayName || '未登录' }}</span>
+              <span class="user-role">{{ primaryRoleLabel }}</span>
+            </span>
+            <el-icon class="user-menu-arrow"><ArrowUp /></el-icon>
+          </button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="refresh">刷新权限</el-dropdown-item>
+              <el-dropdown-item divided command="logout">退出登录</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+      </div>
+    </aside>
+
+    <div class="main-area">
       <main class="content">
         <router-view v-slot="{ Component }">
           <transition name="fade" mode="out-in">
@@ -173,7 +193,7 @@
           </transition>
         </router-view>
       </main>
-      <AIOpsChatWidget v-if="!isAIOpsChatRoute" />
+      <AIOpsChatWidget v-if="!isAIOpsChatRoute" :show-launcher="showAIOpsChatLauncher" />
     </div>
   </div>
 </template>
@@ -184,8 +204,10 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
+import { useSiteStore } from '@/stores/site'
+import { setTheme, theme, themeLabel, themeOptions } from '@/theme'
+import { SYSTEM_POSTURE_ENABLED } from '@/config/features'
 import AIOpsChatWidget from '@/components/aiops/AIOpsChatWidget.vue'
-import { getModuleSettings } from '@/api/modules/rbac'
 import { getDashboardStats, getDeployments, getTransactionTickets } from '@/api/modules/ops'
 import { getEventWallAnalysis } from '@/api/modules/eventwall'
 
@@ -193,71 +215,50 @@ const route = useRoute()
 const router = useRouter()
 const appStore = useAppStore()
 const authStore = useAuthStore()
+const siteStore = useSiteStore()
 const notificationsLoading = ref(false)
 const notificationItems = ref([])
 const notificationCount = ref(0)
-const moduleVisibility = ref({})
+const moduleVisibility = computed(() => (authStore.moduleSettings || []).reduce((result, item) => ({
+  ...result,
+  [item.code]: item.required ? true : item.enabled !== false,
+}), {}))
+const moduleSettingsLoaded = computed(() => authStore.moduleSettingsLoaded)
+const moduleOrder = computed(() => new Map((authStore.moduleSettings || []).map((item, index) => [item.code, index])))
 const MODULE_SETTINGS_EVENT = 'sxdevops-module-settings-updated'
 const TASK_SCHEDULES_VISIBLE = false
-const observabilityBoardPermissions = ['ops.grafana.view']
-const defaultOpenMenuKeys = ['aiops', 'observability', 'events']
+const observabilityBoardPermissions = SYSTEM_POSTURE_ENABLED
+  ? ['ops.grafana.view', 'ops.observability.system_posture.view']
+  : ['ops.grafana.view']
+const defaultOpenMenuKeys = []
 let notificationTimer = null
-
 const menuItems = [
-  { moduleKey: 'dashboard', path: '/dashboard', title: '运行概览', icon: 'Odometer', permission: 'ops.dashboard.view' },
+  { moduleKey: 'dashboard', path: '/dashboard', title: '系统态势', icon: 'Odometer', permission: 'ops.dashboard.view' },
+  {
+    moduleKey: 'cmdb',
+    title: 'CMDB',
+    icon: 'Monitor',
+    children: [
+      { path: '/cmdb/overview', visibilityKey: 'cmdb.overview', title: '概览', icon: 'Monitor', permission: 'cmdb.dashboard.view' },
+      { path: '/cmdb/ledger', visibilityKey: 'cmdb.ledger', title: '资产台账', icon: 'Collection', permission: 'cmdb.ci.view' },
+      { path: '/cmdb/model', visibilityKey: 'cmdb.model', title: '分类视图', icon: 'SetUp', permission: 'cmdb.model.view' },
+      { path: '/cmdb/governance', visibilityKey: 'cmdb.governance', title: '资产治理', icon: 'Warning', permission: 'cmdb.ci.view' },
+      { path: '/cmdb/cost', visibilityKey: 'cmdb.cost', title: '成本管理', icon: 'Coin', permission: 'cmdb.cost.view' },
+      { path: '/cmdb/platform-config', visibilityKey: 'cmdb.platform-config', title: '平台配置', icon: 'SetUp', anyPermissions: ['cmdb.sync.view', 'cmdb.model.manage', 'cmdb.ipam.view'] },
+      { path: '/cmdb/requests', visibilityKey: 'cmdb.requests', title: '资源运营', icon: 'Tickets', anyPermissions: ['cmdb.request.submit', 'cmdb.request.approve', 'cmdb.request.execute', 'cmdb.ci.view'] },
+      { path: '/cmdb/thresholds', visibilityKey: 'cmdb.thresholds', title: '平台设置', icon: 'DocumentChecked', permission: 'cmdb.ci.view' },
+      { path: '/cmdb/views', visibilityKey: 'cmdb.views', title: '视图展示', icon: 'DataBoard', permission: 'cmdb.ci.view' },
+    ],
+  },
   {
     moduleKey: 'aiops',
     title: 'AIOps',
     icon: 'ChatDotSquare',
     children: [
-      { path: '/aiops/chat', title: '智能助手', icon: 'Service', permission: 'aiops.chat.view' },
-      { path: '/aiops/knowledge', title: '知识图谱', icon: 'Share', permission: 'aiops.knowledge.view' },
-      { path: '/aiops/config', title: '智能体配置', icon: 'Tools', permission: 'aiops.config.view' },
-      { path: '/aiops/audit', title: '智能体审计', icon: 'Tickets', permission: 'aiops.audit.view' },
-    ],
-  },
-  {
-    moduleKey: 'observability',
-    title: '可观测性',
-    icon: 'DataLine',
-    children: [
-      { path: '/observability/boards', title: '可视化', icon: 'DataLine', anyPermissions: observabilityBoardPermissions },
-      { path: '/observability/metrics', title: '指标查询', icon: 'DataAnalysis', permission: 'ops.metric.query' },
-      { path: '/logs/query', title: '日志中心', icon: 'Search', permission: 'ops.log.query' },
-      { path: '/observability/tracing', title: '链路追踪', icon: 'Connection', permission: 'ops.trace.view' },
-      { path: '/observability/datasources', title: '数据源', icon: 'DataBoard', anyPermissions: ['ops.metric.datasource.view', 'ops.log.datasource.view', 'ops.trace.datasource.view', 'ops.observability.link.view'] },
-      { path: '/alerts', title: '告警中心', icon: 'Bell', anyPermissions: ['ops.alert.view', 'ops.alert.config.view'] },
-    ],
-  },
-  {
-    moduleKey: 'events',
-    title: '事件中心',
-    icon: 'Tickets',
-    children: [
-      { path: '/events/wall', title: '事件中心', icon: 'Aim', permission: 'eventwall.view' },
-      { path: '/events/environments', title: '事件环境', icon: 'CollectionTag', permission: 'eventwall.environment.view' },
-      { path: '/events/sources', title: '事件源', icon: 'Share', permission: 'eventwall.source.view' },
-    ],
-  },
-  {
-    moduleKey: 'tasks',
-    title: '任务中心',
-    icon: 'Operation',
-    children: [
-      { path: '/tasks/workbench', title: '任务工作台', icon: 'Operation', anyPermissions: ['ops.task.execute', 'ops.host.execute'] },
-      { path: '/tasks/schedules', title: '计划任务', icon: 'Timer', hidden: !TASK_SCHEDULES_VISIBLE, anyPermissions: ['ops.host.schedule.view', 'ops.host.schedule.manage', 'ops.host.schedule.execute'] },
-      { path: '/tasks/resources', title: '资源底座', icon: 'Monitor', anyPermissions: ['ops.task.resource.view', 'ops.task.resource.manage'] },
-    ],
-  },
-  {
-    moduleKey: 'workorders',
-    title: '工单系统',
-    icon: 'Tickets',
-    children: [
-      { path: '/workorders/releases', title: '应用发布', icon: 'Promotion', anyPermissions: ['ops.deployment.view', 'ops.deployment.manage', 'ops.deployment.approve'] },
-      { path: '/workorders/sql', title: 'SQL 审计', icon: 'DataAnalysis', anyPermissions: ['sqlaudit.datasource.view', 'sqlaudit.order.view', 'sqlaudit.order.submit', 'sqlaudit.order.review', 'sqlaudit.order.execute', 'sqlaudit.query.view', 'sqlaudit.query.execute'] },
-      { path: '/workorders/transactions', title: '事务工单', icon: 'Tickets', anyPermissions: ['ops.ticket.view', 'ops.ticket.manage', 'ops.ticket.approve'] },
-      { path: '/workorders/approval-flows', title: '审批流', icon: 'Checked', anyPermissions: ['ops.deployment.view', 'ops.deployment.manage', 'ops.deployment.approve'] },
+      { path: '/aiops/chat', visibilityKey: 'aiops.chat', title: '智能助手', icon: 'Service', permission: 'aiops.chat.view' },
+      { path: '/aiops/knowledge', visibilityKey: 'aiops.knowledge', title: '知识图谱', icon: 'Share', permission: 'aiops.knowledge.view' },
+      { path: '/aiops/config', visibilityKey: 'aiops.config', title: '智能体配置', icon: 'Tools', permission: 'aiops.config.view' },
+      { path: '/aiops/audit', visibilityKey: 'aiops.audit', title: '智能体审计', icon: 'Tickets', permission: 'aiops.audit.view' },
     ],
   },
   {
@@ -265,8 +266,62 @@ const menuItems = [
     title: '容器管理',
     icon: 'Box',
     children: [
-      { path: '/containers/k8s', title: 'K8s 集群', icon: 'Connection', permission: 'ops.k8s.view' },
-      { path: '/containers/docker', title: 'Docker 环境', icon: 'Platform', permission: 'ops.docker.view' },
+      { path: '/containers/k8s', visibilityKey: 'containers.k8s', title: 'K8s 集群', icon: 'Connection', permission: 'ops.k8s.view' },
+      { path: '/containers/docker', visibilityKey: 'containers.docker', title: 'Docker 环境', icon: 'Platform', permission: 'ops.docker.view' },
+    ],
+  },
+  {
+    moduleKey: 'observability',
+    title: '可观测性',
+    icon: 'DataLine',
+    children: [
+      { path: '/observability/boards', visibilityKey: 'observability.boards', title: '可视化', icon: 'DataLine', anyPermissions: observabilityBoardPermissions },
+      { path: '/observability/metrics', visibilityKey: 'observability.metrics', title: '指标查询', icon: 'DataAnalysis', permission: 'ops.metric.query' },
+      { path: '/observability/rum', visibilityKey: 'observability.rum', title: 'RUM', icon: 'Monitor', permission: 'ops.rum.view' },
+      { path: '/logs/query', visibilityKey: 'observability.logs', title: '日志中心', icon: 'Search', permission: 'ops.log.query' },
+      { path: '/observability/tracing', visibilityKey: 'observability.tracing', title: '链路追踪', icon: 'Connection', permission: 'ops.trace.view' },
+      { path: '/observability/datasources', visibilityKey: 'observability.datasources', title: '数据源', icon: 'DataBoard', anyPermissions: ['ops.metric.datasource.view', 'ops.log.datasource.view', 'ops.trace.datasource.view', 'ops.observability.link.view'] },
+      { path: '/alerts', visibilityKey: 'observability.alerts', title: '告警中心', icon: 'Bell', anyPermissions: ['ops.alert.view', 'ops.alert.config.view'] },
+    ],
+  },
+  {
+    moduleKey: 'events',
+    title: '事件中心',
+    icon: 'Tickets',
+    children: [
+      { path: '/events/wall', visibilityKey: 'events.wall', title: '事件中心', icon: 'Aim', permission: 'eventwall.view' },
+      { path: '/events/environments', visibilityKey: 'events.environments', title: '事件环境', icon: 'CollectionTag', permission: 'eventwall.environment.view' },
+      { path: '/events/sources', visibilityKey: 'events.sources', title: '事件源', icon: 'Share', permission: 'eventwall.source.view' },
+    ],
+  },
+  {
+    moduleKey: 'tasks',
+    title: '任务中心',
+    icon: 'Operation',
+    children: [
+      { path: '/tasks/workbench', visibilityKey: 'tasks.workbench', title: '任务工作台', icon: 'Operation', anyPermissions: ['ops.task.execute', 'ops.host.execute'] },
+      { path: '/tasks/schedules', title: '计划任务', icon: 'Timer', hidden: !TASK_SCHEDULES_VISIBLE, anyPermissions: ['ops.host.schedule.view', 'ops.host.schedule.manage', 'ops.host.schedule.execute'] },
+      { path: '/tasks/resources', visibilityKey: 'tasks.resources', title: '资源底座', icon: 'Monitor', anyPermissions: ['ops.task.resource.view', 'ops.task.resource.manage'] },
+    ],
+  },
+  {
+    moduleKey: 'workorders',
+    title: '工单系统',
+    icon: 'Tickets',
+    children: [
+      { path: '/workorders/releases', visibilityKey: 'workorders.releases', title: '应用发布', icon: 'Promotion', anyPermissions: ['ops.deployment.view', 'ops.deployment.manage', 'ops.deployment.approve'] },
+      { path: '/workorders/sql', visibilityKey: 'workorders.sql', title: 'SQL 审计', icon: 'DataAnalysis', anyPermissions: ['sqlaudit.datasource.view', 'sqlaudit.order.view', 'sqlaudit.order.submit', 'sqlaudit.order.review', 'sqlaudit.order.execute', 'sqlaudit.query.view', 'sqlaudit.query.execute'] },
+      { path: '/workorders/transactions', visibilityKey: 'workorders.transactions', title: '事务工单', icon: 'Tickets', anyPermissions: ['ops.ticket.view', 'ops.ticket.manage', 'ops.ticket.approve'] },
+      { path: '/workorders/approval-flows', visibilityKey: 'workorders.approval-flows', title: '审批流', icon: 'Checked', anyPermissions: ['ops.deployment.view', 'ops.deployment.manage', 'ops.deployment.approve'] },
+    ],
+  },
+  {
+    moduleKey: 'cloudsecurity',
+    title: '安全中心',
+    icon: 'Lock',
+    children: [
+      { path: '/cloud-security/waf', visibilityKey: 'cloudsecurity.waf', title: 'WAF 防火墙', icon: 'Lock', permission: 'cloudsecurity.waf.view' },
+      { path: '/security-center/internal-platform', visibilityKey: 'cloudsecurity.internal-platform', title: '内部平台安全', icon: 'DocumentChecked', permission: 'cloudsecurity.internal_platform.view' },
     ],
   },
   {
@@ -274,9 +329,9 @@ const menuItems = [
     title: '系统管理',
     icon: 'User',
     children: [
-      { path: '/users', title: '用户管理', icon: 'User', anyPermissions: ['rbac.user.view', 'rbac.role.view', 'rbac.group.view', 'rbac.permission.view'] },
-      { path: '/users/audit', title: '操作审计', icon: 'DocumentChecked', permission: 'rbac.audit.view' },
-      { path: '/users/modules', title: '模块管理', icon: 'Menu', permission: 'rbac.module.manage' },
+      { path: '/users', visibilityKey: 'system.users', title: '用户管理', icon: 'User', anyPermissions: ['rbac.user.view', 'rbac.role.view', 'rbac.group.view', 'rbac.permission.view'] },
+      { path: '/users/audit', visibilityKey: 'system.audit', title: '操作审计', icon: 'DocumentChecked', permission: 'rbac.audit.view' },
+      { path: '/users/modules', visibilityKey: 'system.modules', title: '系统设置', icon: 'Menu', permission: 'rbac.module.manage' },
     ],
   },
 ]
@@ -284,10 +339,12 @@ const menuItems = [
 const observabilityBoardPaths = new Set([
   '/observability/boards',
   '/observability/grafana',
+  ...(SYSTEM_POSTURE_ENABLED ? ['/observability/system-posture', '/observability/posture-history'] : []),
 ])
 const observabilityQueryPaths = new Set([
   '/observability/query',
   '/observability/metrics',
+  '/observability/rum',
   '/logs/query',
   '/observability/tracing',
 ])
@@ -298,6 +355,28 @@ const observabilityDatasourcePaths = new Set([
   '/observability/tracing/datasources',
   '/observability/datasource-links',
 ])
+
+const cmdbMenuPathMap = {
+  '/cmdb': '/cmdb/overview',
+  '/cmdb/overview': '/cmdb/overview',
+  '/cmdb/views': '/cmdb/views',
+  '/cmdb/ledger': '/cmdb/ledger',
+  '/cmdb/platform-config': '/cmdb/platform-config',
+  '/cmdb/topology': '/cmdb/platform-config',
+  '/cmdb/repository': '/cmdb/model',
+  '/cmdb/model': '/cmdb/model',
+  '/cmdb/model/config': '/cmdb/platform-config',
+  '/cmdb/model/topology': '/cmdb/platform-config',
+  '/cmdb/sync': '/cmdb/platform-config',
+  '/cmdb/ipam': '/cmdb/platform-config',
+  '/cmdb/source-mappings': '/cmdb/platform-config',
+  '/cmdb/requests': '/cmdb/requests',
+  '/cmdb/governance': '/cmdb/governance',
+  '/cmdb/cost': '/cmdb/cost',
+  '/cmdb/authorization': '/cmdb/requests',
+  '/cmdb/thresholds': '/cmdb/thresholds',
+  '/cmdb/audit': '/cmdb/thresholds',
+}
 
 
 function canAccess(item) {
@@ -314,28 +393,43 @@ function isModuleVisible(item) {
 
 function visibleChildren(items = []) {
   return items
-    .filter(child => !child.hidden)
+    .filter(child => !child.hidden && isModuleVisible(child))
     .map((child) => {
       if (!child.children) return child
       const children = visibleChildren(child.children)
       return { ...child, children }
     })
     .filter((child) => child.children ? child.children.length > 0 : canAccess(child))
+    .sort(compareMenuOrder)
 }
 
-const visibleMenuItems = computed(() => menuItems
-  .filter(isModuleVisible)
-  .map((item) => {
-    if (!item.children) return item
-    const children = visibleChildren(item.children)
-    return { ...item, children }
-  })
-  .filter((item) => item.children ? item.children.length > 0 : !item.hidden && canAccess(item))
-)
+function compareMenuOrder(first, second) {
+  const firstOrder = moduleOrder.value.get(first.visibilityKey || first.moduleKey) ?? Number.MAX_SAFE_INTEGER
+  const secondOrder = moduleOrder.value.get(second.visibilityKey || second.moduleKey) ?? Number.MAX_SAFE_INTEGER
+  return firstOrder - secondOrder
+}
+
+const visibleMenuItems = computed(() => {
+  if (!moduleSettingsLoaded.value) return []
+  return menuItems
+    .filter(isModuleVisible)
+    .map((item) => {
+      if (!item.children) return item
+      const children = visibleChildren(item.children)
+      return { ...item, children }
+    })
+    .filter((item) => item.children ? item.children.length > 0 : !item.hidden && canAccess(item))
+    .sort(compareMenuOrder)
+})
 
 const normalizedMenuPath = computed(() => {
   if (route.path.startsWith('/sql')) {
     return '/sql'
+  }
+  if (route.path === '/cmdb' || route.path.startsWith('/cmdb/')) {
+    if (route.path === '/cmdb/model/config' || route.path === '/cmdb/model/topology') return '/cmdb/platform-config'
+    if (route.path.startsWith('/cmdb/model/')) return '/cmdb/model'
+    return cmdbMenuPathMap[route.path] || '/cmdb/overview'
   }
   if (route.path.startsWith('/events/')) {
     return route.path
@@ -357,18 +451,6 @@ const activeMenuPath = computed(() => {
   return normalizedMenuPath.value
 })
 
-const currentTitle = computed(() => {
-  const currentPath = normalizedMenuPath.value
-  for (const item of visibleMenuItems.value) {
-    if ((item.menuKey || item.path) === currentPath) return item.title
-    if (item.children) {
-      const child = item.children.find((entry) => (entry.menuKey || entry.path) === currentPath)
-      if (child) return item.title === child.title ? child.title : `${item.title} / ${child.title}`
-    }
-  }
-  return route.meta.title || ''
-})
-
 const currentRoleLabel = computed(() => {
   const roles = authStore.currentUser?.roles || []
   if (!roles.length) return '无角色'
@@ -388,7 +470,9 @@ const userInitials = computed(() => {
 })
 
 const isAIOpsChatRoute = computed(() => route.name === 'AIOpsChat' || route.path === '/aiops/chat')
-const canOpenAIOpsAssistant = computed(() => authStore.hasPermission('aiops.chat.view') && !isAIOpsChatRoute.value)
+const showAIOpsChatLauncher = computed(() => (
+  moduleSettingsLoaded.value && moduleVisibility.value['aiops.widget'] !== false
+))
 
 const notificationSections = computed(() => {
   const sectionOrder = ['approval', 'alert', 'event']
@@ -596,23 +680,11 @@ function handleNoticeOpen() {
 
 async function loadModuleSettings() {
   if (!authStore.isAuthenticated) return
-  try {
-    const settings = await getModuleSettings({ skipErrorMessage: true })
-    moduleVisibility.value = (settings || []).reduce((result, item) => ({
-      ...result,
-      [item.code]: item.required ? true : item.enabled !== false,
-    }), {})
-  } catch {
-    moduleVisibility.value = {}
-  }
+  await authStore.reloadModuleSettings({ silent: true })
 }
 
-function openAIOpsAssistant() {
-  window.dispatchEvent(new Event('sxdevops-aiops-open'))
-}
-
-function openAIAgentPromo() {
-  router.push('/ai-agent-promo')
+function openProductIntro() {
+  router.push('/product')
 }
 
 function canHandleDeploymentApproval(item) {
@@ -652,7 +724,9 @@ async function handleUserCommand(command) {
 
 onMounted(() => {
   window.addEventListener(MODULE_SETTINGS_EVENT, loadModuleSettings)
-  void loadModuleSettings()
+  if (!authStore.moduleSettingsLoaded) {
+    void loadModuleSettings()
+  }
   void loadNotifications()
   notificationTimer = window.setInterval(() => {
     void loadNotifications()
@@ -673,75 +747,135 @@ onBeforeUnmount(() => {
   width: 24px;
   height: 24px;
   display: block;
+  object-fit: contain;
 }
 
-.assistant-trigger,
-.promo-trigger,
-.notice-trigger {
-  width: 36px;
-  height: 36px;
+.sidebar-logo .logo-text {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sidebar-footer {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 10px max(10px, env(safe-area-inset-bottom));
+  border-top: 1px solid rgba(148, 163, 184, 0.1);
+}
+
+.sidebar-shortcuts {
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  gap: 4px;
+}
+
+.sidebar-tool {
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
   color: var(--text-secondary);
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
 }
 
-.promo-trigger {
-  width: auto;
-  min-width: 102px;
-  padding: 0 12px;
-  gap: 6px;
-  color: #5b7fc7;
-  border-color: rgba(96, 165, 250, 0.22);
-  background: linear-gradient(135deg, rgba(239, 246, 255, 0.92) 0%, rgba(236, 253, 245, 0.74) 100%);
-  box-shadow: 0 8px 18px rgba(59, 130, 246, 0.08);
+.sidebar-tool:hover {
+  color: #245bdb;
+  border-color: rgba(96, 165, 250, 0.3);
+  background: #ffffff;
+}
+
+.theme-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 154px;
+  min-height: 34px;
   font-size: 13px;
+}
+
+.theme-option__swatch {
+  width: 26px;
+  height: 22px;
+  flex: 0 0 auto;
+  border: 1px solid light-dark(#94a3b8, #94a3b8);
+  border-radius: 6px;
+}
+
+.theme-option__swatch--light {
+  background: linear-gradient(90deg, light-dark(#e8eef7, #e8eef7) 30%, light-dark(#ffffff, #ffffff) 30%);
+}
+
+.theme-option__swatch--dark {
+  background: linear-gradient(90deg, light-dark(#101722, #101722) 30%, light-dark(#26364b, #26364b) 30%);
+}
+
+.theme-option__swatch--charcoal {
+  background: linear-gradient(90deg, light-dark(#181818, #181818) 30%, light-dark(#383838, #383838) 30%);
+}
+
+.theme-option__check {
+  margin-left: auto;
+  color: var(--primary);
+}
+
+.theme-option__hint {
+  padding: 1px 4px;
+  border: 1px solid var(--el-border-color);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 16px;
+}
+
+.theme-option--active .theme-option {
   font-weight: 700;
 }
 
-.promo-trigger:hover {
-  color: #3f6fbd;
-  border-color: rgba(96, 165, 250, 0.36);
-  background: linear-gradient(135deg, rgba(219, 234, 254, 0.98) 0%, rgba(209, 250, 229, 0.84) 100%);
-  transform: translateY(-1px);
-  box-shadow: 0 12px 24px rgba(59, 130, 246, 0.12);
+.sidebar-tool:focus-visible,
+.user-trigger:focus-visible {
+  outline: 2px solid #6095ef;
+  outline-offset: 2px;
 }
 
-.assistant-trigger {
-  position: relative;
-  overflow: hidden;
-  color: #3b82f6;
-  border-color: rgba(96, 165, 250, 0.22);
-  background: linear-gradient(135deg, rgba(239, 246, 255, 0.92) 0%, rgba(255, 247, 237, 0.72) 100%);
-  box-shadow: 0 8px 18px rgba(59, 130, 246, 0.08);
+.promo-trigger {
+  color: #5b7fc7;
 }
 
-.assistant-trigger::after {
-  content: '';
-  position: absolute;
-  inset: 6px;
-  border-radius: 9px;
-  border: 1px solid rgba(59, 130, 246, 0.12);
-  pointer-events: none;
+.notice-trigger :deep(.el-badge__content) {
+  height: 16px;
+  padding: 0 4px;
+  font-size: 10px;
+  line-height: 14px;
 }
 
-.assistant-trigger:hover {
-  color: #2563eb;
-  border-color: rgba(96, 165, 250, 0.34);
-  background: linear-gradient(135deg, rgba(219, 234, 254, 0.96) 0%, rgba(255, 237, 213, 0.82) 100%);
-  transform: translateY(-1px);
-  box-shadow: 0 12px 24px rgba(59, 130, 246, 0.12);
+.sidebar.collapsed .sidebar-footer {
+  align-items: center;
+  padding-right: 8px;
+  padding-left: 8px;
 }
 
-.notice-trigger:hover {
-  color: #356fc8;
-  border-color: rgba(96, 165, 250, 0.26);
-  background: rgba(239, 246, 255, 0.86);
+.sidebar.collapsed .sidebar-shortcuts {
+  flex-direction: column;
+}
+
+.sidebar.collapsed .user-trigger {
+  justify-content: center;
+  padding: 6px;
+}
+
+.sidebar.collapsed .user-meta,
+.sidebar.collapsed .user-menu-arrow {
+  display: none;
 }
 
 .notice-panel {
@@ -918,25 +1052,73 @@ onBeforeUnmount(() => {
   font-size: 12px;
 }
 
+.menu-title-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.menu-title-row > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.menu-status-badge {
+  flex: 0 0 auto;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.12);
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  color: #64748b;
+  font-size: 10px;
+  line-height: 16px;
+  font-weight: 700;
+}
+
+.sidebar.collapsed .menu-status-badge {
+  display: none;
+}
+
+.sidebar-account {
+  display: block;
+  width: 100%;
+}
+
 .user-trigger {
+  width: 100%;
   display: flex;
   align-items: center;
-  gap: 10px;
-  min-height: 40px;
-  padding: 2px 4px 2px 2px;
-  border-radius: 14px;
+  gap: 8px;
+  min-height: 42px;
+  padding: 6px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.36);
+  text-align: left;
+  font: inherit;
   cursor: pointer;
   transition: background 0.2s ease;
 }
 
 .user-trigger:hover {
-  background: rgba(255, 255, 255, 0.56);
+  background: #ffffff;
+}
+
+.user-menu-arrow {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: #94a3b8;
+  font-size: 12px;
 }
 
 .user-avatar {
+  flex: 0 0 auto;
   background: linear-gradient(135deg, #72c1b5 0%, #5f90c1 58%, #506ba5 100%);
   color: #ffffff;
-  box-shadow: 0 8px 18px rgba(80, 107, 165, 0.18);
 }
 
 .fade-enter-active,
@@ -955,6 +1137,7 @@ onBeforeUnmount(() => {
 }
 
 .user-meta {
+  flex: 1;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -962,14 +1145,43 @@ onBeforeUnmount(() => {
 }
 
 .user-name {
-  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
   font-weight: 700;
   color: var(--text-primary);
 }
 
 .user-role {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 11px;
   color: var(--text-secondary);
+}
+
+@media (max-width: 760px) {
+  .sidebar-footer {
+    align-items: center;
+    padding-right: 8px;
+    padding-left: 8px;
+  }
+
+  .sidebar-shortcuts {
+    flex-direction: column;
+  }
+
+  .user-trigger {
+    justify-content: center;
+    padding: 6px;
+  }
+
+  .user-meta,
+  .user-menu-arrow,
+  .collapse-btn {
+    display: none;
+  }
 }
 
 </style>

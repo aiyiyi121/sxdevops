@@ -33,7 +33,7 @@ if [ "${SXDEVOPS_MIGRATE:-1}" = "1" ]; then
   python manage.py migrate --noinput
 fi
 
-if [ "${SXDEVOPS_SEED_DATA:-1}" = "1" ]; then
+if [ "${SXDEVOPS_SEED_DATA:-0}" = "1" ]; then
   python manage.py seed_data
 fi
 

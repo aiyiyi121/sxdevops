@@ -15,8 +15,10 @@
         <el-select v-model="topoFilterType" clearable :placeholder="labels.ciType" style="width: 160px">
           <el-option v-for="type in ciTypes" :key="type.id" :label="type.name" :value="type.id" />
         </el-select>
-        <el-select v-model="topologyScope" :placeholder="labels.scope" style="width: 180px">
+        <el-select v-model="topologyScope" :placeholder="labels.scope" style="width: 190px">
           <el-option :label="labels.neighborScope" value="neighbors" />
+          <el-option :label="labels.neighborScope2" value="neighbors_2" />
+          <el-option :label="labels.neighborScope3" value="neighbors_3" />
           <el-option :label="labels.exactScope" value="exact" />
         </el-select>
       </div>
@@ -196,13 +198,13 @@
       </div>
     </div>
 
-    <el-dialog v-if="canManage" v-model="relationDialogVisible" :title="editingRelationId ? labels.editCiRelation : labels.addCiRelation" width="90%" style="max-width: 560px" append-to-body destroy-on-close>
-      <el-form :model="relationForm" label-width="90px">
+    <el-dialog top="5vh" :close-on-click-modal="false" class="workbench-edit-dialog" v-if="canManage" v-model="relationDialogVisible" :title="editingRelationId ? labels.editCiRelation : labels.addCiRelation" width="90%" style="max-width: 560px" append-to-body destroy-on-close>
+      <el-form label-position="top" :model="relationForm" label-width="90px">
         <el-form-item :label="labels.sourceCi">
           <el-select v-model="relationForm.source" filterable :placeholder="labels.selectSource" style="width: 100%">
             <el-option v-for="ci in allCiList" :key="ci.id" :label="ci.name" :value="ci.id">
               <span style="float: left">{{ ci.name }}</span>
-              <span style="float: right; color: #64748b; font-size: 12px">{{ ci.ci_type_name }}</span>
+              <span style="float: right; color: var(--text-secondary); font-size: 12px">{{ ci.ci_type_name }}</span>
             </el-option>
           </el-select>
         </el-form-item>
@@ -217,7 +219,7 @@
           <el-select v-model="relationForm.target" filterable :placeholder="labels.selectTarget" style="width: 100%">
             <el-option v-for="ci in allCiList" :key="ci.id" :label="ci.name" :value="ci.id">
               <span style="float: left">{{ ci.name }}</span>
-              <span style="float: right; color: #64748b; font-size: 12px">{{ ci.ci_type_name }}</span>
+              <span style="float: right; color: var(--text-secondary); font-size: 12px">{{ ci.ci_type_name }}</span>
             </el-option>
           </el-select>
         </el-form-item>
@@ -248,6 +250,8 @@ const labels = {
   scope: '\u62d3\u6251\u8303\u56f4',
   filterConditions: '\u6761\u4ef6\u7b5b\u9009',
   neighborScope: '\u5e26\u4e00\u8df3\u90bb\u5c45',
+  neighborScope2: '\u5e26\u4e24\u8df3\u90bb\u5c45',
+  neighborScope3: '\u5e26\u4e09\u8df3\u90bb\u5c45\uff08\u4e0a\u9650\uff09',
   exactScope: '\u53ea\u770b\u547d\u4e2d\u8282\u70b9',
   resetFilters: '\u91cd\u7f6e\u7b5b\u9009',
   resetCanvas: '\u91cd\u7f6e\u753b\u5e03',
@@ -310,6 +314,10 @@ const props = defineProps({
   canManage: {
     type: Boolean,
     default: false,
+  },
+  focusCiId: {
+    type: [String, Number],
+    default: null,
   },
 })
 
@@ -394,7 +402,12 @@ async function ensureAllCiList(force = false) {
 async function fetchTopology() {
   topoLoading.value = true
   try {
-    const params = { scope: topologyScope.value }
+    const neighborHops = { neighbors: 1, neighbors_2: 2, neighbors_3: 3 }[topologyScope.value]
+    const params = {
+      scope: topologyScope.value === 'exact' ? 'exact' : 'neighbors',
+      ...(neighborHops ? { neighbor_hops: neighborHops } : {}),
+    }
+    if (props.focusCiId) params.ci_id = props.focusCiId
     if (topoFilterBiz.value) params.business_line = topoFilterBiz.value
     if (topoFilterEnv.value) params.environment = topoFilterEnv.value
     if (topoFilterType.value) params.ci_type = topoFilterType.value
@@ -534,6 +547,14 @@ watch(
     scheduleFetch()
   },
   { immediate: true },
+)
+
+watch(
+  () => props.focusCiId,
+  () => {
+    clearSelection()
+    scheduleFetch()
+  },
 )
 
 watch(

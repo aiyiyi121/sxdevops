@@ -4,10 +4,19 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>SxDevOps 运维智能体平台</title>
+    <script>
+      try {
+        const preference = localStorage.getItem('sxdevops-theme')
+        const savedTheme = ['light', 'dark', 'charcoal'].includes(preference) ? preference : 'light'
+        document.documentElement.classList.toggle('dark', savedTheme !== 'light')
+        document.documentElement.dataset.theme = savedTheme
+        document.documentElement.style.colorScheme = savedTheme === 'light' ? 'light' : 'dark'
+      } catch {}
+    </script>
+    <title>SXDevOps 运维智能体平台</title>
     <meta
       name="description"
-      content="SxDevOps - 面向多云、CMDB、发布与可观测场景的一站式运维智能体平台"
+      content="SXDevOps - 面向多云、CMDB、发布与可观测场景的一站式运维智能体平台"
     />
   </head>
   <body>

@@ -182,7 +182,7 @@ HANDLERS: Dict[str, ActionHandler] = {
     ),
     'slo.analysis': ActionHandler(
         code='slo.analysis',
-        page_prefixes=['/observability/metrics', '/observability/grafana'],
+        page_prefixes=['/observability/system-posture', '/observability/metrics', '/observability/grafana'],
         keywords=['slo', 'sla', '健康', '错误率', '延迟', '指标', 'promql'],
         prompt_hint='可观测性页面上下文优先作为系统、服务、指标数据源和时间窗口的候选输入。',
     ),

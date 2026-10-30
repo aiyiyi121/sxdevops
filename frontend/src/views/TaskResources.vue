@@ -1,16 +1,16 @@
 <template>
-  <div class="fade-in task-page-shell">
+  <div class="fade-in task-page-shell workbench-page-shell">
     <section class="hero panel task-hero-panel">
       <div class="hero-copy">
         <div class="hero-title-row">
           <span class="hero-icon hero-icon-monitor"><el-icon><Monitor /></el-icon></span>
           <h2>资源底座</h2>
-          <p class="page-inline-desc">维护任务执行目标、资源分组与集群归属，作为工作台与计划任务的统一资源入口。</p>
+          <p class="page-inline-desc">统一接入 CMDB 资产与手工资源，维护任务执行连接与资源归属。</p>
         </div>
       </div>
     </section>
 
-    <TaskResourceBase />
+    <TaskResourceBase class="workbench-fill-panel" />
   </div>
 </template>
 
@@ -23,18 +23,18 @@ import TaskResourceBase from '@/components/tasks/TaskResourceBase.vue'
 .task-page-shell {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
 .hero.panel.task-hero-panel {
   align-items: center;
-  background: linear-gradient(180deg, #ffffff 0%, #fcfdff 100%);
-  border: 1px solid rgba(148, 163, 184, 0.16);
-  border-radius: 12px;
+  background: linear-gradient(135deg, #fbfdff 0%, #f7faff 52%, #f9fbfd 100%);
+  border: 1px solid rgba(36, 91, 219, 0.09);
+  border-radius: 20px;
   box-shadow: 0 12px 26px rgba(15, 23, 42, 0.04);
   display: flex;
   justify-content: space-between;
-  padding: 10px 14px;
+  padding: 14px 16px;
 }
 
 .hero-copy {
@@ -67,17 +67,17 @@ import TaskResourceBase from '@/components/tasks/TaskResourceBase.vue'
 
 .hero-icon {
   align-items: center;
-  border-radius: 16px;
-  color: #fff;
+  border-radius: 14px;
+  color: #245bdb;
   display: inline-flex;
   font-size: 20px;
-  height: 36px;
+  height: 42px;
   justify-content: center;
-  width: 36px;
+  width: 42px;
 }
 
 .hero-icon-monitor {
-  background: linear-gradient(135deg, #0f766e, #0ea5e9);
+  background: rgba(51, 112, 255, 0.09);
 }
 
 .panel {

@@ -126,7 +126,7 @@ def terraform_catalog_view(request):
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated, build_rbac_permission('ops.iac.manage', allow_demo_write=True)])
+@permission_classes([IsAuthenticated, build_rbac_permission('ops.iac.manage')])
 def terraform_render_view(request):
     serializer = TerraformRenderSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
@@ -135,7 +135,7 @@ def terraform_render_view(request):
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated, build_rbac_permission('ops.iac.manage', allow_demo_write=True)])
+@permission_classes([IsAuthenticated, build_rbac_permission('ops.iac.manage')])
 def terraform_bundle_view(request):
     serializer = TerraformRenderSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)

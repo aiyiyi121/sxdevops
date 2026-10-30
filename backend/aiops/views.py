@@ -5,7 +5,7 @@ from django.db.models import Count, Q
 from django.http import Http404
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
-from rest_framework import pagination, status, viewsets
+from rest_framework import mixins, pagination, status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.exceptions import NotFound
 from rest_framework.permissions import IsAuthenticated
@@ -13,9 +13,10 @@ from rest_framework.response import Response
 
 from eventwall.models import EventRecord
 from eventwall.services import record_event
-from ops.models import Alert, DockerHost, GrafanaSetting, K8sCluster, LogDataSource, MetricDataSource, ObservabilityDataSourceLink, TaskResource, TaskResourceGroup, TracingDataSource
+from ops.models import Alert, DockerHost, GrafanaSetting, K8sCluster, LogDataSource, MetricDataSource, ObservabilityDataSourceLink, SystemPostureEnvironment, TaskResource, TaskResourceGroup, TracingDataSource
 from rbac.permissions import RBACPermissionMixin, build_rbac_permission
-from rbac.services import is_demo_account, user_has_permissions
+from rbac.services import user_has_permissions
+from sxdevops.features import is_system_posture_enabled
 
 from .models import (
     AIOpsChatMessage,
@@ -46,6 +47,7 @@ from .serializers import (
     AIOpsMCPServerSerializer,
     AIOpsModelInvocationSerializer,
     AIOpsModelProviderSerializer,
+    AIOpsModelDiscoverySerializer,
     AIOpsPendingActionSerializer,
     AIOpsReviewKnowledgeSerializer,
     AIOpsRunbookSerializer,
@@ -78,25 +80,25 @@ from .services import (
     list_model_provider_presets,
     list_mcp_server_tools,
     list_action_registry,
+    list_capabilities,
+    normalize_capability_code,
+    update_capability_skills,
     list_platform_mcp_tools,
     publish_runbook,
     recover_masked_suggested_question,
     run_external_task_orchestration,
     start_async_chat_processing,
-    sync_admin_sessions_to_demo,
-    sync_session_to_demo_if_needed,
     test_model_provider_connection,
     test_mcp_server_connection,
     DEPRECATED_BUILTIN_MCP_SERVER_NAMES,
 )
 from .knowledge_graph import build_knowledge_graph
+from .audit_executions import AIOpsAuditExecutionSerializer, execution_detail, execution_queryset
+from .langgraph_pilot import LangGraphPilotUnavailable, ensure_langgraph_thread_id, run_langgraph_readonly_pilot
 
 K8S_NAMESPACE_OPTIONS_CACHE_TTL = 60
 K8S_NAMESPACE_OPTIONS_STALE_CACHE_TTL = 300
 AUDIT_RECENT_PAGE_SIZE = 20
-
-
-DEMO_CHAT_DISABLED_MESSAGE = '演示账号问答权限已临时关闭，如需体验请联系作者：592095766@qq.com'
 
 
 class AIOpsModelProviderViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
@@ -113,12 +115,33 @@ class AIOpsModelProviderViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         'destroy': ['aiops.config.manage'],
         'test_connection': ['aiops.config.manage'],
         'list_models': ['aiops.config.manage'],
+        'discover_models': ['aiops.config.manage'],
         'presets': ['aiops.config.view'],
     }
 
     @action(detail=False, methods=['get'])
     def presets(self, request):
         return Response({'presets': list_model_provider_presets()})
+
+    @action(detail=False, methods=['post'], url_path='discover-models')
+    def discover_models(self, request):
+        serializer = AIOpsModelDiscoverySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = dict(serializer.validated_data)
+        saved_provider = data.pop('provider_id', None)
+        api_key = data.pop('api_key', '') or (saved_provider.get_api_key() if saved_provider else '')
+        # Discover from a draft without persisting credentials or modifying the saved provider.
+        provider = AIOpsModelProvider(**data)
+        provider.set_api_key(api_key)
+        try:
+            result = list_model_provider_models(provider, probe=False)
+            for field in ('catalog_error', 'probe_error'):
+                if result.get(field):
+                    result[field] = result[field].replace(api_key, '[redacted]')
+            return Response(result)
+        except Exception as exc:
+            message = str(exc).replace(api_key, '[redacted]') if api_key else str(exc)
+            return Response({'detail': message}, status=status.HTTP_400_BAD_REQUEST)
 
     @action(detail=True, methods=['post'])
     def test_connection(self, request, pk=None):
@@ -218,7 +241,15 @@ class AIOpsSkillViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
 
     def get_queryset(self):
         get_agent_config()
-        return AIOpsSkill.objects.all().order_by('is_builtin', 'name', 'id')
+        queryset = AIOpsSkill.objects.all()
+        if self.action in {'list', 'marketplace'}:
+            queryset = queryset.filter(merged_into__isnull=True)
+        return queryset.order_by('is_builtin', 'name', 'id')
+
+    def update(self, request, *args, **kwargs):
+        if self.get_object().merged_into_id:
+            return Response({'detail': '已合并的 Skill 已归档，请编辑合并后的 Skill'}, status=status.HTTP_400_BAD_REQUEST)
+        return super().update(request, *args, **kwargs)
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -297,6 +328,16 @@ def _filter_audit_time_range(queryset, request, field_name):
     return queryset
 
 
+def _filter_audit_correlation(queryset, request, *, session_field='session_id', message_field='message_id'):
+    for parameter, field in [('session_id', session_field), ('message_id', message_field)]:
+        value = _audit_query_param(request, parameter)
+        if value:
+            if not value.isdigit():
+                return queryset.none()
+            queryset = queryset.filter(**{field: int(value)})
+    return queryset
+
+
 def _audit_overview_window(request):
     range_type = _audit_query_param(request, 'range').lower()
     if range_type == 'all':
@@ -330,6 +371,20 @@ def _audit_trace_message_queryset(request):
     username = _audit_query_param(request, 'username', 'user')
     if username:
         queryset = queryset.filter(session__user__username__icontains=username)
+    session_id = _audit_query_param(request, 'session_id')
+    if session_id:
+        if not session_id.isdigit():
+            return queryset.none()
+        queryset = queryset.filter(session_id=int(session_id))
+    message_id = _audit_query_param(request, 'message_id')
+    if message_id:
+        if not message_id.isdigit():
+            return queryset.none()
+        source = AIOpsChatMessage.objects.filter(pk=int(message_id), role='user').first()
+        thread_id = (source.metadata or {}).get('langgraph_thread_id') if source else ''
+        if not thread_id:
+            return queryset.none()
+        queryset = queryset.filter(session_id=source.session_id, metadata__langgraph_thread_id=thread_id)
     queryset = _filter_audit_time_range(queryset, request, 'created_at')
     return queryset.order_by('-created_at', '-id')
 
@@ -391,11 +446,16 @@ def _audit_skill_display_map():
 
 
 def _audit_action_display_map(user=None):
-    return {
+    items = list_capabilities(user=user, include_unavailable=True)
+    display_map = {item['code']: item['display_name'] for item in items}
+    display_map.update({
         item.get('code'): item.get('display_name') or item.get('code')
-        for item in list_action_registry(user=user, include_unavailable=True)
-        if item.get('code')
-    }
+        for item in items
+    })
+    for item in items:
+        for code in item.get('legacy_action_codes') or []:
+            display_map[code] = item['display_name']
+    return display_map
 
 
 def _audit_hidden_trace_ids(message, trace_type):
@@ -409,7 +469,7 @@ def _audit_trace_item_id(message, index, item, trace_type):
         suffix = item.get('slug') or item.get('id') or item.get('name') or 'trace'
         return f'skill-{message.id}-{index}-{suffix}'
     if trace_type == 'action':
-        return f'action-{message.id}-{item.get("code") or "trace"}'
+        return f'action-{message.id}-{item.get("legacy_code") or item.get("code") or "trace"}'
     return ''
 
 
@@ -449,7 +509,7 @@ def _audit_invocation_distribution(request):
             hidden_action_ids = _audit_hidden_trace_ids(message, 'action')
             if _audit_trace_item_id(message, 0, action_trace, 'action') not in hidden_action_ids:
                 code = str(action_trace.get('code') or 'unknown').strip()
-                label = str(action_display_map.get(code) or action_trace.get('display_name') or action_trace.get('code') or '未命名 Action').strip()
+                label = str(action_display_map.get(code) or action_trace.get('display_name') or action_trace.get('code') or '未命名问答类型').strip()
                 if code not in action_counts:
                     action_counts[code] = {'key': code, 'label': label, 'count': 0}
                 action_counts[code]['count'] += 1
@@ -615,7 +675,6 @@ class AIOpsKnowledgeEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSe
     serializer_class = AIOpsKnowledgeEnvironmentSerializer
     pagination_class = None
     search_fields = ['name', 'description']
-    demo_account_allowed_actions = {'create', 'update', 'partial_update', 'destroy'}
     rbac_permissions = {
         'list': ['aiops.knowledge.view'],
         'retrieve': ['aiops.knowledge.view'],
@@ -635,6 +694,11 @@ class AIOpsKnowledgeEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSe
 
     @action(detail=False, methods=['get'])
     def catalog(self, request):
+        from rbac.k8s_access import get_k8s_grants, k8s_scope
+        cluster_queryset = K8sCluster.objects.order_by('name', 'id')
+        grants = get_k8s_grants(request.user)
+        if grants is not None:
+            cluster_queryset = cluster_queryset.filter(pk__in=grants)
         event_environments = list(
             EventRecord.objects
             .filter(is_demo=False)
@@ -651,6 +715,13 @@ class AIOpsKnowledgeEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSe
             .distinct()
             .order_by('environment')[:100]
         )
+        posture_environments = [
+            {
+                'key': item.key,
+                'name': item.name,
+            }
+            for item in SystemPostureEnvironment.objects.filter(is_enabled=True).order_by('sort_order', 'id')
+        ] if is_system_posture_enabled() else []
         log_datasources = [
             {
                 'id': item.id,
@@ -715,9 +786,9 @@ class AIOpsKnowledgeEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSe
                 'api_server': item.api_server,
                 'status': item.status,
                 'description': item.description,
-                'namespaces': _k8s_namespace_options(item),
+                'namespaces': k8s_scope(request.user, item.pk)['namespaces'] or _k8s_namespace_options(item),
             }
-            for item in K8sCluster.objects.order_by('name', 'id')
+            for item in cluster_queryset
             if not _is_demoish_catalog_item(item.name, item.description, item.api_server)
         ]
         docker_hosts = [
@@ -777,6 +848,7 @@ class AIOpsKnowledgeEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSe
             'tracing_datasources': tracing_datasources,
             'observability_links': observability_links,
             'alert_environments': [_clean_catalog_value(item) for item in alert_environments if _clean_catalog_value(item)],
+            'posture_environments': posture_environments,
             'k8s_clusters': k8s_clusters,
             'docker_hosts': docker_hosts,
             'task_resource_environments': task_resource_environments,
@@ -841,21 +913,20 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     serializer_class = AIOpsChatSessionSerializer
     http_method_names = ['get', 'post', 'delete', 'head', 'options']
     session_not_found_message = '会话不存在或已被删除，请刷新会话列表后重新选择会话，或新建会话后再提问。'
-    demo_account_allowed_actions = {'create', 'send_message', 'send_message_async'}
     rbac_permissions = {
         'list': ['aiops.chat.view'],
         'retrieve': ['aiops.chat.view'],
         'create': ['aiops.chat.view'],
         'destroy': ['aiops.chat.view'],
         'delete_session': ['aiops.chat.view'],
+        'rename': ['aiops.chat.view'],
         'messages': ['aiops.chat.view'],
         'send_message': ['aiops.chat.view'],
         'send_message_async': ['aiops.chat.view'],
+        'langgraph_pilot': ['aiops.chat.analyze'],
     }
 
     def get_queryset(self):
-        if getattr(self.request.user, 'username', '') == 'demo':
-            sync_admin_sessions_to_demo()
         return AIOpsChatSession.objects.filter(user=self.request.user).prefetch_related('messages').order_by('-last_message_at', '-id')
 
     def get_object(self):
@@ -873,7 +944,6 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             title=serializer.validated_data.get('title') or '新会话',
             context={'page_context': page_context} if page_context else {},
         )
-        sync_session_to_demo_if_needed(session)
         return Response(AIOpsChatSessionSerializer(session).data, status=status.HTTP_201_CREATED)
 
     def destroy(self, request, *args, **kwargs):
@@ -881,8 +951,6 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         session_id = instance.id
         session_title = instance.title
         response = super().destroy(request, *args, **kwargs)
-        if getattr(request.user, 'username', '') == 'admin':
-            sync_admin_sessions_to_demo()
         record_event(
             request=request,
             module='aiops',
@@ -901,6 +969,32 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     def delete_session(self, request, pk=None):
         return self.destroy(request, pk=pk)
 
+    @action(detail=True, methods=['post'])
+    def rename(self, request, pk=None):
+        session = self.get_object()
+        title = str(request.data.get('title') or '').strip()
+        if not title:
+            return Response({'detail': '会话标题不能为空。'}, status=status.HTTP_400_BAD_REQUEST)
+        if len(title) > 128:
+            return Response({'detail': '会话标题不能超过 128 个字符。'}, status=status.HTTP_400_BAD_REQUEST)
+        old_title = session.title
+        session.title = title
+        session.save(update_fields=['title', 'updated_at'])
+        record_event(
+            request=request,
+            module='aiops',
+            category='chat',
+            action='rename_session',
+            title='修改 AIOps 会话标题',
+            summary=f'会话《{old_title}》已重命名为《{title}》',
+            resource_type='aiops_chat_session',
+            resource_id=session.id,
+            resource_name=title,
+            correlation_id=f'aiops-chat-session:{session.id}',
+            metadata={'old_title': old_title, 'new_title': title},
+        )
+        return Response(AIOpsChatSessionSerializer(session).data)
+
     @action(detail=True, methods=['get'])
     def messages(self, request, pk=None):
         session = self.get_object()
@@ -908,17 +1002,64 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         return Response(AIOpsChatMessageSerializer(messages, many=True).data)
 
     @action(detail=True, methods=['post'])
+    def langgraph_pilot(self, request, pk=None):
+        """Run the isolated, read-only LangGraph investigation pilot."""
+        session = self.get_object()
+        content = recover_masked_suggested_question(str(request.data.get('content') or '').strip())
+        if not content:
+            return Response({'detail': 'content 不能为空。'}, status=status.HTTP_400_BAD_REQUEST)
+        user_message = AIOpsChatMessage.objects.create(
+            session=session,
+            role=AIOpsChatMessage.ROLE_USER,
+            content=content,
+            metadata={'execution_mode': 'langgraph_readonly_pilot'},
+        )
+        try:
+            result = run_langgraph_readonly_pilot(
+                session,
+                user_message,
+                request.user,
+                question=content,
+                environment=request.data.get('environment') or '',
+                service=request.data.get('service') or '',
+                thread_id=request.data.get('thread_id') or '',
+                max_evidence_tools=request.data.get('max_evidence_tools') or 3,
+            )
+        except LangGraphPilotUnavailable as exc:
+            user_message.delete()
+            return Response({'detail': str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        except ValueError as exc:
+            user_message.delete()
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        record_event(
+            request=request,
+            module='aiops',
+            category='chat',
+            action='run_langgraph_readonly_pilot',
+            title='运行 LangGraph AIOps 只读试点',
+            summary=f'已完成 LangGraph 只读排障试点：{content[:80]}',
+            resource_type='aiops_chat_session',
+            resource_id=session.id,
+            resource_name=session.title,
+            correlation_id=f'aiops-langgraph:{result.get("thread_id")}',
+            metadata={
+                'thread_id': result.get('thread_id'),
+                'alert_count': result.get('alert_count', 0),
+                'evidence_count': len(result.get('trace') or []),
+            },
+        )
+        return Response({'user_message': AIOpsChatMessageSerializer(user_message).data, 'pilot': result})
+
+    @action(detail=True, methods=['post'])
     def send_message(self, request, pk=None):
         session = self.get_object()
-        if is_demo_account(request.user):
-            return Response({'detail': DEMO_CHAT_DISABLED_MESSAGE}, status=status.HTTP_403_FORBIDDEN)
-        if getattr(request.user, 'username', '') == 'demo' and session.mirror_source_id:
-            return Response({'detail': '演示账号同步会话为只读，请先新建会话后提问。'}, status=status.HTTP_400_BAD_REQUEST)
-        serializer = AIOpsChatInputSerializer(data=request.data)
+        serializer = AIOpsChatInputSerializer(data=request.data, context={'request': request})
         serializer.is_valid(raise_exception=True)
         content = recover_masked_suggested_question(serializer.validated_data['content'].strip())
         analysis_only = bool(serializer.validated_data.get('analysis_only'))
         page_context = normalize_page_context(serializer.validated_data.get('page_context'))
+        question_category = serializer.validated_data.get('question_category') or 'auto'
+        requested_model = str(serializer.validated_data.get('model') or '').strip()
         if page_context:
             session.context = {**(session.context if isinstance(session.context, dict) else {}), 'page_context': page_context}
             session.save(update_fields=['context', 'updated_at'])
@@ -927,6 +1068,10 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             user_metadata['analysis_only'] = True
         if page_context:
             user_metadata['page_context'] = page_context
+        if question_category != 'auto':
+            user_metadata['question_category'] = question_category
+        if requested_model:
+            user_metadata['model'] = requested_model
         user_message = AIOpsChatMessage.objects.create(
             session=session,
             role=AIOpsChatMessage.ROLE_USER,
@@ -943,15 +1088,13 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def send_message_async(self, request, pk=None):
         session = self.get_object()
-        if is_demo_account(request.user):
-            return Response({'detail': DEMO_CHAT_DISABLED_MESSAGE}, status=status.HTTP_403_FORBIDDEN)
-        if getattr(request.user, 'username', '') == 'demo' and session.mirror_source_id:
-            return Response({'detail': '演示账号同步会话为只读，请先新建会话后提问。'}, status=status.HTTP_400_BAD_REQUEST)
-        serializer = AIOpsChatInputSerializer(data=request.data)
+        serializer = AIOpsChatInputSerializer(data=request.data, context={'request': request})
         serializer.is_valid(raise_exception=True)
         content = recover_masked_suggested_question(serializer.validated_data['content'].strip())
         analysis_only = bool(serializer.validated_data.get('analysis_only'))
         page_context = normalize_page_context(serializer.validated_data.get('page_context'))
+        question_category = serializer.validated_data.get('question_category') or 'auto'
+        requested_model = str(serializer.validated_data.get('model') or '').strip()
         if page_context:
             session.context = {**(session.context if isinstance(session.context, dict) else {}), 'page_context': page_context}
             session.save(update_fields=['context', 'updated_at'])
@@ -960,12 +1103,17 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             user_metadata['analysis_only'] = True
         if page_context:
             user_metadata['page_context'] = page_context
+        if question_category != 'auto':
+            user_metadata['question_category'] = question_category
+        if requested_model:
+            user_metadata['model'] = requested_model
         user_message = AIOpsChatMessage.objects.create(
             session=session,
             role=AIOpsChatMessage.ROLE_USER,
             content=content,
             metadata=user_metadata,
         )
+        langgraph_thread_id = ensure_langgraph_thread_id(user_message)
         assistant_message = AIOpsChatMessage.objects.create(
             session=session,
             role=AIOpsChatMessage.ROLE_ASSISTANT,
@@ -976,6 +1124,7 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
                 'processing_text': '请求已提交，正在排队处理',
                 'analysis_only': analysis_only,
                 'page_context': page_context,
+                'question_category': question_category,
                 'processing_steps': [{
                     'title': '排队中',
                     'detail': '已收到问题，正在准备上下文',
@@ -983,13 +1132,16 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
                     'timestamp': timezone.now().isoformat(),
                 }],
                 'tool_events': [],
+                'orchestration_engine': 'langgraph',
+                'langgraph_thread_id': langgraph_thread_id,
+                'langgraph_user_message_id': user_message.id,
+                'langgraph_resume_status': 'queued',
             },
         )
         session.last_message_at = timezone.now()
         if session.title == '新会话':
             session.title = content[:48] or '新会话'
         session.save(update_fields=['last_message_at', 'title', 'updated_at'])
-        sync_session_to_demo_if_needed(session)
         start_async_chat_processing(session, user_message, request.user, assistant_message, analysis_only=analysis_only)
         return Response({
             'user_message': AIOpsChatMessageSerializer(user_message).data,
@@ -998,7 +1150,33 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         }, status=status.HTTP_201_CREATED)
 
 
-class AIOpsAuditSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
+class AIOpsAuditExecutionViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
+    serializer_class = AIOpsAuditExecutionSerializer
+    pagination_class = _AuditRecentPagination
+    rbac_permissions = {'list': ['aiops.audit.view'], 'retrieve': ['aiops.audit.view']}
+
+    def get_queryset(self):
+        queryset = execution_queryset()
+        query = _audit_query_param(self.request, 'q', 'search')
+        if query:
+            queryset = queryset.filter(
+                Q(content__icontains=query) | Q(session__title__icontains=query)
+                | Q(session__user__username__icontains=query) | Q(metadata__langgraph_thread_id__icontains=query)
+            )
+        status_value = _audit_query_param(self.request, 'status')
+        if status_value:
+            queryset = queryset.filter(execution_status=status_value)
+        username = _audit_query_param(self.request, 'username', 'user')
+        if username:
+            queryset = queryset.filter(session__user__username__icontains=username)
+        queryset = _filter_audit_correlation(queryset, self.request, message_field='id')
+        return _filter_audit_time_range(queryset, self.request, 'created_at')
+
+    def retrieve(self, request, *args, **kwargs):
+        return Response(execution_detail(self.get_object()))
+
+
+class AIOpsAuditSessionViewSet(RBACPermissionMixin, mixins.DestroyModelMixin, viewsets.ReadOnlyModelViewSet):
     serializer_class = AIOpsAuditSessionSerializer
     pagination_class = _AuditRecentPagination
     http_method_names = ['get', 'post', 'delete', 'head', 'options']
@@ -1006,6 +1184,7 @@ class AIOpsAuditSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         'list': ['aiops.audit.view'],
         'retrieve': ['aiops.audit.view'],
         'destroy': ['aiops.audit.manage'],
+        'bulk_delete': ['aiops.audit.manage'],
     }
 
     def get_queryset(self):
@@ -1028,6 +1207,7 @@ class AIOpsAuditSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         if username:
             queryset = queryset.filter(user__username__icontains=username)
         queryset = _filter_audit_time_range(queryset, self.request, 'last_message_at')
+        queryset = _filter_audit_correlation(queryset, self.request, session_field='id', message_field='messages__id')
         return queryset.order_by('-last_message_at', '-id')
 
     def destroy(self, request, *args, **kwargs):
@@ -1036,8 +1216,6 @@ class AIOpsAuditSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         session_title = instance.title
         session_user = getattr(instance.user, 'username', '')
         response = super().destroy(request, *args, **kwargs)
-        if session_user == 'admin':
-            sync_admin_sessions_to_demo()
         record_event(
             request=request,
             module='aiops',
@@ -1069,14 +1247,11 @@ class AIOpsAuditSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
 
         deleted_count = len(sessions)
         deleted_titles = [item.title for item in sessions[:5]]
-        admin_deleted = any(getattr(item.user, 'username', '') == 'admin' for item in sessions)
         session_meta = [
             {'id': item.id, 'title': item.title, 'username': getattr(item.user, 'username', '')}
             for item in sessions
         ]
         queryset.delete()
-        if admin_deleted:
-            sync_admin_sessions_to_demo()
         record_event(
             request=request,
             module='aiops',
@@ -1093,7 +1268,7 @@ class AIOpsAuditSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         return Response({'deleted': deleted_count}, status=status.HTTP_200_OK)
 
 
-class AIOpsToolInvocationViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
+class AIOpsToolInvocationViewSet(RBACPermissionMixin, mixins.DestroyModelMixin, viewsets.ReadOnlyModelViewSet):
     serializer_class = AIOpsToolInvocationSerializer
     pagination_class = _AuditRecentPagination
     http_method_names = ['get', 'post', 'delete', 'head', 'options']
@@ -1101,6 +1276,7 @@ class AIOpsToolInvocationViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         'list': ['aiops.audit.view'],
         'retrieve': ['aiops.audit.view'],
         'destroy': ['aiops.audit.manage'],
+        'bulk_delete': ['aiops.audit.manage'],
     }
 
     def get_queryset(self):
@@ -1119,7 +1295,7 @@ class AIOpsToolInvocationViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         if username:
             queryset = queryset.filter(session__user__username__icontains=username)
         queryset = _filter_audit_time_range(queryset, self.request, 'created_at')
-        return queryset.order_by('-created_at', '-id')
+        return _filter_audit_correlation(queryset, self.request).order_by('-created_at', '-id')
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -1177,7 +1353,7 @@ class AIOpsToolInvocationViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         return Response({'deleted': deleted_count}, status=status.HTTP_200_OK)
 
 
-class AIOpsPendingActionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
+class AIOpsPendingActionViewSet(RBACPermissionMixin, mixins.DestroyModelMixin, viewsets.ReadOnlyModelViewSet):
     serializer_class = AIOpsPendingActionSerializer
     pagination_class = _AuditRecentPagination
     http_method_names = ['get', 'post', 'delete', 'head', 'options']
@@ -1185,6 +1361,7 @@ class AIOpsPendingActionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         'list': ['aiops.audit.view'],
         'retrieve': ['aiops.audit.view'],
         'destroy': ['aiops.audit.manage'],
+        'bulk_delete': ['aiops.audit.manage'],
     }
 
     def get_queryset(self):
@@ -1266,7 +1443,7 @@ class AIOpsPendingActionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         return Response({'deleted': deleted_count}, status=status.HTTP_200_OK)
 
 
-class AIOpsModelInvocationViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
+class AIOpsModelInvocationViewSet(RBACPermissionMixin, mixins.DestroyModelMixin, viewsets.ReadOnlyModelViewSet):
     serializer_class = AIOpsModelInvocationSerializer
     pagination_class = _AuditRecentPagination
     http_method_names = ['get', 'delete', 'head', 'options']
@@ -1300,7 +1477,7 @@ class AIOpsModelInvocationViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         if username:
             queryset = queryset.filter(username__icontains=username)
         queryset = _filter_audit_time_range(queryset, self.request, 'created_at')
-        return queryset.order_by('-created_at', '-id')
+        return _filter_audit_correlation(queryset, self.request).order_by('-created_at', '-id')
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -1693,6 +1870,36 @@ def action_registry(request):
     })
 
 
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, build_rbac_permission('aiops.chat.view')])
+def capabilities(request):
+    items = list_capabilities(user=request.user, include_unavailable=False)
+    return Response({'capabilities': items, 'summary': build_action_registry_summary(items)})
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, build_rbac_permission('aiops.config.view')])
+def admin_capabilities(request):
+    items = list_capabilities(user=request.user, include_unavailable=True)
+    return Response({'capabilities': items, 'summary': build_action_registry_summary(items)})
+
+
+@api_view(['PATCH'])
+@permission_classes([IsAuthenticated, build_rbac_permission('aiops.config.manage')])
+def capability_skills(request, code):
+    if set(request.data) != {'skills'}:
+        return Response({'detail': '仅支持更新 skills 挂载列表'}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        item = update_capability_skills(code, request.data['skills'], user=request.user)
+    except ValueError as exc:
+        return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    record_event(request=request, module='aiops', category='configuration', action='update_capability_skills',
+                 title='更新问答类型 Skill 挂载', summary=f"已更新问答类型《{item['display_name']}》的 Skill 挂载",
+                 resource_type='aiops_capability', resource_id=item['code'], resource_name=item['display_name'],
+                 metadata={'capability_code': item['code'], 'skills': item['skills']})
+    return Response(item)
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated, build_rbac_permission('aiops.chat.analyze')])
 def action_preflight(request):
@@ -1819,6 +2026,7 @@ def audit_action_traces(request):
     risk_level = _audit_query_param(request, 'risk_level', 'risk')
     reader = AIOpsAuditTraceReader()
     skill_display_map = _audit_skill_display_map()
+    capability_display_map = _audit_action_display_map(user=request.user)
     rows = []
 
     for message in _audit_trace_message_queryset(request).iterator():
@@ -1837,9 +2045,10 @@ def audit_action_traces(request):
         decision = trace.get('decision') if isinstance(trace.get('decision'), dict) else {}
         payload = {
             **_audit_message_base_payload(message),
-            'id': f'action-{message.id}-{trace.get("code") or "trace"}',
-            'code': trace.get('code') or '',
-            'display_name': trace.get('display_name') or trace.get('code') or '',
+            'id': f'action-{message.id}-{trace.get("legacy_code") or trace.get("code") or "trace"}',
+            'code': normalize_capability_code(trace.get('code')),
+            'legacy_code': trace.get('legacy_code') or trace.get('code') or '',
+            'display_name': capability_display_map.get(trace.get('code')) or trace.get('display_name') or trace.get('code') or '',
             'risk_level': trace.get('risk_level') or '',
             'risk_level_display': trace.get('risk_level_display') or '',
             'status': trace_status,
@@ -1906,23 +2115,30 @@ def audit_cost_overview(request):
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated, build_rbac_permission('aiops.task.execute')])
+@permission_classes([IsAuthenticated])
 def confirm_pending_action(request, pk):
     action = AIOpsPendingAction.objects.select_related('session', 'message').filter(pk=pk).first()
     if not action:
         return Response({'detail': '动作不存在'}, status=status.HTTP_404_NOT_FOUND)
     try:
-        task_draft = confirm_action(action, request.user, request=request)
+        from .langgraph_pilot import confirm_langgraph_action
+
+        result = confirm_langgraph_action(action, request.user, request=request, payload=request.data)
+        if action.action_type == AIOpsPendingAction.ACTION_CREATE_CMDB_ASSET:
+            return Response({
+                'success': True,
+                'action_type': action.action_type,
+                'asset_name': result.get('name'),
+                'asset': result,
+            })
+        task_draft = result
         return Response({'success': True, 'task_name': task_draft['name'], 'task_draft': task_draft})
     except ValueError as exc:
-        action.status = AIOpsPendingAction.STATUS_FAILED
-        action.result_payload = {'error': str(exc)}
-        action.save(update_fields=['status', 'result_payload', 'updated_at'])
         return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated, build_rbac_permission('aiops.task.generate')])
+@permission_classes([IsAuthenticated])
 def cancel_pending_action(request, pk):
     action = AIOpsPendingAction.objects.select_related('session', 'message').filter(pk=pk).first()
     if not action:

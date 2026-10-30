@@ -83,10 +83,31 @@
                   <button v-if="isMobile" type="button" class="toolbar-chip" @click="mobileSessionVisible = true">
                     会话 {{ sessions.length }}
                   </button>
-                  <div class="session-indicator">
-                    <span class="session-indicator-label">{{ currentSession?.title || '新会话' }}</span>
+                  <div v-if="renamingSession" class="session-title-editor">
+                    <el-input
+                      ref="sessionTitleInputRef"
+                      v-model="sessionTitleDraft"
+                      :maxlength="128"
+                      size="small"
+                      @keydown.enter.prevent="saveSessionTitle"
+                      @keydown.esc.prevent="cancelSessionTitleEdit"
+                      @blur="saveSessionTitle"
+                    />
                   </div>
-                  <span class="environment-chip" :class="{ empty: !currentEnvironmentName }">
+                  <button
+                    v-else
+                    type="button"
+                    class="chat-session-title"
+                    :title="currentSession?.title || '新会话'"
+                    :disabled="!currentSession"
+                    @click="startSessionTitleEdit"
+                  >
+                    <span>{{ currentSession?.title || '新会话' }}</span>
+                    <el-icon v-if="currentSession"><EditPen /></el-icon>
+                  </button>
+                </div>
+                <div class="chat-toolbar-right">
+                  <span v-if="questionCategory !== 'cmdb'" class="environment-chip" :class="{ empty: !currentEnvironmentName }">
                     {{ currentEnvironmentName ? `环境：${currentEnvironmentName}` : '未指定环境' }}
                   </span>
                   <label class="analysis-toggle">
@@ -94,17 +115,12 @@
                     <el-switch v-model="analysisSwitchValue" size="small" :disabled="forcedAnalysisOnly" />
                   </label>
                 </div>
-                <div class="chat-toolbar-right">
-                  <span class="toolbar-hint">
-                    {{ analysisHintText }}
-                  </span>
-                </div>
               </div>
 
               <div class="quick-palette">
-                <div v-if="!messages.length && bootstrap.suggested_questions?.length" class="aiops-quick-questions">
+                <div v-if="!messages.length && suggestedQuestions.length" class="aiops-quick-questions">
                   <button
-                    v-for="item in bootstrap.suggested_questions"
+                    v-for="item in suggestedQuestions"
                     :key="item"
                     type="button"
                     class="quick-chip"
@@ -118,8 +134,8 @@
               <div class="message-stage">
                 <div ref="messageListRef" class="aiops-message-list" v-loading="loading.messages">
                   <div v-if="!renderMessages.length" class="message-empty">
-                    <div class="empty-title">可以直接问我</div>
-                    <div class="empty-copy">资源现状、未确认告警、关联分析、任务草稿，我都会优先给出平台内证据。</div>
+                    <div class="empty-title">{{ activeQuestionCategory.value === 'auto' ? '可以直接问我' : activeQuestionCategory.label }}</div>
+                    <div class="empty-copy">{{ activeQuestionCategory.value === 'auto' ? '资源现状、未确认告警、关联分析、任务草稿，我都会优先给出平台内证据。' : activeQuestionCategory.description }}</div>
                   </div>
 
                   <div
@@ -134,6 +150,7 @@
                     </div>
 
                     <div class="message-bubble">
+                      <el-alert v-if="message.role === 'assistant' && message.metadata?.orchestration_degraded" title="本轮使用兼容运行，执行追踪和节点断点恢复不可用。" type="warning" :closable="false" />
                       <div
                         v-if="message.role === 'assistant' && shouldShowProcessCard(message)"
                         class="analysis-process-card"
@@ -280,7 +297,9 @@
                               <div v-if="responseBlock.summary" class="response-block-summary">{{ responseBlock.summary }}</div>
                             </div>
                             <div class="response-block-head-actions">
-                              <span class="response-block-badge">{{ getBlockTypeLabel(responseBlock.type) }}</span>
+                              <span class="response-block-badge" :class="getResponseBlockBadgeClass(responseBlock, message)">
+                                {{ getResponseBlockBadge(responseBlock, message) }}
+                              </span>
                               <button type="button" class="response-block-toggle" @click="toggleResponseBlockExpanded(message, responseBlock, responseBlockIndex)">
                                 {{ isResponseBlockExpanded(message, responseBlock, responseBlockIndex) ? '收起' : '展开' }}
                               </button>
@@ -288,7 +307,73 @@
                           </div>
 
                           <div v-show="isResponseBlockExpanded(message, responseBlock, responseBlockIndex)" class="response-block-content">
-                            <div v-if="responseBlock.type === 'approval_form'" class="response-block-approval">
+                            <template v-if="responseBlock.type === 'asset_form'">
+                              <div v-if="isAssetFormPending(message)" class="response-block-asset-form">
+                                <div
+                                  v-for="field in getAssetFormFields(responseBlock, message)"
+                                  :key="`${responseBlock._key}-asset-field-${field.code}`"
+                                  class="asset-form-field"
+                                >
+                                  <label>{{ field.label || field.name || field.code }}<span v-if="field.required" class="asset-form-required">*</span></label>
+                                  <el-select
+                                    v-if="['select', 'enum', 'reference'].includes(field.field_type)"
+                                    :model-value="getAssetFieldValue(message, responseBlock, field)"
+                                    filterable
+                                    clearable
+                                    :disabled="Boolean(field.depends_on && !getAssetFormModel(message, responseBlock)[field.depends_on])"
+                                    :placeholder="field.placeholder || '请选择'"
+                                    @update:model-value="setAssetFieldValue(message, responseBlock, field, $event)"
+                                  >
+                                    <el-option v-for="option in getAssetFieldOptions(message, responseBlock, field)" :key="String(option.value)" :label="option.label" :value="option.value" />
+                                  </el-select>
+                                  <el-select
+                                    v-else-if="field.field_type === 'multi_enum'"
+                                    :model-value="getAssetFieldValue(message, responseBlock, field) || []"
+                                    multiple
+                                    filterable
+                                    clearable
+                                    @update:model-value="setAssetFieldValue(message, responseBlock, field, $event)"
+                                  >
+                                    <el-option v-for="option in field.options || []" :key="String(option.value)" :label="option.label" :value="option.value" />
+                                  </el-select>
+                                  <el-switch
+                                    v-else-if="field.field_type === 'boolean'"
+                                    :model-value="Boolean(getAssetFieldValue(message, responseBlock, field))"
+                                    @update:model-value="setAssetFieldValue(message, responseBlock, field, $event)"
+                                  />
+                                  <el-input-number
+                                    v-else-if="['integer', 'decimal'].includes(field.field_type)"
+                                    :model-value="getAssetFieldValue(message, responseBlock, field)"
+                                    :precision="field.field_type === 'decimal' ? 2 : 0"
+                                    controls-position="right"
+                                    @update:model-value="setAssetFieldValue(message, responseBlock, field, $event)"
+                                  />
+                                  <el-date-picker
+                                    v-else-if="['date', 'datetime'].includes(field.field_type)"
+                                    :model-value="getAssetFieldValue(message, responseBlock, field)"
+                                    :type="field.field_type"
+                                    :value-format="field.field_type === 'date' ? 'YYYY-MM-DD' : 'YYYY-MM-DD HH:mm:ss'"
+                                    @update:model-value="setAssetFieldValue(message, responseBlock, field, $event)"
+                                  />
+                                  <el-input
+                                    v-else
+                                    :model-value="getAssetFieldValue(message, responseBlock, field)"
+                                    :type="['text', 'json'].includes(field.field_type) ? 'textarea' : 'text'"
+                                    :rows="field.field_type === 'json' ? 3 : 2"
+                                    @update:model-value="setAssetFieldValue(message, responseBlock, field, $event)"
+                                  />
+                                </div>
+                              </div>
+                              <div v-else class="response-block-asset-result" :class="getAssetFormResultClass(message)">
+                                <el-icon v-if="message.pending_action?.result_payload?.asset_id"><CircleCheck /></el-icon>
+                                <div>
+                                  <strong>{{ getAssetFormResultTitle(message) }}</strong>
+                                  <span>{{ getAssetFormResultDetail(message) }}</span>
+                                </div>
+                              </div>
+                            </template>
+
+                            <div v-else-if="responseBlock.type === 'approval_form'" class="response-block-approval">
                               <div v-if="getBlockMetrics(responseBlock).length" class="response-block-metric-grid">
                                 <div v-for="metric in getBlockMetrics(responseBlock)" :key="`${responseBlock._key}-metric-${metric.label}`" class="response-block-metric">
                                   <span>{{ metric.label }}</span>
@@ -441,6 +526,11 @@
                         管理员已关闭机器人动作执行，当前只保留分析和任务草稿能力。
                       </div>
 
+                      <AIOpsRemediationVerification
+                        v-if="message.pending_action?.action_type === 'execute_host_task'"
+                        :action-id="message.pending_action.id"
+                      />
+
 
                     </div>
                   </div>
@@ -448,30 +538,92 @@
               </div>
 
               <div class="aiops-composer">
-                <el-input
-                  ref="composerRef"
-                  v-model="composer"
-                  type="textarea"
-                  :rows="2"
-                  resize="none"
-                  :maxlength="2000"
-                  show-word-limit
-                  placeholder="输入你的问题，Enter 发送，Shift + Enter 换行，Esc 收起"
-                  @keydown="handleComposerKeydown"
-                />
-                <div class="composer-actions">
-                  <div class="composer-meta">
-                    <span class="composer-tip">Enter 发送，Shift + Enter 换行</span>
-                    <span v-if="effectiveAnalysisOnly" class="composer-tip">当前为只分析模式</span>
-                    <span v-if="composer.trim()" class="composer-tip">草稿已自动保存</span>
-                    <span v-if="loading.poll" class="composer-tip">正在流式返回结果</span>
+                <div v-if="questionEnvironmentMissing" class="composer-environment-guide" role="status">
+                  <el-icon><Location /></el-icon>
+                  <span>{{ activeQuestionCategory.label }}需要环境上下文，请先在下方选择知识图谱环境</span>
+                </div>
+                <div class="composer-input-shell">
+                  <el-input
+                    ref="composerRef"
+                    v-model="composer"
+                    type="textarea"
+                    :autosize="{ minRows: 1, maxRows: 5 }"
+                    resize="none"
+                    :maxlength="2000"
+                    :disabled="questionEnvironmentMissing"
+                    :placeholder="questionEnvironmentMissing ? '选择知识图谱环境后即可提问' : '输入你的问题，Enter 发送，Shift + Enter 换行，Esc 收起'"
+                    @keydown="handleComposerKeydown"
+                  />
+                  <div class="composer-scope-row">
+                    <AIOpsQuestionScope
+                      ref="questionScopeRef"
+                      v-model="questionCategory"
+                      v-model:environment="selectedEnvironment"
+                      :environments="availableEnvironments"
+                      :options="questionCategories"
+                      :disabled="loading.send || loading.poll"
+                      :loading="loading.bootstrap"
+                      @refresh="fetchBootstrap"
+                    />
                   </div>
                   <div class="composer-action-group">
-                    <el-button class="aiops-toolbar-btn" :disabled="!composer.trim()" @click="clearDraft">
-                      <el-icon><Delete /></el-icon>
-                      <span>清空</span>
-                    </el-button>
-                    <el-button type="primary" class="aiops-send-btn" :loading="loading.send || loading.poll" :disabled="!composer.trim() || loading.poll" @click="handleSend">
+                    <div ref="modelPickerRef" class="model-picker">
+                      <button
+                        type="button"
+                        class="model-picker-trigger"
+                        :disabled="loading.send || loading.poll || !availableModels.length"
+                        :aria-expanded="modelPickerOpen"
+                        aria-haspopup="listbox"
+                        @click.stop="toggleModelPicker"
+                      >
+                        <el-icon><Cpu /></el-icon>
+                        <span class="model-picker-value">{{ selectedModel || '选择模型' }}</span>
+                        <el-icon class="model-picker-chevron" :class="{ open: modelPickerOpen }"><TopRight /></el-icon>
+                      </button>
+                      <transition name="model-menu">
+                        <div v-if="modelPickerOpen" class="model-picker-menu" role="listbox" aria-label="选择模型">
+                          <div class="model-picker-menu-head">
+                            <div>
+                              <span class="model-picker-menu-title">选择模型</span>
+                              <span class="model-picker-menu-subtitle">用于当前对话</span>
+                            </div>
+                            <el-icon><Cpu /></el-icon>
+                          </div>
+                          <div class="model-picker-group">
+                            <div class="model-picker-group-label">默认</div>
+                            <button
+                              v-if="bootstrap.provider?.model"
+                              type="button"
+                              class="model-picker-option"
+                              :class="{ active: selectedModel === bootstrap.provider.model }"
+                              role="option"
+                              :aria-selected="selectedModel === bootstrap.provider.model"
+                              @click="selectModel(bootstrap.provider.model)"
+                            >
+                              <span class="model-picker-option-name">{{ bootstrap.provider.model }}</span>
+                              <el-icon v-if="selectedModel === bootstrap.provider.model"><CircleCheck /></el-icon>
+                            </button>
+                          </div>
+                          <div v-if="recommendedModels.length" class="model-picker-group">
+                            <div class="model-picker-group-label">推荐模型集</div>
+                            <button
+                              v-for="model in recommendedModels"
+                              :key="model"
+                              type="button"
+                              class="model-picker-option"
+                              :class="{ active: selectedModel === model }"
+                              role="option"
+                              :aria-selected="selectedModel === model"
+                              @click="selectModel(model)"
+                            >
+                              <span class="model-picker-option-name">{{ model }}</span>
+                              <el-icon v-if="selectedModel === model"><CircleCheck /></el-icon>
+                            </button>
+                          </div>
+                        </div>
+                      </transition>
+                    </div>
+                    <el-button type="primary" class="aiops-send-btn" :loading="loading.send || loading.poll" :disabled="!composer.trim() || loading.poll || questionEnvironmentMissing" @click="handleSend">
                       <el-icon><Promotion /></el-icon>
                       <span>发送</span>
                     </el-button>
@@ -538,7 +690,7 @@
     </transition>
 
     <button
-      v-if="!embedded"
+      v-if="!embedded && showLauncher"
       type="button"
       ref="fabButtonRef"
       class="aiops-fab"
@@ -563,7 +715,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { CircleCheck, CopyDocument, Delete, Fold, Plus, Promotion, TopRight } from '@element-plus/icons-vue'
+import { CircleCheck, CopyDocument, Cpu, Delete, EditPen, Fold, Location, Plus, Promotion, TopRight } from '@element-plus/icons-vue'
 import {
   cancelAIOpsAction,
   confirmAIOpsAction,
@@ -572,21 +724,31 @@ import {
   getAIOpsBootstrap,
   getAIOpsMessages,
   getAIOpsSessions,
+  renameAIOpsSession,
   sendAIOpsMessageAsync,
 } from '@/api/modules/aiops'
 import botAvatar from '@/assets/aiops-bot.svg'
 import { useAuthStore } from '@/stores/auth'
+import AIOpsQuestionScope from './AIOpsQuestionScope.vue'
+import AIOpsRemediationVerification from './AIOpsRemediationVerification.vue'
+import { buildQuestionCategories, getQuestionCategory, normalizeQuestionCategory } from '@/utils/aiopsQuestionScope'
 
 const props = defineProps({
   embedded: {
     type: Boolean,
     default: false,
   },
+  showLauncher: {
+    type: Boolean,
+    default: true,
+  },
 })
 
 const STORAGE_SESSION_KEY = 'sxdevops_aiops_current_session'
 const STORAGE_VISIBLE_KEY = 'sxdevops_aiops_visible'
 const STORAGE_ANALYSIS_KEY = 'sxdevops_aiops_analysis_only'
+const STORAGE_QUESTION_CATEGORY_KEY = 'sxdevops_aiops_question_category'
+const STORAGE_MODEL_KEY = 'sxdevops_aiops_model'
 const STORAGE_DRAFT_PREFIX = 'sxdevops_aiops_draft_'
 const AIOPS_SESSION_REQUEST_CONFIG = { skipErrorMessage: true }
 const AIOPS_SESSION_MISSING_MESSAGE = '会话不存在或已被删除，请刷新会话列表后重新选择会话，或新建会话后再提问。'
@@ -596,17 +758,28 @@ const route = useRoute()
 const authStore = useAuthStore()
 
 const embedded = computed(() => props.embedded)
+const showLauncher = computed(() => props.showLauncher)
 const visible = ref(props.embedded || localStorage.getItem(STORAGE_VISIBLE_KEY) === '1')
 const analysisOnly = ref(localStorage.getItem(STORAGE_ANALYSIS_KEY) === '1')
+const savedQuestionCategory = localStorage.getItem(STORAGE_QUESTION_CATEGORY_KEY)
+const questionCategory = ref(normalizeQuestionCategory(savedQuestionCategory))
+const selectedEnvironment = ref('')
+const questionScopeRef = ref(null)
+const selectedModel = ref(localStorage.getItem(STORAGE_MODEL_KEY) || '')
+const modelPickerOpen = ref(false)
 const bootstrap = ref({ permissions: {}, suggested_questions: [], runtime: {} })
 const sessions = ref([])
 const messages = ref([])
 const composer = ref('')
 const currentSessionId = ref(Number(localStorage.getItem(STORAGE_SESSION_KEY) || '') || null)
-const loading = ref({ bootstrap: false, sessions: false, messages: false, send: false, poll: false, deleteSession: null })
+const loading = ref({ bootstrap: false, sessions: false, messages: false, send: false, poll: false, deleteSession: null, renameSession: false })
 const pendingAssistantMessage = ref(null)
 const messageListRef = ref(null)
 const composerRef = ref(null)
+const modelPickerRef = ref(null)
+const sessionTitleInputRef = ref(null)
+const renamingSession = ref(false)
+const sessionTitleDraft = ref('')
 const mobileSessionVisible = ref(false)
 const isMobile = ref(typeof window !== 'undefined' ? window.innerWidth <= 920 : false)
 const fabPosition = ref(null)
@@ -627,6 +800,7 @@ let pollingFinalizeAttempts = 0
 const processExpandedState = ref({})
 const processStatusState = ref({})
 const responseBlockExpandedState = ref({})
+const assetFormState = ref({})
 const FINAL_POLL_MAX_ATTEMPTS = 4
 const FINAL_POLL_STABLE_ROUNDS = 2
 
@@ -644,14 +818,26 @@ const analysisSwitchValue = computed({
     }
   },
 })
-const analysisHintText = computed(() => {
-  if (forcedAnalysisOnly.value) return '平台已关闭待执行任务生成'
-  return effectiveAnalysisOnly.value ? '本轮会强制只分析，不生成待执行任务' : '具备权限时可生成待执行动作'
+const availableEnvironments = computed(() => bootstrap.value.environment_options || [])
+const questionCategories = computed(() => buildQuestionCategories(bootstrap.value.capabilities || []))
+const activeQuestionCategory = computed(() => getQuestionCategory(questionCategory.value, questionCategories.value))
+const currentEnvironmentName = computed(() => selectedEnvironment.value)
+const questionEnvironmentMissing = computed(() => Boolean(activeQuestionCategory.value.requiresEnvironment && !selectedEnvironment.value))
+const suggestedQuestions = computed(() => {
+  if (activeQuestionCategory.value.questions.length) {
+    return activeQuestionCategory.value.questions.map(item => item.replaceAll('当前环境', currentEnvironmentName.value || '当前环境'))
+  }
+  const pageQuestions = buildPageContext().suggested_questions || []
+  return pageQuestions.length ? pageQuestions : (bootstrap.value.suggested_questions || [])
 })
-const currentEnvironmentName = computed(() => {
-  const value = currentSession.value?.context?.current_environment
-  if (!value) return ''
-  return typeof value === 'string' ? value : (value.name || '')
+const availableModels = computed(() => {
+  const models = bootstrap.value.provider?.models
+  if (Array.isArray(models) && models.length) return models.filter(Boolean)
+  return bootstrap.value.provider?.model ? [bootstrap.value.provider.model] : []
+})
+const recommendedModels = computed(() => {
+  const defaultModel = bootstrap.value.provider?.model
+  return availableModels.value.filter(model => model !== defaultModel)
 })
 const fabStyle = computed(() => {
   if (!fabPosition.value || visible.value) return null
@@ -725,8 +911,6 @@ const ASSISTANT_ERROR_DISPLAY = {
   },
 }
 
-const DEMO_CHAT_DISABLED_MESSAGE = '演示账号问答权限已临时关闭，如需体验请联系作者：592095766@qq.com'
-
 function normalizeText(value) {
   return String(value || '').replace(/\r\n/g, '\n')
 }
@@ -745,11 +929,25 @@ function firstTextValue(source = {}, keys = []) {
 }
 
 function routePageCode(path = '') {
+  if (path.startsWith('/cmdb/overview')) return 'cmdb.overview'
+  if (path.startsWith('/cmdb/ledger')) return 'cmdb.assets'
+  if (path.startsWith('/cmdb/model/topology') || path.startsWith('/cmdb/topology')) return 'cmdb.topology'
+  if (path.startsWith('/cmdb/model')) return 'cmdb.models'
+  if (path.startsWith('/cmdb/cost')) return 'cmdb.cost'
+  if (path.startsWith('/cmdb/ipam')) return 'cmdb.ipam'
+  if (path.startsWith('/cmdb/sync') || path.startsWith('/cmdb/source-mappings')) return 'cmdb.sync'
+  if (path.startsWith('/cmdb/requests') || path.startsWith('/cmdb/authorization')) return 'cmdb.requests'
+  if (path.startsWith('/cmdb/thresholds')) return 'cmdb.thresholds'
+  if (path.startsWith('/cmdb/audit')) return 'cmdb.audit'
+  if (path.startsWith('/cmdb/views')) return 'cmdb.views'
+  if (path.startsWith('/cmdb/governance')) return 'cmdb.governance'
+  if (path.startsWith('/cmdb')) return 'cmdb.assets'
   if (path.startsWith('/alerts')) return 'alerts'
   if (path.startsWith('/logs/query')) return 'logs.query'
   if (path.startsWith('/containers/k8s')) return 'containers.k8s'
   if (path.startsWith('/containers/docker')) return 'containers.docker'
-    if (path.startsWith('/observability/tracing')) return 'observability.tracing'
+  if (path.startsWith('/observability/system-posture')) return 'observability.posture'
+  if (path.startsWith('/observability/tracing')) return 'observability.tracing'
   if (path.startsWith('/observability/metrics')) return 'observability.metrics'
   if (path.startsWith('/observability/grafana')) return 'observability.grafana'
   if (path.startsWith('/events')) return 'events'
@@ -764,6 +962,27 @@ function buildPageSuggestedQuestions(page, hints = {}) {
   const env = hints.environment || '目标环境'
   const service = hints.service || '目标服务'
   const cluster = hints.cluster || '当前集群'
+  const businessLine = hints.business_line || '当前业务线'
+  if (page === 'cmdb.cost') {
+    return [`分析${businessLine}本月成本和趋势`, `查看本月高成本资源与可优化空间`]
+  }
+  if (page === 'cmdb.overview') return [`盘点${businessLine} CMDB 资产总量和环境分布`, `查看未来 30 天到期资产并给出提醒`]
+  if (page === 'cmdb.models') return [`查看当前资产模型和必填字段`, `帮我新增一类 CMDB 资产`]
+  if (page === 'cmdb.ipam') return [`分析${env} IP 地址使用率和空闲地址`, `查询未关联 CMDB 资产的 IP`]
+  if (page === 'cmdb.sync') return [`查看最近采集任务失败原因`, `查询${env}资产同步状态和来源缺失`]
+  if (page === 'cmdb.requests') return [`查看待审批资源申请`, `分析资源申请和现有资产的重复空间`]
+  if (page === 'cmdb.thresholds') return [`查看启用中的水位阈值策略`, `分析哪些资产可能触发容量阈值`]
+  if (page === 'cmdb.audit') return [`查看最近 CMDB 资产变更记录`, `追踪${env}最近新增或下线的资产`]
+  if (page === 'cmdb.views') return [`查看当前 CMDB 视图中的资产分布`, `找出可优化或即将到期的资产`]
+  if (page === 'cmdb.topology') {
+    return [`查看${businessLine}资产拓扑和上下游关系`, `分析当前资产的关联影响范围`]
+  }
+  if (page === 'cmdb.governance') {
+    return [`分析${businessLine} CMDB 数据质量风险`, `查看当前优先治理的资产`]
+  }
+  if (page === 'cmdb.assets') {
+    return [`盘点${businessLine} CMDB 资产和状态分布`, `查询当前闲置或离线资产`, `帮我新增一台 CMDB 资产`]
+  }
   if (page === 'alerts') {
     return [`分析${env}最新告警的可能原因`, `查看${env}当前未确认严重告警`]
   }
@@ -797,6 +1016,15 @@ function buildPageContext() {
     alert_id: firstTextValue(merged, ['alert_id', 'alertId', 'id']),
     datasource_id: firstTextValue(merged, ['datasource_id', 'datasourceId', 'ds_id']),
     datasource_type: firstTextValue(merged, ['datasource_type', 'datasourceType', 'ds_type']),
+    business_line: firstTextValue(merged, ['business_line', 'businessLine', 'system']),
+    ci_type: firstTextValue(merged, ['ci_type', 'ciType', 'type']),
+    status: firstTextValue(merged, ['status']),
+    admin_user: firstTextValue(merged, ['admin_user', 'adminUser', 'owner']),
+    month: firstTextValue(merged, ['month', 'billing_month']),
+  }
+  if (selectedEnvironment.value && questionCategory.value !== 'cmdb') {
+    hints.environment = selectedEnvironment.value
+    hints.selected_environment = selectedEnvironment.value
   }
   Object.keys(hints).forEach((key) => {
     if (!hints[key]) delete hints[key]
@@ -904,6 +1132,7 @@ const RESPONSE_BLOCK_TYPE_LABELS = {
   k8s_action: 'K8s',
   self_heal_recommendation: '自愈',
   approval_form: '待确认',
+  asset_form: '资产表单',
   tool_trace: '追踪',
   risk_notice: '风险',
 }
@@ -1100,7 +1329,7 @@ function getMessageBlocks(message) {
     : Array.isArray(message?.metadata?.response_blocks)
       ? message.metadata.response_blocks
       : []
-  const blocks = rawBlocks
+  let blocks = rawBlocks
     .filter(Boolean)
     .map((block, index) => {
       const normalizedItems = normalizeResponseBlockItems(block?.items)
@@ -1118,7 +1347,16 @@ function getMessageBlocks(message) {
       }
     })
 
-  if (message?.pending_action && !blocks.some(block => block.type === 'approval_form')) {
+  if (message?.pending_action?.action_type === 'create_cmdb_asset') {
+    const hasAssetForm = blocks.some(block => block.type === 'asset_form')
+    if (hasAssetForm) {
+      blocks = blocks
+        .filter(block => block.type !== 'approval_form')
+        .map(block => block.type === 'asset_form' ? normalizeAssetFormBlock(block, message.pending_action) : block)
+    } else {
+      blocks.push(buildAssetFormBlock(message.pending_action))
+    }
+  } else if (message?.pending_action && !blocks.some(block => block.type === 'approval_form')) {
     blocks.push(buildApprovalFormBlock(message.pending_action))
   }
 
@@ -1126,7 +1364,7 @@ function getMessageBlocks(message) {
 }
 
 function hasApprovalBlock(message) {
-  return getMessageBlocks(message).some(block => block.type === 'approval_form')
+  return getMessageBlocks(message).some(block => ['approval_form', 'asset_form'].includes(block.type))
 }
 
 function getResponseBlockStateKey(message, block, index = 0) {
@@ -1157,6 +1395,7 @@ function isResponseBlockDefaultExpanded(block, message) {
   const type = String(block?.type || '')
   return Boolean(
     type === 'approval_form'
+    || type === 'asset_form'
     || type === 'alert_rule_draft'
     || type === 'dashboard_draft'
     || (message?.pending_action && type.includes('draft'))
@@ -1180,6 +1419,23 @@ function syncResponseBlockState(list = renderMessages.value) {
 
 function getBlockTypeLabel(type) {
   return RESPONSE_BLOCK_TYPE_LABELS[String(type || '')] || '结构化信息'
+}
+
+function getResponseBlockBadge(block, message) {
+  if (block?.type !== 'asset_form') return getBlockTypeLabel(block?.type)
+  const action = message?.pending_action
+  if (action?.result_payload?.asset_id) return '已完成'
+  if (action?.status === 'canceled') return '已取消'
+  if (action?.status === 'failed') return '失败'
+  return '待填写'
+}
+
+function getResponseBlockBadgeClass(block, message) {
+  if (block?.type !== 'asset_form') return ''
+  if (message?.pending_action?.result_payload?.asset_id) return 'is-success'
+  if (message?.pending_action?.status === 'canceled') return 'is-muted'
+  if (message?.pending_action?.status === 'failed') return 'is-danger'
+  return ''
 }
 
 function getBlockItemText(item) {
@@ -1237,13 +1493,151 @@ function getBlockActions(block, message) {
   return actions
 }
 
+function buildAssetFormBlock(pendingAction) {
+  const payload = pendingAction?.action_payload || {}
+  return normalizeAssetFormBlock({
+    type: 'asset_form',
+    title: pendingAction?.title || '新增 CMDB 资产',
+    form_schema: payload.form_schema || {},
+    form_values: payload.form_values || {},
+    _key: `pending-cmdb-asset-${pendingAction?.id || 'legacy'}`,
+  }, pendingAction)
+}
+
+function normalizeAssetFormBlock(block, pendingAction) {
+  const payload = pendingAction?.action_payload || {}
+  const result = pendingAction?.result_payload || {}
+  const status = pendingAction?.status || block?.status || 'pending'
+  let summary = '填写资产信息，确认后写入 CMDB。'
+  let actions = [{ type: 'confirm', label: '确认创建' }, { type: 'cancel', label: '取消' }]
+  if (result.asset_id) {
+    summary = `资产 ${result.asset_name || result.asset?.name || ''} 已创建并写入 CMDB。`
+    actions = [{ type: 'open_asset_ledger', label: '查看资产台账' }]
+  } else if (status === 'canceled') {
+    summary = '本次新增资产操作已取消。'
+    actions = []
+  } else if (status === 'failed') {
+    summary = result.error || '资产创建失败，请检查填写内容后重试。'
+    actions = []
+  } else if (status !== 'pending') {
+    summary = pendingAction?.status_display || '动作已处理。'
+    actions = []
+  }
+  return {
+    ...block,
+    status,
+    status_display: pendingAction?.status_display || block?.status_display || '待确认',
+    risk_level: pendingAction?.risk_level || block?.risk_level || 'medium',
+    summary,
+    form_schema: payload.form_schema || block?.form_schema || {},
+    form_values: payload.form_values || block?.form_values || {},
+    actions,
+  }
+}
+
+function isAssetFormPending(message) {
+  return !message?.pending_action || message.pending_action.status === 'pending'
+}
+
+function getAssetFormResultTitle(message) {
+  const action = message?.pending_action
+  if (action?.result_payload?.asset_id) return `资产 ${action.result_payload.asset_name || action.result_payload.asset?.name || ''} 创建成功`
+  if (action?.status === 'canceled') return '新增资产操作已取消'
+  if (action?.status === 'failed') return '资产创建失败'
+  return action?.status_display || '动作已处理'
+}
+
+function getAssetFormResultDetail(message) {
+  const action = message?.pending_action
+  if (action?.result_payload?.asset_id) return `资产 ID #${action.result_payload.asset_id}，已写入 CMDB 资产台账。`
+  if (action?.status === 'failed') return action?.result_payload?.error || '请检查填写内容后重新发起。'
+  return '如需继续，请重新发起新增资产请求。'
+}
+
+function getAssetFormResultClass(message) {
+  if (message?.pending_action?.result_payload?.asset_id) return 'is-success'
+  if (message?.pending_action?.status === 'failed') return 'is-danger'
+  return 'is-muted'
+}
+
+function getAssetFormKey(message, block) {
+  return String(message?.pending_action?.id || `${message?.id || message?.localKey || ''}:${block?._key || 'asset-form'}`)
+}
+
+function getAssetFormModel(message, block) {
+  const key = getAssetFormKey(message, block)
+  if (!assetFormState.value[key]) {
+    const source = block?.form_values || message?.pending_action?.action_payload?.form_values || {}
+    assetFormState.value[key] = {
+      ...source,
+      attributes: { ...(source.attributes || {}) },
+    }
+  }
+  return assetFormState.value[key]
+}
+
+function getAssetFormFields(block, message) {
+  const schema = block?.form_schema || message?.pending_action?.action_payload?.form_schema || {}
+  const model = getAssetFormModel(message, block)
+  const baseFields = Array.isArray(schema.base_fields) ? schema.base_fields : []
+  const modelFields = schema.model_fields?.[String(model.ci_type)] || []
+  return [...baseFields, ...modelFields]
+}
+
+function isAssetBaseField(field) {
+  return ['name', 'ci_type', 'business_node', 'environment_node', 'business_line', 'environment', 'admin_user', 'status'].includes(String(field?.code || ''))
+}
+
+function getAssetFieldOptions(message, block, field) {
+  const options = Array.isArray(field?.options) ? field.options : []
+  if (!field?.depends_on) return options
+  const parentValue = getAssetFormModel(message, block)[field.depends_on]
+  if (parentValue === '' || parentValue == null) return []
+  return options.filter(option => String(option?.parent_value) === String(parentValue))
+}
+
+function getAssetFieldValue(message, block, field) {
+  const model = getAssetFormModel(message, block)
+  return isAssetBaseField(field) ? model[field.code] : model.attributes?.[field.code]
+}
+
+function setAssetFieldValue(message, block, field, value) {
+  const model = getAssetFormModel(message, block)
+  if (isAssetBaseField(field)) {
+    model[field.code] = value
+    if (field.code === 'business_node') model.environment_node = ''
+  }
+  else model.attributes = { ...(model.attributes || {}), [field.code]: value }
+}
+
+function buildAssetFormPayload(action, block) {
+  const message = { pending_action: action }
+  const model = getAssetFormModel(message, block || {})
+  const payload = { ...model, attributes: { ...(model.attributes || {}) } }
+  for (const field of getAssetFormFields(block || {}, message)) {
+    const value = isAssetBaseField(field) ? payload[field.code] : payload.attributes[field.code]
+    if (field.required && (value === '' || value == null || (Array.isArray(value) && !value.length))) {
+      throw new Error(`请填写${field.label || field.name || field.code}`)
+    }
+    if (field.field_type === 'json' && typeof value === 'string' && value.trim()) {
+      try {
+        payload.attributes[field.code] = JSON.parse(value)
+      } catch {
+        throw new Error(`${field.label || field.name || field.code}必须是有效 JSON`)
+      }
+    }
+  }
+  return payload
+}
+
 function getPendingActionConfirmLabel(pendingAction) {
+  if (pendingAction?.action_type === 'create_cmdb_asset') return '确认创建'
   return pendingAction?.result_payload?.draft_ready ? '再次载入' : '确认载入'
 }
 
 function getBlockActionIcon(type) {
   if (type === 'copy') return CopyDocument
-  if (type === 'open' || type === 'open_task_center') return TopRight
+  if (type === 'open' || type === 'open_task_center' || type === 'open_asset_ledger') return TopRight
   if (type === 'reuse') return Promotion
   if (type === 'confirm') return CircleCheck
   if (type === 'cancel') return Delete
@@ -1269,8 +1663,13 @@ async function handleBlockAction(block, action, message) {
     openTaskCenter()
     return
   }
+  if (type === 'open_asset_ledger') {
+    router.push({ path: '/cmdb/ledger' })
+    closePanel()
+    return
+  }
   if (type === 'confirm' && message?.pending_action) {
-    await handleConfirmAction(message.pending_action)
+    await handleConfirmAction(message.pending_action, block)
     return
   }
   if (type === 'cancel' && message?.pending_action) {
@@ -1645,6 +2044,7 @@ function clearCurrentSessionIfMatches(sessionId) {
     localStorage.removeItem(STORAGE_SESSION_KEY)
     messages.value = []
     loadDraft(null)
+    syncQuestionEnvironment()
   }
 }
 
@@ -1653,7 +2053,7 @@ async function handleMissingChatSession(sessionId) {
   try {
     await refreshSessionListOnly()
   } catch {
-    // 保留本地清理结果，避免继续用失效会话发请求。
+    // Keep the local cleanup result so the stale session is not reused.
   }
   ElMessage.warning(AIOPS_SESSION_MISSING_MESSAGE)
 }
@@ -1772,15 +2172,40 @@ function startMessagePolling(sessionId, assistantMessageId) {
 }
 
 async function fetchBootstrap() {
+  if (!authStore.hasPermission('aiops.chat.view')) return
   loading.value.bootstrap = true
   try {
     bootstrap.value = await getAIOpsBootstrap()
+    if (!questionCategories.value.some(item => item.value === questionCategory.value)) {
+      questionCategory.value = 'auto'
+    }
+    if (!availableEnvironments.value.some(item => item.name === selectedEnvironment.value)) {
+      syncQuestionEnvironment()
+    }
+    if (!availableModels.value.includes(selectedModel.value)) {
+      selectedModel.value = availableModels.value[0] || ''
+      persistSelectedModel()
+    }
   } finally {
     loading.value.bootstrap = false
   }
 }
 
+function syncQuestionEnvironment() {
+  const context = currentSession.value?.context || {}
+  const environment = context.current_environment
+  const candidates = [
+    firstTextValue(route.query || {}, ['environment', 'env', 'env_name', 'knowledge_environment']),
+    context.page_context?.hints?.selected_environment,
+    typeof environment === 'string' ? environment : environment?.name,
+    context.page_context?.hints?.environment,
+  ].filter(Boolean)
+  const match = candidates.map(name => availableEnvironments.value.find(item => item.name === name || item.aliases?.includes(name))).find(Boolean)
+  selectedEnvironment.value = match?.name || ''
+}
+
 async function fetchSessions() {
+  if (!authStore.hasPermission('aiops.chat.view')) return
   loading.value.sessions = true
   try {
     await refreshSessionListOnly()
@@ -1803,7 +2228,9 @@ async function fetchSessions() {
 
 async function selectSession(sessionId) {
   stopMessagePolling()
+  cancelSessionTitleEdit()
   currentSessionId.value = sessionId
+  syncQuestionEnvironment()
   localStorage.setItem(STORAGE_SESSION_KEY, String(sessionId))
   mobileSessionVisible.value = false
   loading.value.messages = true
@@ -1849,8 +2276,9 @@ async function ensureSession() {
 
 async function handleSend() {
   if (!composer.value.trim() || loading.value.send || loading.value.poll) return
-  if (authStore.currentUser?.is_demo_account) {
-    ElMessage.warning(DEMO_CHAT_DISABLED_MESSAGE)
+  if (questionEnvironmentMissing.value) {
+    ElMessage.info('请先选择知识图谱环境')
+    questionScopeRef.value?.focusEnvironment()
     return
   }
 
@@ -1875,7 +2303,10 @@ async function handleSend() {
   try {
     const response = await sendAIOpsMessageAsync(sessionId, {
       content,
+      model: selectedModel.value,
       analysis_only: effectiveAnalysisOnly.value,
+      question_category: questionCategory.value,
+      page_context: buildPageContext(),
     }, AIOPS_SESSION_REQUEST_CONFIG)
     messages.value.push(response.user_message)
     messages.value.push(response.assistant_message)
@@ -1899,9 +2330,12 @@ async function handleSend() {
   }
 }
 
-async function handleConfirmAction(action) {
+async function handleConfirmAction(action, block = null) {
   try {
-    const result = await confirmAIOpsAction(action.id)
+    const formValues = action?.action_type === 'create_cmdb_asset'
+      ? buildAssetFormPayload(action, block)
+      : null
+    const result = await confirmAIOpsAction(action.id, formValues ? { form_values: formValues } : {})
     if (result?.task_draft) {
       sessionStorage.setItem('sxdevops.task-center.prefill-draft', JSON.stringify(result.task_draft))
       ElMessage.success(`已载入任务草稿 ${result.task_name}`)
@@ -1909,10 +2343,62 @@ async function handleConfirmAction(action) {
       closePanel()
       return
     }
+    if (result?.asset) {
+      ElMessage.success(`已创建资产 ${result.asset_name || result.asset.name || ''}`)
+      await selectSession(currentSessionId.value)
+      return
+    }
     ElMessage.success(`已创建任务 ${result.task_name}`)
     await selectSession(currentSessionId.value)
   } catch (error) {
-    ElMessage.error(error?.response?.data?.detail || '确认执行失败')
+    ElMessage.error(error?.response?.data?.detail || error?.message || '确认执行失败')
+  }
+}
+
+async function startSessionTitleEdit() {
+  if (!currentSession.value || loading.value.renameSession) return
+  sessionTitleDraft.value = currentSession.value.title || '新会话'
+  renamingSession.value = true
+  await nextTick()
+  sessionTitleInputRef.value?.focus()
+  sessionTitleInputRef.value?.select()
+}
+
+function cancelSessionTitleEdit() {
+  renamingSession.value = false
+  sessionTitleDraft.value = ''
+}
+
+async function saveSessionTitle() {
+  if (!renamingSession.value || loading.value.renameSession || !currentSession.value) return
+  const sessionId = currentSession.value.id
+  const title = sessionTitleDraft.value.trim()
+  if (!title) {
+    ElMessage.warning('会话标题不能为空')
+    await nextTick()
+    sessionTitleInputRef.value?.focus()
+    return
+  }
+  if (title === currentSession.value.title) {
+    cancelSessionTitleEdit()
+    return
+  }
+
+  loading.value.renameSession = true
+  try {
+    const updatedSession = await renameAIOpsSession(sessionId, title)
+    const sessionIndex = sessions.value.findIndex(item => item.id === sessionId)
+    if (sessionIndex !== -1) {
+      sessions.value.splice(sessionIndex, 1, { ...sessions.value[sessionIndex], ...updatedSession })
+    }
+    cancelSessionTitleEdit()
+    ElMessage.success('会话标题已更新')
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.detail || '修改会话标题失败')
+    await nextTick()
+    sessionTitleInputRef.value?.focus()
+  } finally {
+    loading.value.renameSession = false
   }
 }
 
@@ -1992,6 +2478,9 @@ function applySuggestedQuestion(text) {
 
 async function chooseEnvironmentCandidate(message, index, candidate) {
   if (!candidate?.name || loading.value.send || loading.value.poll) return
+  if (availableEnvironments.value.some(item => item.name === candidate.name)) {
+    selectedEnvironment.value = candidate.name
+  }
   const previousPrompt = resolveReusablePrompt(index, message)
     .replace(/^只做分析，不要执行：/, '')
     .trim()
@@ -2003,10 +2492,31 @@ async function chooseEnvironmentCandidate(message, index, candidate) {
   await handleSend()
 }
 
-function clearDraft() {
-  composer.value = ''
-  persistDraft(currentSessionId.value, '')
-  focusComposer()
+function persistSelectedModel() {
+  if (selectedModel.value) localStorage.setItem(STORAGE_MODEL_KEY, selectedModel.value)
+  else localStorage.removeItem(STORAGE_MODEL_KEY)
+}
+
+function toggleModelPicker() {
+  if (loading.value.send || loading.value.poll || !availableModels.value.length) return
+  modelPickerOpen.value = !modelPickerOpen.value
+}
+
+function selectModel(model) {
+  if (!model || !availableModels.value.includes(model)) return
+  selectedModel.value = model
+  persistSelectedModel()
+  modelPickerOpen.value = false
+}
+
+function handleModelPickerPointerDown(event) {
+  if (!modelPickerOpen.value) return
+  if (modelPickerRef.value?.contains(event.target)) return
+  modelPickerOpen.value = false
+}
+
+function handleModelPickerKeydown(event) {
+  if (event.key === 'Escape') modelPickerOpen.value = false
 }
 
 function handleComposerKeydown(event) {
@@ -2070,7 +2580,7 @@ function openTaskCenter() {
 }
 
 async function handleOpenRequest() {
-  if (embedded.value) return
+  if (embedded.value || !authStore.hasPermission('aiops.chat.view')) return
   resetFabPosition()
   visible.value = true
   localStorage.setItem(STORAGE_VISIBLE_KEY, '1')
@@ -2149,6 +2659,14 @@ watch(analysisOnly, value => {
   localStorage.setItem(STORAGE_ANALYSIS_KEY, value ? '1' : '0')
 })
 
+watch(questionCategory, value => {
+  localStorage.setItem(STORAGE_QUESTION_CATEGORY_KEY, value)
+})
+
+watch(selectedEnvironment, () => nextTick(() => focusComposer()))
+
+watch(() => route.fullPath, () => syncQuestionEnvironment())
+
 watch(composer, value => {
   persistDraft(currentSessionId.value, value)
 })
@@ -2163,8 +2681,10 @@ watch(visible, value => {
 })
 
 onMounted(async () => {
-  if (!authStore.isAuthenticated) return
+  if (!authStore.isAuthenticated || !authStore.hasPermission('aiops.chat.view')) return
   window.addEventListener('resize', handleResize)
+  document.addEventListener('pointerdown', handleModelPickerPointerDown)
+  window.addEventListener('keydown', handleModelPickerKeydown)
   if (!embedded.value) {
     window.addEventListener('keydown', handleGlobalKeydown)
     window.addEventListener('sxdevops-aiops-open', handleOpenRequest)
@@ -2182,6 +2702,8 @@ onBeforeUnmount(() => {
   stopMessagePolling()
   cleanupFabPointerListeners()
   window.removeEventListener('resize', handleResize)
+  document.removeEventListener('pointerdown', handleModelPickerPointerDown)
+  window.removeEventListener('keydown', handleModelPickerKeydown)
   if (!embedded.value) {
     window.removeEventListener('keydown', handleGlobalKeydown)
     window.removeEventListener('sxdevops-aiops-open', handleOpenRequest)
@@ -2205,8 +2727,8 @@ onBeforeUnmount(() => {
 .aiops-fab-label strong{font-size:13px;color:#0f172a}
 .aiops-fab-label small{margin-top:2px;font-size:10px;color:#64748b}
 .aiops-fab-dot{position:absolute;top:9px;right:10px;width:8px;height:8px;border-radius:50%;background:#22c55e;box-shadow:0 0 0 3px rgba(255,255,255,.96),0 0 0 5px rgba(34,197,94,.1)}
-.aiops-panel{--aiops-session-width:260px;--aiops-chat-base-width:836px;position:absolute;right:24px;bottom:84px;width:min(1096px,calc(100vw - var(--sidebar-width,188px) - 40px));max-width:calc(100vw - var(--sidebar-width,188px) - 40px);height:min(800px,calc(100vh - 104px));display:flex;flex-direction:column;background:linear-gradient(180deg,#fff 0%,#f8fbff 100%);border:1px solid #dbe4f0;border-radius:24px;box-shadow:0 26px 56px rgba(15,23,42,.18);overflow:hidden}
-.aiops-panel.embedded{--aiops-session-width:280px;position:relative;right:auto;bottom:auto;width:100%;max-width:none;height:100%;min-height:0;border-radius:20px;box-shadow:0 14px 32px rgba(15,23,42,.06)}
+.aiops-panel{--aiops-session-width:268px;--aiops-chat-base-width:980px;--aiops-panel-top-gap:48px;--aiops-panel-bottom-gap:86px;position:absolute;right:clamp(12px,1.5vw,24px);bottom:var(--aiops-panel-bottom-gap);width:min(1280px,calc(100vw - var(--sidebar-width,188px) - 32px));max-width:calc(100vw - var(--sidebar-width,188px) - 32px);height:min(920px,calc(100vh - var(--aiops-panel-top-gap) - var(--aiops-panel-bottom-gap)));max-height:calc(100vh - var(--aiops-panel-top-gap) - var(--aiops-panel-bottom-gap));display:flex;flex-direction:column;background:linear-gradient(180deg,#fff 0%,#f8fbff 100%);border:1px solid #dbe4f0;border-radius:24px;box-shadow:0 26px 56px rgba(15,23,42,.18);overflow:hidden}
+.aiops-panel.embedded{--aiops-session-width:280px;position:relative;right:auto;bottom:auto;width:100%;max-width:none;height:100%;min-height:0;max-height:none;border-radius:20px;box-shadow:0 14px 32px rgba(15,23,42,.06)}
 .aiops-panel-header{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;border-bottom:1px solid #e2e8f0;background:linear-gradient(135deg,#fff7ed 0%,#f0f9ff 100%)}
 .header-copy{min-width:0;flex:1}
 .aiops-title-row{display:flex;align-items:center;gap:8px;min-width:0;min-height:34px}
@@ -2227,7 +2749,7 @@ onBeforeUnmount(() => {
   justify-content:space-between;
   gap:8px;
   margin-bottom:8px;
-  padding:0 4px 10px;
+  padding:0 4px 7px;
   color:#475569;
   font-size:12px;
 }
@@ -2252,16 +2774,22 @@ onBeforeUnmount(() => {
 .session-title{display:block;font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .session-empty{font-size:12px;color:#64748b}
 .aiops-chat-main{display:flex;flex-direction:column;min-width:0;min-height:0}
-.chat-toolbar{display:flex;align-items:center;justify-content:space-between;padding:6px 12px;border-bottom:1px solid #edf2f7;background:rgba(255,255,255,.82)}
-.chat-toolbar-left,.chat-toolbar-right{display:flex;align-items:center;gap:10px;min-width:0}
+.chat-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:45px;padding:6px 12px;border-bottom:1px solid #edf2f7;background:rgba(255,255,255,.9)}
+.chat-toolbar-left{display:flex;align-items:center;gap:10px;min-width:0;flex:1 1 auto}
+.chat-toolbar-right{display:flex;align-items:center;justify-content:flex-end;gap:10px;flex:0 0 auto}
 .toolbar-chip{border:none;border-radius:999px;padding:6px 11px;background:#dbeafe;color:#1d4ed8;cursor:pointer;font-size:12px;font-weight:600}
-.session-indicator{display:flex;flex-direction:column;min-width:0;max-width:220px;line-height:1.1}
-.session-indicator-label{font-size:12px;font-weight:700;color:#334155;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chat-session-title{display:flex;align-items:center;gap:7px;min-width:0;max-width:min(560px,55vw);padding:5px 7px;border:0;border-radius:8px;background:transparent;color:#1e293b;cursor:pointer;font-size:13px;font-weight:700;text-align:left;transition:background .18s ease,color .18s ease}
+.chat-session-title:hover{background:#f1f5f9;color:#245bdb}
+.chat-session-title:disabled{cursor:default;color:#64748b}
+.chat-session-title span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chat-session-title .el-icon{flex:0 0 auto;color:#94a3b8;font-size:13px}
+.chat-session-title:hover .el-icon{color:#245bdb}
+.session-title-editor{width:min(560px,55vw);min-width:180px}
+.session-title-editor :deep(.el-input__wrapper){border-radius:8px;box-shadow:0 0 0 1px #93c5fd inset}
 .environment-chip{display:inline-flex;align-items:center;height:24px;padding:0 8px;border-radius:6px;background:#ecfdf5;border:1px solid #bbf7d0;color:#047857;font-size:12px;font-weight:700;white-space:nowrap}
 .environment-chip.empty{background:#fff7ed;border-color:#fed7aa;color:#c2410c}
 .page-context-chip{background:#eff6ff;border-color:#bfdbfe;color:#1d4ed8}
 .analysis-toggle{display:flex;align-items:center;gap:8px;font-size:12px;color:#334155}
-.toolbar-hint{font-size:12px;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .quick-palette{padding:6px 12px 0}
 .aiops-quick-questions,.aiops-secondary-actions{display:flex;gap:8px;flex-wrap:wrap}
 .quick-chip{border:none;border-radius:999px;padding:6px 10px;cursor:pointer;transition:transform .18s ease,box-shadow .18s ease;font-size:12px}
@@ -2302,16 +2830,19 @@ onBeforeUnmount(() => {
 .response-block-card.type-risk_notice,.response-block-card.type-approval_form{background:linear-gradient(180deg,#fffaf5 0%,#fff 100%);border-color:#fed7aa}
 .response-block-card.type-k8s_action{background:linear-gradient(180deg,#f7fbff 0%,#fff 100%);border-color:#d7e8ff}
 .response-block-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
-.response-block-headline{min-width:0;display:flex;flex-direction:column;gap:3px}
+.response-block-headline{min-width:0;flex:1 1 auto;display:flex;flex-direction:column;gap:3px}
 .response-block-title{font-size:12px;font-weight:700;color:#1e293b}
 .response-block-summary{font-size:11px;line-height:1.5;color:#64748b;word-break:break-word}
 .response-block-card.is-collapsed .response-block-head{align-items:center}
 .response-block-card.is-collapsed .response-block-headline{flex-direction:row;align-items:center;gap:8px;white-space:nowrap}
-.response-block-card.is-collapsed .response-block-title{flex:0 0 auto;max-width:42%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.response-block-card.is-collapsed .response-block-title{flex:0 0 auto;max-width:none;white-space:nowrap;overflow:visible;text-overflow:clip}
 .response-block-card.is-collapsed .response-block-summary{flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;word-break:normal}
 .response-block-head-actions{display:flex;align-items:center;gap:8px;flex:0 0 auto}
 .response-block-badge{flex:0 0 auto;padding:2px 7px;border-radius:999px;background:#eff6ff;color:#1d4ed8;font-size:10px;font-weight:700}
 .response-block-card.type-risk_notice .response-block-badge,.response-block-card.type-approval_form .response-block-badge{background:#fff7ed;color:#c2410c}
+.response-block-badge.is-success{background:#ecfdf3;color:#15803d}
+.response-block-badge.is-muted{background:#f1f5f9;color:#64748b}
+.response-block-badge.is-danger{background:#fef2f2;color:#dc2626}
 .response-block-toggle{border:none;padding:2px 0;background:transparent;color:#64748b;font-size:11px;cursor:pointer}
 .response-block-toggle:hover{color:#334155}
 .response-block-content{margin-top:8px}
@@ -2337,6 +2868,20 @@ onBeforeUnmount(() => {
 .response-block-chip:hover{background:#eff6ff}
 .response-block-item-list{display:flex;flex-direction:column;gap:7px;margin-top:8px}
 .response-block-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:8px;padding-top:7px;border-top:1px dashed #e2e8f0}
+.response-block-asset-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.response-block-asset-result{display:flex;align-items:center;gap:10px;padding:12px 14px;border:1px solid #e2e8f0;border-radius:12px;background:#f8fafc;color:#64748b}
+.response-block-asset-result .el-icon{flex:0 0 auto;font-size:22px}
+.response-block-asset-result>div{display:flex;min-width:0;flex-direction:column;gap:3px}
+.response-block-asset-result strong{font-size:13px;color:#334155}
+.response-block-asset-result span{font-size:11px;line-height:1.5}
+.response-block-asset-result.is-success{border-color:#bbf7d0;background:#f0fdf4;color:#16a34a}
+.response-block-asset-result.is-success strong{color:#166534}
+.response-block-asset-result.is-danger{border-color:#fecaca;background:#fef2f2;color:#dc2626}
+.response-block-asset-result.is-danger strong{color:#991b1b}
+.asset-form-field{display:flex;flex-direction:column;gap:5px;min-width:0}
+.asset-form-field label{font-size:12px;font-weight:700;color:#475569}
+.asset-form-field .el-select,.asset-form-field .el-input,.asset-form-field .el-input-number,.asset-form-field .el-date-editor{width:100%}
+.asset-form-required{margin-left:3px;color:#dc2626}
 .response-block-action-btn{height:24px;padding:3px 8px;border-radius:8px;color:#334155}
 .response-block-action-btn :deep(.el-icon){margin-right:3px}
 .assistant-followup-line{margin-top:8px;color:#475569;font-size:12px;line-height:1.5}
@@ -2402,9 +2947,15 @@ onBeforeUnmount(() => {
 .tool-event-name{font-weight:600;color:#475569}
 .tool-event-detail{color:#64748b}
 .message-actions{display:flex;gap:2px;justify-content:flex-end;margin-top:8px;padding-top:6px;border-top:1px dashed #e2e8f0}
-.aiops-composer{padding:8px 12px;border-top:1px solid #e2e8f0;background:#fff}
-.aiops-composer :deep(.el-textarea__inner){min-height:52px!important;padding:7px 10px;font-size:13px;line-height:1.45}
-.aiops-composer :deep(.el-input__count){line-height:1;font-size:10px;bottom:4px;right:8px}
+.aiops-composer{padding:6px 12px 10px}
+.composer-environment-guide{display:flex;align-items:center;gap:6px;padding:0 2px 7px;color:#a67726;font-size:12px;line-height:1.5}
+.composer-input-shell{position:relative;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:8px;padding:9px;border:1px solid #dbe4f0;border-radius:12px;background:linear-gradient(135deg,#fff 0%,#f5f8ff 100%);box-shadow:0 6px 18px rgba(15,23,42,.04)}
+.composer-input-shell:focus-within{border-color:#93c5fd;box-shadow:0 8px 20px rgba(37,99,235,.07)}
+.composer-input-shell>.el-textarea{grid-column:1/-1}
+.composer-scope-row{display:flex;align-items:center;min-width:0}
+.aiops-composer :deep(.el-textarea__inner){min-height:40px!important;padding:0 2px;background:transparent;font-size:13px;line-height:1.45;border-radius:0;box-shadow:none}
+.aiops-composer :deep(.el-textarea__inner:focus){box-shadow:none}
+.aiops-composer :deep(.el-textarea.is-disabled .el-textarea__inner){background:transparent;color:#94a3b8;box-shadow:none}
 .aiops-composer :deep(.el-button){height:28px;padding:5px 11px;font-size:12px}
 .aiops-toolbar-btn{height:28px;padding:5px 10px;border-radius:8px;border:1px solid #dbe4f0;background:#fff;color:#334155;box-shadow:0 1px 2px rgba(15,23,42,.04)}
 .aiops-toolbar-btn:hover{border-color:#bfdbfe;background:#f8fbff;color:#1d4ed8}
@@ -2412,10 +2963,29 @@ onBeforeUnmount(() => {
 .aiops-send-btn{height:28px;padding:5px 12px;border-radius:8px}
 .aiops-toolbar-btn :deep(.el-icon),
 .aiops-send-btn :deep(.el-icon){margin-right:4px}
-.composer-actions{display:flex;align-items:center;justify-content:space-between;margin-top:4px}
-.composer-meta{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.composer-tip{font-size:10px;color:#64748b;line-height:1.2}
 .composer-action-group{display:flex;align-items:center;gap:6px}
+.model-picker{position:relative;width:155px}
+.model-picker-trigger{display:flex;align-items:center;gap:6px;width:100%;height:30px;padding:0 8px;border:1px solid #dbe4f0;border-radius:8px;background:#f8fbff;color:#334155;font-size:12px;cursor:pointer;transition:border-color .18s ease,background .18s ease,box-shadow .18s ease}
+.model-picker-trigger:hover:not(:disabled),.model-picker-trigger[aria-expanded="true"]{border-color:#93c5fd;background:#f4f8ff;box-shadow:0 0 0 2px rgba(59,130,246,.08)}
+.model-picker-trigger:disabled{cursor:not-allowed;color:#94a3b8;background:#f8fafc}
+.model-picker-trigger>.el-icon:first-child{color:#2563eb;flex:0 0 auto}
+.model-picker-value{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left;flex:1}
+.model-picker-chevron{font-size:12px;color:#64748b;transform:rotate(-90deg);transition:transform .18s ease;flex:0 0 auto}
+.model-picker-chevron.open{transform:rotate(90deg);color:#2563eb}
+.model-picker-menu{position:absolute;right:0;bottom:calc(100% + 9px);z-index:20;width:246px;padding:8px;border:1px solid #dbe4f0;border-radius:10px;background:rgba(255,255,255,.98);box-shadow:0 16px 34px rgba(15,23,42,.16),0 2px 8px rgba(37,99,235,.08);backdrop-filter:blur(12px)}
+.model-picker-menu-head{display:flex;align-items:center;justify-content:space-between;padding:5px 7px 9px;border-bottom:1px solid #eef2f7;color:#2563eb}
+.model-picker-menu-head>div{display:flex;flex-direction:column;gap:2px;min-width:0}
+.model-picker-menu-title{font-size:13px;font-weight:700;color:#0f172a}
+.model-picker-menu-subtitle{font-size:10px;color:#94a3b8}
+.model-picker-group{padding:8px 0 1px}
+.model-picker-group-label{padding:0 7px 4px;color:#94a3b8;font-size:10px;font-weight:600;letter-spacing:.02em}
+.model-picker-option{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;min-height:30px;padding:5px 7px;border:0;border-radius:7px;background:transparent;color:#475569;font-size:12px;text-align:left;cursor:pointer;transition:background .15s ease,color .15s ease}
+.model-picker-option:hover{background:#f1f5ff;color:#1d4ed8}
+.model-picker-option.active{background:#eaf2ff;color:#1d4ed8;font-weight:600}
+.model-picker-option .el-icon{color:#2563eb;font-size:14px;flex:0 0 auto}
+.model-picker-option-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.model-menu-enter-active,.model-menu-leave-active{transition:opacity .16s ease,transform .16s ease}
+.model-menu-enter-from,.model-menu-leave-to{opacity:0;transform:translateY(5px) scale(.98)}
 .mobile-session-sheet{display:none}
 :global(.aiops-session-tooltip){
   max-width:320px;
@@ -2474,22 +3044,23 @@ onBeforeUnmount(() => {
   .aiops-fab{min-width:118px;height:52px;padding:6px 10px 6px 6px}
   .aiops-fab-core{width:38px;height:38px;border-radius:18px}
   .aiops-fab-avatar{width:26px;height:26px}
-  .aiops-panel{right:12px;bottom:80px;width:min(720px,calc(100vw - var(--sidebar-width,188px) - 24px));max-width:calc(100vw - var(--sidebar-width,188px) - 24px);height:min(86vh,calc(100vh - 100px))}
+  .aiops-panel{--aiops-panel-top-gap:32px;--aiops-panel-bottom-gap:68px;right:12px;width:min(820px,calc(100vw - var(--sidebar-width,188px) - 24px));max-width:calc(100vw - var(--sidebar-width,188px) - 24px);height:min(920px,calc(100vh - var(--aiops-panel-top-gap) - var(--aiops-panel-bottom-gap)));max-height:calc(100vh - var(--aiops-panel-top-gap) - var(--aiops-panel-bottom-gap))}
   .aiops-panel.embedded{width:100%;height:100%;min-height:0}
-  .aiops-panel-body{grid-template-columns:1fr}
+  .aiops-panel-body,.aiops-panel.embedded .aiops-panel-body{grid-template-columns:1fr}
   .aiops-session-list{display:none}
   .pending-detail-grid{grid-template-columns:1fr}
+  .response-block-asset-form{grid-template-columns:1fr}
   .response-block-metric-grid{grid-template-columns:1fr}
   .response-block-field-list{grid-template-columns:1fr}
   .response-block-actions{align-items:stretch}
-  .chat-toolbar{flex-direction:column;align-items:flex-start;gap:6px}
-  .chat-toolbar-left,.chat-toolbar-right{width:100%;justify-content:space-between}
-  .toolbar-hint{max-width:100%}
-  .session-indicator{max-width:none;flex:1}
+  .chat-toolbar{align-items:center;gap:8px}
+  .chat-toolbar-left{min-width:0}
+  .chat-toolbar-right{gap:7px}
+  .chat-session-title,.session-title-editor{max-width:none;width:auto;flex:1 1 auto}
   .mobile-session-sheet{display:flex;position:absolute;left:12px;right:12px;bottom:12px;max-height:45vh;flex-direction:column;border:1px solid #dbe4f0;border-radius:22px;background:#fff;box-shadow:0 20px 48px rgba(15,23,42,.24);overflow:hidden}
   .mobile-session-head{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-bottom:1px solid #e2e8f0;background:#f8fafc;min-height:48px}
   .mobile-session-body{padding:12px;overflow:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;touch-action:pan-y}
-  .aiops-composer{padding:8px 12px}
+  .aiops-composer{padding:6px 12px 10px}
   .aiops-toolbar-btn,.aiops-send-btn{height:30px}
   .composer-actions{flex-direction:column;align-items:stretch;gap:6px}
   .composer-meta{justify-content:space-between;gap:8px}
@@ -2497,6 +3068,13 @@ onBeforeUnmount(() => {
 }
 @media (max-width: 760px){
   .aiops-panel{right:8px;width:calc(100vw - var(--sidebar-collapsed-width,68px) - 16px);max-width:calc(100vw - var(--sidebar-collapsed-width,68px) - 16px)}
+  .chat-toolbar{align-items:flex-start;flex-wrap:wrap}
+  .chat-toolbar-left{flex-basis:100%}
+  .chat-toolbar-right{margin-left:auto}
+  .composer-input-shell{grid-template-columns:minmax(0,1fr)}
+  .composer-action-group{justify-self:end}
+  .model-picker{width:140px}
+  .aiops-composer :deep(.el-textarea__inner){min-height:40px!important}
 }
 </style>
 

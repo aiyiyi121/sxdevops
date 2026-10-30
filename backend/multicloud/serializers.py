@@ -1,9 +1,21 @@
 from decimal import Decimal
 
+from django.db.models import Q
 from rest_framework import serializers
 
 from .models import CloudAsset, CloudCredential, CloudEnvironment, CloudSyncTask
 from .services import PROVIDER_CATALOG
+
+
+PROVIDER_SOURCE_PREFIXES = {
+    'aliyun': ['aliyun_'],
+    'huawei': ['huaweicloud_'],
+    'huaweicloud': ['huaweicloud_'],
+    'vsphere': ['vsphere_'],
+}
+INTERNAL_PROVIDER_SUMMARY_CI_TYPE_CODES = {'VSPHERE_CAPACITY'}
+INTERNAL_PROVIDER_SUMMARY_CI_TYPE_NAMES = {'vSphere资源统计'}
+INTERNAL_PROVIDER_SUMMARY_SOURCE_PREFIXES = ('vsphere-summary:',)
 
 
 class CloudCredentialSerializer(serializers.ModelSerializer):
@@ -33,19 +45,86 @@ class CloudCredentialSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         if self.instance and attrs.get('access_key_secret', None) == '':
             attrs.pop('access_key_secret')
+        provider = attrs.get('provider') or getattr(self.instance, 'provider', None)
+        demo_mode = attrs.get('demo_mode', getattr(self.instance, 'demo_mode', False))
+        auth_mode = str(attrs.get('auth_mode', getattr(self.instance, 'auth_mode', 'aksk')) or '').strip().lower()
+        if demo_mode or auth_mode == 'demo':
+            raise serializers.ValidationError({'demo_mode': 'Demo 模式已下线，请配置真实账号凭据。'})
+        if provider == 'huawei' and not demo_mode and auth_mode != 'demo':
+            access_key_id = attrs.get('access_key_id', getattr(self.instance, 'access_key_id', ''))
+            access_key_secret = attrs.get('access_key_secret', getattr(self.instance, 'access_key_secret', ''))
+            project_id = attrs.get('project_id', getattr(self.instance, 'project_id', ''))
+            errors = {}
+            if not str(access_key_id or '').strip():
+                errors['access_key_id'] = '华为云账号必须填写 AccessKey ID。'
+            if not str(access_key_secret or '').strip():
+                errors['access_key_secret'] = '华为云账号必须填写 Secret Key。'
+            if not str(project_id or '').strip():
+                errors['project_id'] = '华为云账号必须填写 Project ID。'
+            if errors:
+                raise serializers.ValidationError(errors)
         return attrs
 
     def get_environment_count(self, obj):
         return obj.environments.count()
 
     def get_asset_count(self, obj):
-        return CloudAsset.objects.filter(environment__credential=obj).count()
+        inventory_count = CloudAsset.objects.filter(environment__credential=obj).count()
+        try:
+            from cmdb.models import CISourceMapping, ConfigItem
+        except Exception:
+            return inventory_count
+
+        account_candidates = {
+            str(value or '').strip()
+            for value in [obj.id, obj.account_name, obj.name, obj.account_id]
+            if str(value or '').strip()
+        }
+        if not account_candidates:
+            return inventory_count
+
+        source_q = Q()
+        for prefix in PROVIDER_SOURCE_PREFIXES.get(obj.provider, []):
+            source_q |= Q(source_type__startswith=prefix)
+
+        mapping_q = Q(source_account__in=account_candidates)
+        if source_q:
+            mapping_q &= source_q
+        mapping_qs = CISourceMapping.objects.filter(mapping_q)
+        for prefix in INTERNAL_PROVIDER_SUMMARY_SOURCE_PREFIXES:
+            mapping_qs = mapping_qs.exclude(source_unique_id__startswith=prefix)
+        mapping_qs = mapping_qs.exclude(
+            Q(ci__ci_type__code__in=INTERNAL_PROVIDER_SUMMARY_CI_TYPE_CODES)
+            | Q(ci__ci_type__name__in=INTERNAL_PROVIDER_SUMMARY_CI_TYPE_NAMES)
+        )
+        ci_ids = set(mapping_qs.values_list('ci_id', flat=True))
+
+        attribute_q = Q()
+        for value in account_candidates:
+            attribute_q |= Q(attributes__source_account=value)
+            attribute_q |= Q(attributes__cloud_account=value)
+            attribute_q |= Q(attributes__account=value)
+            attribute_q |= Q(attributes__account_id=value)
+            attribute_q |= Q(attributes__account_name=value)
+        if attribute_q:
+            ci_q = attribute_q
+            attribute_source_q = Q()
+            for prefix in PROVIDER_SOURCE_PREFIXES.get(obj.provider, []):
+                attribute_source_q |= Q(attributes__source_type__startswith=prefix)
+            if attribute_source_q:
+                ci_q &= attribute_source_q
+            ci_qs = ConfigItem.objects.filter(ci_q).exclude(
+                Q(ci_type__code__in=INTERNAL_PROVIDER_SUMMARY_CI_TYPE_CODES)
+                | Q(ci_type__name__in=INTERNAL_PROVIDER_SUMMARY_CI_TYPE_NAMES)
+            )
+            for prefix in INTERNAL_PROVIDER_SUMMARY_SOURCE_PREFIXES:
+                ci_qs = ci_qs.exclude(attributes__source_unique_id__startswith=prefix)
+            ci_ids.update(ci_qs.values_list('id', flat=True))
+        return len(ci_ids) if ci_ids else inventory_count
 
     def get_masked_secret(self, obj):
         if not obj.access_key_secret:
             return ''
-        if obj.demo_mode:
-            return obj.access_key_secret
         return f'{obj.access_key_secret[:2]}******{obj.access_key_secret[-2:]}'
 
 

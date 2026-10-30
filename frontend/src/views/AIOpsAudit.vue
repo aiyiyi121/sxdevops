@@ -5,7 +5,7 @@
         <div class="release-hero-title-row">
           <span class="audit-header-icon"><el-icon><Tickets /></el-icon></span>
           <h2>智能体审计</h2>
-          <p class="page-inline-desc">集中查看会话、工具调用、模型成本与待执行动作记录。</p>
+          <p class="page-inline-desc">集中查看会话、执行追踪、工具调用、模型成本与待执行动作记录。</p>
         </div>
       </div>
     </section>
@@ -235,6 +235,10 @@
         </button>
       </div>
 
+      <div v-if="correlationScope && ['sessions', 'executions', 'tools', 'models'].includes(activeTab)" class="audit-correlation-scope">
+        <el-tag size="small" closable @close="clearCorrelationScope">{{ correlationScope }}</el-tag>
+        <span>仅展示关联范围内的记录</span>
+      </div>
       <div class="workbench-toolbar workbench-toolbar--history audit-list-toolbar">
         <div class="workbench-toolbar-left">
           <template v-if="activeTab === 'sessions'">
@@ -244,6 +248,14 @@
               <el-option v-for="item in sessionStatusOptions" :key="item.value" :label="item.label" :value="item.value" />
             </el-select>
             <el-date-picker v-model="auditFilters.sessions.timeRange" class="audit-filter-time" size="small" type="datetimerange" format="YYYY-MM-DD HH:mm" range-separator="至" start-placeholder="开始时间" end-placeholder="结束时间" clearable @change="applyAuditFilters" />
+          </template>
+          <template v-else-if="activeTab === 'executions'">
+            <el-input v-model="auditFilters.executions.q" class="audit-filter-search" size="small" clearable placeholder="搜索问题 / 会话 / Thread" @keyup.enter="applyAuditFilters" />
+            <el-input v-model="auditFilters.executions.username" class="audit-filter-user" size="small" clearable placeholder="用户" @keyup.enter="applyAuditFilters" />
+            <el-select v-model="auditFilters.executions.status" size="small" clearable placeholder="状态" @change="applyAuditFilters">
+              <el-option v-for="item in executionStatusOptions" :key="item.value" :label="item.label" :value="item.value" />
+            </el-select>
+            <el-date-picker v-model="auditFilters.executions.timeRange" class="audit-filter-time" size="small" type="datetimerange" format="YYYY-MM-DD HH:mm" range-separator="至" start-placeholder="开始时间" end-placeholder="结束时间" clearable @change="applyAuditFilters" />
           </template>
           <template v-else-if="activeTab === 'tools'">
             <el-input v-model="auditFilters.tools.q" class="audit-filter-search" size="small" clearable :placeholder="invocationSearchPlaceholder" @keyup.enter="applyAuditFilters" />
@@ -318,22 +330,22 @@
               </div>
               <div class="trace-panel">
                 <div class="trace-panel-head">
-                  <span>Action 命中</span>
+                  <span>问答类型命中</span>
                   <small>{{ actionTraceTitle(row) }}</small>
                 </div>
                 <div v-if="hasActionTrace(row)" class="trace-action-main">
-                  <el-tag size="small" :type="actionTraceStatusTone(row.action_trace?.status)" effect="plain">
-                    {{ actionTraceStatusLabel(row.action_trace?.status) }}
+                  <el-tag size="small" :type="actionTraceStatusTone(capabilityTrace(row).status)" effect="plain">
+                    {{ actionTraceStatusLabel(capabilityTrace(row).status) }}
                   </el-tag>
                   <strong>{{ actionTraceTitle(row) }}</strong>
                   <span>{{ actionTraceDetail(row) }}</span>
                 </div>
-                <div v-else class="trace-empty">暂无 Action 命中记录</div>
+                <div v-else class="trace-empty">暂无问答类型命中记录</div>
               </div>
             </div>
           </template>
         </el-table-column>
-        <el-table-column prop="title" label="会话标题" min-width="260" show-overflow-tooltip />
+        <el-table-column prop="title" label="会话标题" min-width="220" show-overflow-tooltip />
         <el-table-column prop="username" label="用户" width="88" show-overflow-tooltip />
         <el-table-column prop="message_count" label="消息数" width="72" />
         <el-table-column label="工具" width="68">
@@ -346,7 +358,7 @@
             <el-tag size="small" :type="skillTraceTone(row)" effect="plain">{{ formatSkillTraceSummary(row) }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="Action 命中" width="112" show-overflow-tooltip>
+        <el-table-column label="问答类型" width="112" show-overflow-tooltip>
           <template #default="{ row }">
             <span v-if="hasActionTrace(row)" class="audit-action-hit">{{ actionTraceTitle(row) }}</span>
             <span v-else class="muted-text">-</span>
@@ -362,11 +374,32 @@
             {{ formatDateTimeDisplay(row.last_message_at) }}
           </template>
         </el-table-column>
-        <el-table-column v-if="canManageAudit" label="操作" width="56" fixed="right">
+        <el-table-column label="操作" width="160" fixed="right">
           <template #default="{ row }">
-            <el-button link type="danger" @click="handleDeleteAuditSession(row)">删除</el-button>
+            <div class="audit-session-actions">
+              <el-button link type="primary" @click="navigateAuditScope({ tab: 'executions', sessionId: row.id })">执行追踪</el-button>
+              <el-button v-if="canManageAudit" link type="danger" @click="handleDeleteAuditSession(row)">删除</el-button>
+            </div>
           </template>
         </el-table-column>
+      </el-table>
+
+      <el-table v-else-if="activeTab === 'executions'" v-loading="loading.executions" :data="auditExecutions" stripe size="small" class="console-table" empty-text="暂无 LangGraph 执行记录">
+        <el-table-column prop="question" label="本轮问题" min-width="240" show-overflow-tooltip />
+        <el-table-column prop="session_title" label="会话" min-width="140" show-overflow-tooltip />
+        <el-table-column prop="username" label="用户" width="90" show-overflow-tooltip />
+        <el-table-column label="运行方式" width="100">
+          <template #default="{ row }"><el-tag size="small" effect="plain" :type="row.orchestration_degraded ? 'warning' : 'info'">{{ row.orchestration_degraded ? '兼容降级' : 'LangGraph' }}</el-tag></template>
+        </el-table-column>
+        <el-table-column label="状态" width="90">
+          <template #default="{ row }"><el-tag size="small" effect="plain" :type="executionStatusTone(row.status)">{{ executionStatusLabel(row.status) }}</el-tag></template>
+        </el-table-column>
+        <el-table-column prop="node_count" label="节点" width="60" />
+        <el-table-column label="图累计耗时" width="110"><template #default="{ row }">{{ formatLatency(row.graph_duration_ms) }}</template></el-table-column>
+        <el-table-column label="恢复 / 重试" width="100"><template #default="{ row }">{{ row.resume_count }} / {{ row.retry_count }}</template></el-table-column>
+        <el-table-column label="Checkpoint" width="114"><template #default="{ row }"><span :class="{ 'muted-text': row.checkpoint_expired }">{{ row.orchestration_degraded ? '降级不可用' : row.checkpoint_expired ? '已清理' : row.checkpoint_cleanup_pending ? '清理中' : '查看详情' }}</span></template></el-table-column>
+        <el-table-column label="创建时间" width="156"><template #default="{ row }">{{ formatDateTimeDisplay(row.created_at) }}</template></el-table-column>
+        <el-table-column label="操作" width="80" fixed="right"><template #default="{ row }"><el-button link type="primary" @click="openExecutionDetail(row)">详情</el-button></template></el-table-column>
       </el-table>
 
       <el-table
@@ -402,9 +435,10 @@
             {{ formatDateTimeCompact(row.created_at) }}
           </template>
         </el-table-column>
-        <el-table-column v-if="canManageAudit" label="操作" width="62" fixed="right">
+        <el-table-column label="操作" width="108" fixed="right">
           <template #default="{ row }">
-            <el-button link type="danger" @click="handleDeleteAuditTool(row)">删除</el-button>
+            <el-button link type="primary" :disabled="!row.message" @click="navigateAuditScope({ tab: 'executions', sessionId: row.session, messageId: row.message })">执行</el-button>
+            <el-button v-if="canManageAudit" link type="danger" @click="handleDeleteAuditTool(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -451,13 +485,13 @@
               </div>
               <div class="trace-panel">
                 <div class="trace-panel-head">
-                  <span>Action 关联</span>
+                  <span>能力关联</span>
                   <small>{{ row.action_display_name || row.action_code || '-' }}</small>
                 </div>
                 <div v-if="traceDisplayItems(row.applicable_action_names, row.applicable_actions).length" class="trace-detail-tags">
                   <el-tag v-for="action in traceDisplayItems(row.applicable_action_names, row.applicable_actions)" :key="action" size="small" effect="plain">{{ action }}</el-tag>
                 </div>
-                <div v-else class="trace-empty">暂无关联 Action</div>
+                <div v-else class="trace-empty">暂无关联问答类型</div>
               </div>
             </div>
           </template>
@@ -476,7 +510,7 @@
             {{ traceHitReasonLabel(row.hit_reason) }}
           </template>
         </el-table-column>
-        <el-table-column label="Action" width="104" show-overflow-tooltip>
+        <el-table-column label="问答类型" width="104" show-overflow-tooltip>
           <template #default="{ row }">
             <span v-if="row.action_display_name || row.action_code" class="audit-action-hit">{{ row.action_display_name || row.action_code }}</span>
             <span v-else class="muted-text">-</span>
@@ -516,7 +550,7 @@
             <div class="trace-detail-grid">
               <div class="trace-panel">
                 <div class="trace-panel-head">
-                  <span>Action 详情</span>
+                  <span>问答类型详情</span>
                   <small>{{ row.code || '-' }}</small>
                 </div>
                 <div class="trace-detail-list">
@@ -548,7 +582,7 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="Action" min-width="112" show-overflow-tooltip>
+        <el-table-column label="问答类型" min-width="112" show-overflow-tooltip>
           <template #default="{ row }">
             <div class="trace-name-cell">
               <strong>{{ row.display_name || row.code || '-' }}</strong>
@@ -629,9 +663,10 @@
             {{ formatDateTimeDisplay(row.created_at) }}
           </template>
         </el-table-column>
-        <el-table-column v-if="canManageAudit" label="操作" width="90" fixed="right">
+        <el-table-column label="操作" width="108" fixed="right">
           <template #default="{ row }">
-            <el-button link type="danger" @click="handleDeleteAuditModel(row)">删除</el-button>
+            <el-button link type="primary" :disabled="!row.message" @click="navigateAuditScope({ tab: 'executions', sessionId: row.session, messageId: row.message })">执行</el-button>
+            <el-button v-if="canManageAudit" link type="danger" @click="handleDeleteAuditModel(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -688,6 +723,7 @@
         <el-pagination class="pagination-pager" :current-page="activePagination.page" :page-size="activePagination.pageSize" :total="activePagination.total" layout="prev, pager, next" @current-change="loadActiveTabPage" />
       </div>
     </section>
+    <AIOpsExecutionDetail v-model="executionDetailVisible" :execution-id="executionDetailId" @navigate="navigateAuditScope" />
   </div>
 </template>
 
@@ -697,6 +733,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { ChatDotSquare, Connection, Cpu, Delete, Promotion, RefreshRight, Tickets } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
+import AIOpsExecutionDetail from '@/components/aiops/AIOpsExecutionDetail.vue'
+import { executionStatusLabel, executionStatusOptions, executionStatusTone } from '@/utils/aiopsExecution'
 import { normalizePendingActionTitle } from '@/utils/taskDraftTitle'
 import {
   bulkDeleteAIOpsAuditActionTraces,
@@ -711,6 +749,7 @@ import {
   getAIOpsAuditActionTraces,
   getAIOpsAuditActions,
   getAIOpsAuditCosts,
+  getAIOpsAuditExecutions,
   getAIOpsAuditModelInvocations,
   getAIOpsAuditOverview,
   getAIOpsAuditSessions,
@@ -726,6 +765,13 @@ const invocationAuditTab = ref('actionHits')
 const auditOverview = ref({})
 const auditCosts = ref({})
 const auditSessions = ref([])
+const auditExecutions = ref([])
+const executionDetailVisible = ref(false)
+const executionDetailId = ref(null)
+const correlationScope = computed(() => {
+  if (route.query.message_id) return `会话 #${route.query.session_id || '-'} · 消息 #${route.query.message_id}`
+  return route.query.session_id ? `会话 #${route.query.session_id}` : ''
+})
 const auditTools = ref([])
 const auditSkillTraces = ref([])
 const auditActionTraces = ref([])
@@ -740,6 +786,7 @@ const invocationPieHover = reactive({ chartKey: '', item: null, x: 0, y: 0 })
 const loading = reactive({
   overview: false,
   sessions: false,
+  executions: false,
   tools: false,
   skillTraces: false,
   actionTraces: false,
@@ -751,6 +798,7 @@ const AUDIT_MIN_PAGE_SIZE = 10
 const AUDIT_MAX_PAGE_SIZE = 100
 const auditPageSizeOptions = [10, 20, 50, 100]
 const auditSessionPagination = reactive({ page: 1, pageSize: AUDIT_DEFAULT_PAGE_SIZE, total: 0 })
+const auditExecutionPagination = reactive({ page: 1, pageSize: AUDIT_DEFAULT_PAGE_SIZE, total: 0 })
 const auditToolPagination = reactive({ page: 1, pageSize: AUDIT_DEFAULT_PAGE_SIZE, total: 0 })
 const auditSkillTracePagination = reactive({ page: 1, pageSize: AUDIT_DEFAULT_PAGE_SIZE, total: 0 })
 const auditActionTracePagination = reactive({ page: 1, pageSize: AUDIT_DEFAULT_PAGE_SIZE, total: 0 })
@@ -758,6 +806,7 @@ const auditModelPagination = reactive({ page: 1, pageSize: AUDIT_DEFAULT_PAGE_SI
 const auditActionPagination = reactive({ page: 1, pageSize: AUDIT_DEFAULT_PAGE_SIZE, total: 0 })
 const auditFilters = reactive({
   sessions: { q: '', username: '', status: '', timeRange: [] },
+  executions: { q: '', username: '', status: '', timeRange: [] },
   tools: { q: '', username: '', status: '', risk_level: '', timeRange: [] },
   models: { q: '', status: '', purpose: '', timeRange: [] },
   actions: { q: '', username: '', status: '', risk_level: '', timeRange: [] },
@@ -810,13 +859,14 @@ const overviewTimeShortcuts = [
 const auditTabs = [
   { name: 'overview', label: '运行概览', icon: Tickets, title: '运行概览', desc: '汇总今日使用与所选时间范围成本。' },
   { name: 'sessions', label: '会话历史', icon: ChatDotSquare, title: '会话历史', desc: '查看智能助手会话、用户与消息数量。' },
-  { name: 'tools', label: '调用审计', icon: Connection, title: '调用审计', desc: '分层查看 Action 命中、Skill 命中与 MCP 工具调用。' },
+  { name: 'executions', label: '执行追踪', icon: Connection, title: '执行追踪', desc: '查看每轮 LangGraph 节点、耗时、恢复与 checkpoint 状态。' },
+  { name: 'tools', label: '调用审计', icon: Connection, title: '调用审计', desc: '分层查看问答类型命中、Skill 命中与 MCP 工具调用。' },
   { name: 'models', label: '模型调用', icon: Cpu, title: '模型调用', desc: '查看模型用途、Token、耗时与预估费用。' },
   { name: 'actions', label: '待执行动作', icon: Promotion, title: '待执行动作', desc: '审计待确认、已执行、失败和被策略拦截的动作。' },
 ]
 const validTabs = auditTabs.map(item => item.name)
 const invocationAuditTabs = [
-  { name: 'actionHits', label: 'Action 命中' },
+  { name: 'actionHits', label: '问答类型命中' },
   { name: 'skills', label: 'Skill 命中' },
   { name: 'mcp', label: 'MCP 工具' },
 ]
@@ -863,17 +913,17 @@ const overviewInvocationCharts = computed(() => {
     }),
     buildInvocationPieChart({
       key: 'actions',
-      title: 'Action 命中',
+      title: '问答类型命中',
       items: Array.isArray(distribution.actions) ? distribution.actions : [],
       palette: invocationPiePalettes.actions,
-      emptyText: '暂无 Action 命中记录',
+      emptyText: '暂无问答类型命中记录',
     }),
   ]
 })
 const activeTabMeta = computed(() => auditTabs.find(item => item.name === activeTab.value) || auditTabs[0])
 const invocationSearchPlaceholder = computed(() => {
-  if (invocationAuditTab.value === 'skills') return '搜索 Skill / Action / 会话'
-  if (invocationAuditTab.value === 'actionHits') return '搜索 Action / Skill / 会话'
+  if (invocationAuditTab.value === 'skills') return '搜索 Skill / 问答类型 / 会话'
+  if (invocationAuditTab.value === 'actionHits') return '搜索问答类型 / Skill / 会话'
   return '搜索 MCP 工具 / 会话'
 })
 const activeLoading = computed(() => {
@@ -885,6 +935,7 @@ const activeLoading = computed(() => {
   return Boolean(loading[activeTab.value])
 })
 const activePagination = computed(() => {
+  if (activeTab.value === 'executions') return auditExecutionPagination
   if (activeTab.value === 'tools') {
     if (invocationAuditTab.value === 'skills') return auditSkillTracePagination
     if (invocationAuditTab.value === 'actionHits') return auditActionTracePagination
@@ -1034,6 +1085,7 @@ function compactParams(params) {
 }
 
 function auditPageSize(tab, subTab = invocationAuditTab.value) {
+  if (tab === 'executions') return auditExecutionPagination.pageSize
   if (tab === 'tools') {
     if (subTab === 'skills') return auditSkillTracePagination.pageSize
     if (subTab === 'actionHits') return auditActionTracePagination.pageSize
@@ -1046,6 +1098,15 @@ function auditPageSize(tab, subTab = invocationAuditTab.value) {
 
 function buildAuditListParams(tab, page = 1, subTab = invocationAuditTab.value) {
   const base = { page, page_size: auditPageSize(tab, subTab) }
+  if (['sessions', 'executions', 'tools', 'models'].includes(tab)) {
+    base.session_id = route.query.session_id
+    base.message_id = route.query.message_id
+  }
+  if (tab === 'executions') {
+    const filters = auditFilters.executions
+    appendTimeRangeParams(base, filters.timeRange)
+    return compactParams({ ...base, q: filters.q, username: filters.username, status: filters.status })
+  }
   if (tab === 'sessions') {
     const filters = auditFilters.sessions
     appendTimeRangeParams(base, filters.timeRange)
@@ -1191,6 +1252,26 @@ function switchTab(tab) {
   syncRouteTab(nextTab)
 }
 
+async function navigateAuditScope({ tab, sessionId, messageId }) {
+  clearAuditFilterGroup(auditFilters[tab])
+  if (tab === 'tools') invocationAuditTab.value = 'mcp'
+  await router.replace({ path: route.path, query: compactParams({
+    ...route.query, tab, session_id: sessionId, message_id: messageId,
+  }) })
+}
+
+async function clearCorrelationScope() {
+  const query = { ...route.query }
+  delete query.session_id
+  delete query.message_id
+  await router.replace({ path: route.path, query })
+}
+
+function openExecutionDetail(row) {
+  executionDetailId.value = row.message_id
+  executionDetailVisible.value = true
+}
+
 async function switchInvocationAuditTab(tab) {
   const nextTab = normalizeInvocationAuditTab(tab)
   if (invocationAuditTab.value === nextTab) return
@@ -1296,13 +1377,17 @@ function skillStatusLabel(status) {
   return labels[status] || status || '已加载'
 }
 
+function capabilityTrace(row) {
+  return row?.capability_trace || row?.action_trace || {}
+}
+
 function hasActionTrace(row) {
-  const trace = row?.action_trace
+  const trace = capabilityTrace(row)
   return Boolean(trace && typeof trace === 'object' && Object.keys(trace).length)
 }
 
 function actionTraceTitle(row) {
-  const trace = row?.action_trace || {}
+  const trace = capabilityTrace(row)
   return trace.display_name || trace.code || '-'
 }
 
@@ -1326,7 +1411,7 @@ function actionTraceStatusTone(status) {
 }
 
 function actionTraceDetail(row) {
-  const trace = row?.action_trace || {}
+  const trace = capabilityTrace(row)
   const decision = trace.decision || {}
   if (decision.task_name) return `任务中心：${decision.task_name}`
   if (decision.pending_action_id) return `待执行动作 #${decision.pending_action_id}`
@@ -1341,9 +1426,11 @@ function actionTraceDetail(row) {
 function traceHitReasonLabel(reason) {
   const labels = {
     runtime_enabled: '运行时启用',
-    action_matched: 'Action 命中',
-    action_called: 'Action 调用',
-    legacy_action_router: '历史 Action 推断',
+    action_matched: '问答类型命中',
+    action_called: '问答类型调用',
+    capability_matched: '问答类型命中',
+    capability_called: '问答类型调用',
+    legacy_action_router: '历史能力路由推断',
     legacy_tool_dependency: '历史工具推断',
   }
   return labels[reason] || reason || '-'
@@ -1532,7 +1619,25 @@ function loadActiveInvocationTabPage(page = 1) {
   return loadAuditTools(page)
 }
 
+async function loadAuditExecutions(page = 1) {
+  loading.executions = true
+  try {
+    const data = await getAIOpsAuditExecutions(buildAuditListParams('executions', page), { skipErrorMessage: true })
+    auditExecutions.value = data.results || []
+    auditExecutionPagination.page = page
+    auditExecutionPagination.total = data.count || 0
+  } catch (error) {
+    if (error?.response?.status === 404 && page > 1) return loadAuditExecutions(page - 1)
+    auditExecutions.value = []
+    auditExecutionPagination.total = 0
+    ElMessage.error(error?.response?.data?.detail || '执行追踪加载失败')
+  } finally {
+    loading.executions = false
+  }
+}
+
 function loadActiveTabPage(page = 1) {
+  if (activeTab.value === 'executions') return loadAuditExecutions(page)
   if (activeTab.value === 'tools') return loadActiveInvocationTabPage(page)
   if (activeTab.value === 'models') return loadAuditModels(page)
   if (activeTab.value === 'actions') return loadAuditActions(page)
@@ -1619,10 +1724,10 @@ async function handleBatchDeleteAuditSkillTraces() {
 }
 
 async function handleDeleteAuditActionTrace(row) {
-  await ElMessageBox.confirm(`确认删除 Action 命中《${row.display_name || row.code || '-'}》吗？该操作不可恢复。`, '删除确认', { type: 'warning' })
+  await ElMessageBox.confirm(`确认删除问答类型命中《${row.display_name || row.code || '-'}》吗？该操作不可恢复。`, '删除确认', { type: 'warning' })
   const shouldFallbackPage = auditActionTraces.value.length === 1 && auditActionTracePagination.page > 1
   await bulkDeleteAIOpsAuditActionTraces([row.id])
-  ElMessage.success('Action 命中记录已删除')
+  ElMessage.success('问答类型命中记录已删除')
   await loadAuditActionTraces(shouldFallbackPage ? auditActionTracePagination.page - 1 : auditActionTracePagination.page)
 }
 
@@ -1630,9 +1735,9 @@ async function handleBatchDeleteAuditActionTraces() {
   if (!selectedAuditActionTraceIds.value.length) return
   const shouldFallbackPage = selectedAuditActionTraceIds.value.length === auditActionTraces.value.length && auditActionTracePagination.page > 1
   const deletedCount = selectedAuditActionTraceIds.value.length
-  await ElMessageBox.confirm(`确认批量删除已选中的 ${deletedCount} 个 Action 命中记录吗？该操作不可恢复。`, '批量删除确认', { type: 'warning' })
+  await ElMessageBox.confirm(`确认批量删除已选中的 ${deletedCount} 个问答类型命中记录吗？该操作不可恢复。`, '批量删除确认', { type: 'warning' })
   await bulkDeleteAIOpsAuditActionTraces(selectedAuditActionTraceIds.value)
-  ElMessage.success(`已删除 ${deletedCount} 个 Action 命中记录`)
+  ElMessage.success(`已删除 ${deletedCount} 个问答类型命中记录`)
   await loadAuditActionTraces(shouldFallbackPage ? auditActionTracePagination.page - 1 : auditActionTracePagination.page)
 }
 
@@ -1663,8 +1768,8 @@ async function handleBatchDeleteAuditActions() {
 }
 
 watch(
-  () => route.query.tab,
-  async (tab) => {
+  () => [route.query.tab, route.query.session_id, route.query.message_id],
+  async ([tab]) => {
     const nextTab = normalizeTab(tab)
     if (activeTab.value !== nextTab) activeTab.value = nextTab
     if (route.query.tab !== nextTab) {
@@ -1674,7 +1779,7 @@ watch(
     if (nextTab === 'overview') {
       await loadOverview()
     } else {
-      await loadActiveTabPage(activePagination.value.page)
+      await loadActiveTabPage(1)
     }
   },
   { immediate: true },
@@ -1682,6 +1787,8 @@ watch(
 </script>
 
 <style scoped>
+.audit-session-actions { display: inline-flex; align-items: center; flex-wrap: nowrap; gap: 12px; white-space: nowrap; }
+.audit-session-actions :deep(.el-button) { margin-left: 0; flex-shrink: 0; }
 .aiops-audit-page {
   display: flex;
   flex-direction: column;
@@ -1815,14 +1922,16 @@ watch(
 .audit-tabs {
   display: flex;
   width: 100%;
-  margin-bottom: 0;
+  margin: 0;
   padding: 3px;
   gap: 8px;
   border: 1px solid rgba(148, 163, 184, 0.16);
   border-radius: 12px;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.9));
-  box-shadow: 0 12px 26px rgba(15, 23, 42, 0.04);
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.025);
 }
+
+.audit-correlation-scope { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; color: #64748b; font-size: 12px; }
 
 .audit-tab-btn {
   min-height: 38px;

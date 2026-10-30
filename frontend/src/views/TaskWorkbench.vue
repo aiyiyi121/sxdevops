@@ -11,6 +11,7 @@
     </section>
 
     <CmdbHostTaskCenter
+      class="workbench-fill-panel"
       :resource-tree="resourceTree"
       :resource-loading="loading"
       :on-reload-resources="reloadResourceTree"

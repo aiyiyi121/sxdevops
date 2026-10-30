@@ -1,0 +1,7 @@
+interface:
+  display_name: "SXDevOps UI"
+  short_description: "SXDevOps frontend Feishu minimal UI standard"
+  default_prompt: "Use $sxdevops-feishu-ui to build or adjust SXDevOps frontend pages in the repo standard style."
+
+policy:
+  allow_implicit_invocation: true

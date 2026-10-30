@@ -1,24 +1,18 @@
-# Backend Config
+# 本地 JSON 配置
 
-Copy `config.example.json` to `config.json` when local MySQL or Redis is needed.
-`config.json` is ignored by git because it may contain passwords.
+数据库与缓存需要本地配置时，把同目录的 [config.example.json](config.example.json) 复制为 `config.json` 并修改。该文件可能包含密码，已被 Git 忽略。
 
-`database.type` can be `sqlite` or `mysql`.
-When the database section is missing, SxDevOps uses local SQLite at `backend/db.sqlite3`.
+**有效 JSON 字段优先于对应环境变量。** 不要直接复制示例后以为环境变量还能覆盖其中数据库密码或连接地址；完整变量、默认值和容器传参方式见[配置参考](../docs/configuration.md)。
 
-For MySQL:
+| 部分 | 字段 | 用途 |
+| --- | --- | --- |
+| `database` | `type` | `sqlite` 或 `mysql`；省略默认本地 SQLite |
+| `database` | `database_name`、`user`、`password`、`host`、`port` | MySQL 库名及连接参数 |
+| `database` | `charset`、`conn_max_age`、`options` | 字符集、连接复用及数据库选项 |
+| `cache` | `type` | `redis` 或 `local` |
+| `cache` | `redis_url`、`key_prefix`、`default_timeout_seconds` | Redis 地址、键前缀和缓存时长 |
+| `cache` | `ignore_redis_errors` | Redis 异常容错；应评估对限流的影响 |
 
-- `database_name`: the MySQL database/schema name, for example `sxdevops`.
-- `user`: the MySQL login user.
-- `password`: the MySQL login password.
-- `host` and `port`: the MySQL server address.
+未配置数据库时使用 `backend/db.sqlite3`；未配置 Redis 时使用进程内缓存。多实例应使用共享缓存与共享 checkpoint，不能仅复制本地配置文件实现共享状态。
 
-`cache.type` can be `redis`, `local`, or can be omitted.
-When the cache section is missing, SxDevOps uses Django in-memory cache.
-
-For Redis:
-
-- `redis_url`: Redis connection URL, for example `redis://127.0.0.1:6379/0`.
-- `key_prefix`: prefix added to cache keys.
-- `default_timeout_seconds`: default cache TTL.
-- `ignore_redis_errors`: keep the app running if Redis is temporarily unavailable.
+[文档目录](../docs/README.md)

@@ -86,6 +86,10 @@ class AIOpsModelProvider(models.Model):
             return ''
 
 
+def default_capability_codes():
+    return ['troubleshoot', 'event.analysis', 'log.query_generate', 'slo.analysis', 'host_task.generate', 'cmdb']
+
+
 class AIOpsAgentConfig(models.Model):
     name = models.CharField('配置名称', max_length=64, default='default', unique=True)
     default_provider = models.ForeignKey(
@@ -104,6 +108,7 @@ class AIOpsAgentConfig(models.Model):
     require_confirmation = models.BooleanField('任务中心确认', default=True)
     show_evidence = models.BooleanField('展示证据来源', default=True)
     allow_analysis = models.BooleanField('允许关联分析', default=True)
+    enabled_capability_codes = models.JSONField('启用的问答类型', default=default_capability_codes, blank=True)
     enabled_mcp_server_ids = models.JSONField('启用的 MCP', default=list, blank=True)
     enabled_skill_ids = models.JSONField('启用的 Skill', default=list, blank=True)
     max_history_messages = models.PositiveIntegerField('最大历史消息数', default=12)
@@ -170,7 +175,7 @@ class AIOpsSkill(models.Model):
     slug = models.SlugField('标识', max_length=128, unique=True)
     description = models.CharField('描述', max_length=255, blank=True, default='')
     category = models.CharField('分类', max_length=64, blank=True, default='')
-    applicable_actions = models.JSONField('适用 Action', default=list, blank=True)
+    applicable_actions = models.JSONField('挂载的问答类型', default=list, blank=True)
     examples = models.JSONField('示例问题', default=list, blank=True)
     builtin_tools = models.JSONField('内置工具', default=list, blank=True)
     recommended_tools = models.JSONField('推荐工具', default=list, blank=True)
@@ -182,6 +187,11 @@ class AIOpsSkill(models.Model):
     allowed_role_codes = models.JSONField('允许角色', default=list, blank=True)
     is_builtin = models.BooleanField('内置', default=False)
     is_enabled = models.BooleanField('启用', default=True)
+    builtin_version = models.PositiveSmallIntegerField('内置目录版本', default=0, editable=False)
+    merged_into = models.ForeignKey(
+        'self', on_delete=models.PROTECT, null=True, blank=True,
+        related_name='merged_sources', verbose_name='已合并到', editable=False,
+    )
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)
 
@@ -205,6 +215,7 @@ class AIOpsKnowledgeEnvironment(models.Model):
     tracing_datasource_ids = models.JSONField('链路追踪数据源', default=list, blank=True)
     observability_link_ids = models.JSONField('可观测性关联配置', default=list, blank=True)
     alert_environments = models.JSONField('告警中心环境', default=list, blank=True)
+    posture_environments = models.JSONField('系统态势环境', default=list, blank=True)
     k8s_cluster_ids = models.JSONField('K8s 集群', default=list, blank=True)
     k8s_namespaces = models.JSONField('K8s 命名空间', default=dict, blank=True)
     docker_host_ids = models.JSONField('Docker 环境', default=list, blank=True)
@@ -314,10 +325,57 @@ class AIOpsChatMessage(models.Model):
         return f'{self.session_id} / {self.role}'
 
 
+class AIOpsChatJob(models.Model):
+    STATUS_QUEUED = 'queued'
+    STATUS_RUNNING = 'running'
+    STATUS_COMPLETED = 'completed'
+    STATUS_FAILED = 'failed'
+    STATUS_CHOICES = [
+        (STATUS_QUEUED, '排队中'),
+        (STATUS_RUNNING, '执行中'),
+        (STATUS_COMPLETED, '已完成'),
+        (STATUS_FAILED, '失败'),
+    ]
+
+    assistant_message = models.OneToOneField(AIOpsChatMessage, on_delete=models.CASCADE, related_name='chat_job')
+    user_message = models.ForeignKey(AIOpsChatMessage, on_delete=models.CASCADE, related_name='submitted_chat_jobs')
+    thread_id = models.CharField(max_length=128, unique=True)
+    analysis_only = models.BooleanField(default=False)
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_QUEUED)
+    attempt_count = models.PositiveIntegerField(default=0)
+    claim_token = models.UUIDField(null=True, blank=True)
+    lease_until = models.DateTimeField(null=True, blank=True)
+    error_message = models.CharField(max_length=500, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['created_at', 'id']
+        indexes = [models.Index(fields=['status', 'lease_until'], name='aiops_chat_job_queue_idx')]
+
+
+class AIOpsGraphNodeRun(models.Model):
+    message = models.ForeignKey(AIOpsChatMessage, on_delete=models.CASCADE, related_name='graph_node_runs')
+    thread_id = models.CharField(max_length=128, db_index=True)
+    node = models.CharField(max_length=64)
+    status = models.CharField(max_length=16, default='running')
+    started_at = models.DateTimeField(default=timezone.now)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    duration_ms = models.PositiveIntegerField(default=0)
+    retry_count = models.PositiveIntegerField(default=0)
+    error = models.CharField(max_length=500, blank=True, default='')
+
+    class Meta:
+        ordering = ['id']
+        indexes = [models.Index(fields=['status', 'started_at'], name='aiops_graph_run_status_idx')]
+
+
 class AIOpsPendingAction(models.Model):
     ACTION_EXECUTE_HOST_TASK = 'execute_host_task'
+    ACTION_CREATE_CMDB_ASSET = 'create_cmdb_asset'
     ACTION_CHOICES = [
         (ACTION_EXECUTE_HOST_TASK, '执行主机任务'),
+        (ACTION_CREATE_CMDB_ASSET, '创建 CMDB 资产'),
     ]
 
     RISK_LOW = 'low'
@@ -382,6 +440,43 @@ class AIOpsPendingAction(models.Model):
 
     def __str__(self):
         return f'{self.session_id} / {self.action_type}'
+
+
+class AIOpsRemediationVerification(models.Model):
+    STATUS_WAITING = 'waiting'
+    STATUS_RUNNING = 'running'
+    STATUS_PASSED = 'passed'
+    STATUS_FAILED = 'failed'
+    STATUS_INCONCLUSIVE = 'inconclusive'
+    STATUS_CHOICES = [
+        (STATUS_WAITING, '等待任务完成'),
+        (STATUS_RUNNING, '验证中'),
+        (STATUS_PASSED, '告警已恢复'),
+        (STATUS_FAILED, '验证未通过'),
+        (STATUS_INCONCLUSIVE, '证据不足'),
+    ]
+
+    action = models.OneToOneField(AIOpsPendingAction, on_delete=models.CASCADE, related_name='verification')
+    task = models.OneToOneField('ops.HostTask', on_delete=models.SET_NULL, null=True, blank=True, related_name='aiops_verification')
+    environment = models.ForeignKey(AIOpsKnowledgeEnvironment, on_delete=models.SET_NULL, null=True, related_name='verifications')
+    thread_id = models.CharField(max_length=128, unique=True)
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_WAITING)
+    observation_seconds = models.PositiveIntegerField(default=60)
+    baseline = models.JSONField(default=dict)
+    evidence = models.JSONField(default=dict, blank=True)
+    summary = models.CharField(max_length=500, blank=True, default='')
+    is_demo = models.BooleanField(default=False)
+    checkpoint_expired = models.BooleanField(default=False)
+    attempt_count = models.PositiveIntegerField(default=0)
+    claim_token = models.UUIDField(null=True, blank=True)
+    lease_until = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+        indexes = [models.Index(fields=['status', 'lease_until'], name='aiops_verification_queue_idx')]
 
 
 class AIOpsToolInvocation(models.Model):

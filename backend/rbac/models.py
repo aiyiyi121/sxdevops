@@ -59,9 +59,24 @@ class UserGroup(models.Model):
         return self.name
 
 
+class SiteSetting(models.Model):
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
+    site_name = models.CharField('网站名称', max_length=10, default='SXDevOps')
+    icon_data = models.BinaryField('网站图标', blank=True, default=bytes)
+    updated_by = models.CharField('更新人', max_length=150, blank=True, default='')
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        verbose_name = '网站基础配置'
+        verbose_name_plural = '网站基础配置'
+        constraints = [models.CheckConstraint(condition=models.Q(id=1), name='rbac_single_site_setting')]
+
+
 class SystemModuleSetting(models.Model):
     code = models.CharField('模块编码', max_length=64, unique=True)
     enabled = models.BooleanField('是否显示', default=True)
+    is_default = models.BooleanField('是否为登录默认页', default=False)
+    sort_order = models.PositiveIntegerField('菜单顺序', null=True, blank=True, default=None)
     updated_by = models.CharField('更新人', max_length=150, blank=True, default='')
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)
@@ -70,6 +85,29 @@ class SystemModuleSetting(models.Model):
         verbose_name = '系统模块配置'
         verbose_name_plural = '系统模块配置'
         ordering = ['code']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['is_default'],
+                condition=models.Q(is_default=True),
+                name='rbac_single_default_page',
+            ),
+        ]
 
     def __str__(self):
         return self.code
+
+
+class K8sUserAccess(models.Model):
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='k8s_access')
+    unrestricted = models.BooleanField('沿用平台权限范围', default=False)
+
+
+class K8sClusterGrant(models.Model):
+    access = models.ForeignKey(K8sUserAccess, on_delete=models.CASCADE, related_name='grants')
+    cluster = models.ForeignKey('ops.K8sCluster', on_delete=models.CASCADE, related_name='user_grants')
+    role = models.CharField('集群角色', max_length=16, choices=[('viewer', '只读'), ('operator', '运维'), ('admin', '管理员')])
+    namespaces = models.JSONField('命名空间范围', default=list, blank=True)
+    allow_exec = models.BooleanField('允许 Pod 终端', default=False)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['access', 'cluster'], name='rbac_unique_k8s_cluster_grant')]

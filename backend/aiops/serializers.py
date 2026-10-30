@@ -1,4 +1,7 @@
 from rest_framework import serializers
+from rbac.services import user_has_permissions
+
+from sxdevops.features import is_system_posture_enabled
 
 from .models import (
     AIOpsAgentConfig,
@@ -16,8 +19,16 @@ from .models import (
     AIOpsSkill,
     AIOpsToolInvocation,
 )
-from .services import _validate_mcp_stdio_command
-from .services import _ensure_task_draft_title, _is_generic_task_title, get_model_provider_setup_hint
+from .services import (
+    BUILTIN_ACTION_REGISTRY,
+    BUILTIN_CAPABILITY_REGISTRY,
+    capability_by_code,
+    normalize_capability_code,
+    _resolve_question_category_action,
+    _ensure_task_draft_title,
+    _is_generic_task_title,
+    get_model_provider_setup_hint,
+)
 
 
 class AIOpsModelProviderSerializer(serializers.ModelSerializer):
@@ -60,6 +71,24 @@ class AIOpsModelProviderSerializer(serializers.ModelSerializer):
         return get_model_provider_setup_hint(obj)
 
 
+class AIOpsModelDiscoverySerializer(serializers.Serializer):
+    provider_id = serializers.PrimaryKeyRelatedField(queryset=AIOpsModelProvider.objects.all(), required=False)
+    base_url = serializers.URLField(max_length=255)
+    api_key = serializers.CharField(write_only=True, required=False, allow_blank=True, trim_whitespace=True)
+    provider_preset = serializers.CharField(max_length=64, required=False, allow_blank=True)
+    default_model = serializers.CharField(max_length=128, required=False, allow_blank=True)
+    backup_model = serializers.CharField(max_length=128, required=False, allow_blank=True)
+    timeout_seconds = serializers.IntegerField(min_value=5, max_value=120, default=30)
+
+    def validate(self, attrs):
+        saved_provider = attrs.get('provider_id')
+        if not attrs.get('api_key') and not (saved_provider and saved_provider.has_api_key):
+            raise serializers.ValidationError({'api_key': '请填写 API Key 后获取模型列表。'})
+        if not attrs.get('api_key') and attrs['base_url'].rstrip('/') != saved_provider.base_url.rstrip('/'):
+            raise serializers.ValidationError({'api_key': '连接地址已更改，请重新填写 API Key 后获取模型列表。'})
+        return attrs
+
+
 class AIOpsModelProviderLiteSerializer(serializers.ModelSerializer):
     runtime_ready = serializers.SerializerMethodField()
     setup_hint = serializers.SerializerMethodField()
@@ -76,6 +105,8 @@ class AIOpsModelProviderLiteSerializer(serializers.ModelSerializer):
 
 
 class AIOpsAgentConfigSerializer(serializers.ModelSerializer):
+    enabled_capability_codes = serializers.ListField(child=serializers.ChoiceField(
+        choices=[item['code'] for item in BUILTIN_CAPABILITY_REGISTRY]), required=False, allow_empty=True)
     default_provider_id = serializers.PrimaryKeyRelatedField(
         queryset=AIOpsModelProvider.objects.all(),
         source='default_provider',
@@ -90,10 +121,13 @@ class AIOpsAgentConfigSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'default_provider', 'default_provider_id', 'system_prompt', 'welcome_message',
             'suggested_questions', 'is_enabled', 'allow_action_execution', 'require_confirmation', 'show_evidence',
-            'allow_analysis', 'enabled_mcp_server_ids', 'enabled_skill_ids', 'max_history_messages',
+            'allow_analysis', 'enabled_capability_codes', 'enabled_mcp_server_ids', 'enabled_skill_ids', 'max_history_messages',
             'created_at', 'updated_at',
         ]
-        read_only_fields = ['created_at', 'updated_at']
+        read_only_fields = ['created_at', 'updated_at', 'enabled_mcp_server_ids', 'enabled_skill_ids']
+
+    def validate_enabled_capability_codes(self, value):
+        return list(dict.fromkeys(value))
 
 
 class AIOpsMCPServerSerializer(serializers.ModelSerializer):
@@ -101,6 +135,15 @@ class AIOpsMCPServerSerializer(serializers.ModelSerializer):
         model = AIOpsMCPServer
         fields = '__all__'
         read_only_fields = ['is_builtin']
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        actor = getattr(self.context.get('request'), 'user', None)
+        if not user_has_permissions(actor, ['aiops.config.manage']):
+            config = instance.auth_config or {}
+            data['auth_config'] = {'configured': bool(config), 'allow_write': bool(config.get('allow_write'))}
+            data['endpoint_or_command'] = 'configured' if instance.endpoint_or_command else ''
+        return data
 
     def validate(self, attrs):
         server_type = attrs.get('server_type') or getattr(self.instance, 'server_type', '')
@@ -134,7 +177,7 @@ class AIOpsSkillSerializer(serializers.ModelSerializer):
     class Meta:
         model = AIOpsSkill
         fields = '__all__'
-        read_only_fields = ['is_builtin']
+        read_only_fields = ['is_builtin', 'builtin_version', 'merged_into', 'applicable_actions']
 
     def validate(self, attrs):
         list_fields = [
@@ -184,7 +227,7 @@ class AIOpsKnowledgeEnvironmentSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'aliases', 'description', 'event_environments', 'grafana_folder_keys',
             'metric_datasource_ids', 'log_datasource_ids', 'tracing_datasource_ids', 'observability_link_ids', 'alert_environments',
-            'k8s_cluster_ids', 'k8s_namespaces', 'docker_host_ids',
+            'posture_environments', 'k8s_cluster_ids', 'k8s_namespaces', 'docker_host_ids',
             'task_resource_environment_ids',
             'is_default', 'is_enabled', 'created_by', 'updated_by', 'created_at', 'updated_at',
         ]
@@ -197,6 +240,8 @@ class AIOpsKnowledgeEnvironmentSerializer(serializers.ModelSerializer):
         return value
 
     def validate(self, attrs):
+        if not is_system_posture_enabled():
+            attrs['posture_environments'] = []
         list_fields = [
             'aliases',
             'event_environments',
@@ -206,6 +251,7 @@ class AIOpsKnowledgeEnvironmentSerializer(serializers.ModelSerializer):
             'tracing_datasource_ids',
             'observability_link_ids',
             'alert_environments',
+            'posture_environments',
             'k8s_cluster_ids',
             'docker_host_ids',
             'task_resource_environment_ids',
@@ -258,11 +304,13 @@ class AIOpsKnowledgeEnvironmentSerializer(serializers.ModelSerializer):
 
         instance = self.instance
         association_fields = [field for field in list_fields if field != 'aliases']
+        if not is_system_posture_enabled():
+            association_fields = [field for field in association_fields if field != 'posture_environments']
         has_association = any(
             attrs.get(field, getattr(instance, field, [])) for field in association_fields
         )
         if not has_association:
-            raise serializers.ValidationError('??????????????????????????K8s ???Docker ???????????')
+            raise serializers.ValidationError('请至少选择一个事件中心、看板目录、日志、链路、告警、系统态势、K8s 集群、Docker 环境或任务资源底座来源')
         is_default = attrs.get('is_default', getattr(instance, 'is_default', False))
         is_enabled = attrs.get('is_enabled', getattr(instance, 'is_enabled', True))
         if is_default and not is_enabled:
@@ -465,7 +513,7 @@ class _AIOpsAuditTraceMixin:
         metadata = message.metadata if message else {}
         if not isinstance(metadata, dict):
             return {}
-        trace = metadata.get('action_trace')
+        trace = metadata.get('capability_trace') or metadata.get('action_trace')
         if isinstance(trace, dict) and trace:
             normalized_trace = dict(trace)
             if not normalized_trace.get('code') and (
@@ -484,13 +532,22 @@ class _AIOpsAuditTraceMixin:
                     'allowed_tools': normalized_trace.get('allowed_tools') or ['query_task_resources', 'generate_host_task', 'query_knowledge_graph'],
                     'inferred': True,
                 })
+            capability_code = normalize_capability_code(normalized_trace.get('code'))
+            capability = next((item for item in BUILTIN_CAPABILITY_REGISTRY if item['code'] == capability_code), None)
+            if capability:
+                normalized_trace['legacy_code'] = normalized_trace.get('legacy_code') or normalized_trace.get('code')
+                normalized_trace['code'] = capability_code
+                normalized_trace['display_name'] = capability['display_name']
             return normalized_trace
-        selected_action = metadata.get('selected_action')
+        selected_action = metadata.get('selected_capability') or metadata.get('selected_action')
         if isinstance(selected_action, dict) and selected_action:
+            capability_code = normalize_capability_code(selected_action.get('code'))
+            capability = next((item for item in BUILTIN_CAPABILITY_REGISTRY if item['code'] == capability_code), {})
             return {
                 'hit': True,
-                'code': selected_action.get('code') or '',
-                'display_name': selected_action.get('display_name') or selected_action.get('code') or '',
+                'code': capability_code,
+                'legacy_code': selected_action.get('code') or '',
+                'display_name': capability.get('display_name') or selected_action.get('display_name') or selected_action.get('code') or '',
                 'risk_level': selected_action.get('risk_level') or '',
                 'risk_level_display': selected_action.get('risk_level_display') or '',
                 'status': 'matched',
@@ -562,8 +619,27 @@ class AIOpsAuditSessionSerializer(_AIOpsAuditTraceMixin, serializers.ModelSerial
 
 class AIOpsChatInputSerializer(serializers.Serializer):
     content = serializers.CharField(max_length=4000)
+    model = serializers.CharField(max_length=128, required=False, allow_blank=True, default='')
     analysis_only = serializers.BooleanField(required=False, default=False)
     page_context = serializers.JSONField(required=False, default=dict)
+    question_category = serializers.ChoiceField(
+        choices=['auto', 'troubleshoot', 'incident', 'operations', 'monitoring', 'deployment', 'cmdb', 'cost']
+        + [item['code'] for item in BUILTIN_ACTION_REGISTRY]
+        + [item['code'] for item in BUILTIN_CAPABILITY_REGISTRY],
+        required=False,
+        default='auto',
+    )
+
+    def validate(self, attrs):
+        request = self.context.get('request')
+        if request:
+            capability = capability_by_code(attrs.get('question_category'), user=request.user)
+            if capability and not capability.get('available'):
+                raise serializers.ValidationError({'question_category': capability.get('available_reason') or '当前账号无权使用该问答类型，请重新选择问答类型。'})
+            action = _resolve_question_category_action(attrs.get('question_category'), attrs['content'], user=request.user)
+            if action and not action.get('available'):
+                raise serializers.ValidationError({'question_category': action.get('available_reason') or '当前账号无权使用该问答类型，请重新选择问答类型。'})
+        return attrs
 
 
 class AIOpsCreateSessionSerializer(serializers.Serializer):

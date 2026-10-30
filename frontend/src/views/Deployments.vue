@@ -257,60 +257,81 @@
       </el-table>
     </div>
 
-    <el-dialog v-model="releaseDialogVisible" title="新建发布单" width="960px" append-to-body destroy-on-close>
-      <el-form :model="releaseForm" label-width="110px" class="release-form-grid">
-        <el-form-item label="应用名称" required><el-input v-model="releaseForm.app_name" /></el-form-item>
-        <el-form-item label="版本号" required><el-input v-model="releaseForm.version" /></el-form-item>
-        <el-form-item label="镜像地址" class="span-2"><el-input v-model="releaseForm.image" placeholder="为空时默认使用 应用名:版本号" /></el-form-item>
-        <el-form-item label="系统" required>
-          <el-select v-model="releaseForm.business_line" filterable placeholder="选择系统" style="width: 100%" @change="handleBusinessLineChange">
-            <el-option v-for="item in businessLineOptions" :key="item.value" :label="item.label" :value="item.value" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="发布环境" required>
-          <el-select v-model="releaseForm.environment" style="width: 100%">
-            <el-option v-for="item in releaseEnvironmentOptions" :key="item.value" :label="item.label" :value="item.value" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="发布模式" required>
-          <el-radio-group v-model="releaseForm.deploy_mode">
-            <el-radio-button label="docker_compose">Docker 环境</el-radio-button>
-            <el-radio-button label="k8s">K8s 集群</el-radio-button>
-          </el-radio-group>
-        </el-form-item>
-        <el-form-item v-if="releaseForm.deploy_mode === 'docker_compose'" label="Docker 环境" class="span-2" required>
-          <el-select v-model="releaseForm.docker_host" filterable placeholder="选择 Docker 环境" style="width: 100%">
-            <el-option v-for="host in dockerHosts" :key="host.id" :label="host.name" :value="host.id" />
-          </el-select>
-        </el-form-item>
-        <template v-else>
-          <el-form-item label="目标集群" required>
-            <el-select v-model="releaseForm.cluster" filterable placeholder="选择 K8s 集群" style="width: 100%">
-              <el-option v-for="cluster in clusters" :key="cluster.id" :label="cluster.name" :value="cluster.id" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="命名空间"><el-input v-model="releaseForm.namespace" placeholder="default" /></el-form-item>
-          <el-form-item label="发布名称"><el-input v-model="releaseForm.release_name" placeholder="为空时自动生成" /></el-form-item>
-          <el-form-item label="副本数"><el-input-number v-model="releaseForm.replicas" :min="1" :max="99" /></el-form-item>
-        </template>
-        <el-form-item label="容器端口"><el-input-number v-model="releaseForm.container_port" :min="1" :max="65535" /></el-form-item>
-        <el-form-item label="服务端口"><el-input-number v-model="releaseForm.service_port" :min="1" :max="65535" /></el-form-item>
-        <el-form-item label="发布策略" class="span-2">
-          <el-radio-group v-model="releaseForm.release_strategy">
-            <el-radio-button label="standard">标准发布</el-radio-button>
-            <el-radio-button label="canary">灰度发布</el-radio-button>
-            <el-radio-button label="batch">批次发布</el-radio-button>
-          </el-radio-group>
-        </el-form-item>
-        <el-form-item v-if="releaseForm.release_strategy === 'canary'" label="灰度比例"><el-input-number v-model="releaseForm.canary_percent" :min="1" :max="100" /></el-form-item>
-        <template v-if="releaseForm.release_strategy === 'batch'">
-          <el-form-item label="批次数"><el-input-number v-model="releaseForm.batch_total" :min="2" :max="20" /></el-form-item>
-          <el-form-item label="单批规模"><el-input-number v-model="releaseForm.batch_size" :min="1" :max="100" /></el-form-item>
-        </template>
-        <el-form-item label="变更说明" class="span-2"><el-input v-model="releaseForm.change_summary" type="textarea" :rows="2" placeholder="发布目的、变更点、影响范围" /></el-form-item>
-        <el-form-item label="补充描述" class="span-2"><el-input v-model="releaseForm.description" type="textarea" :rows="2" /></el-form-item>
-        <el-form-item label="环境变量(JSON)" class="span-2"><el-input v-model="releaseForm.env_config_text" type="textarea" :rows="4" placeholder='例如：{"SPRING_PROFILES_ACTIVE":"prod"}' /></el-form-item>
-        <el-form-item label="策略配置(JSON)" class="span-2"><el-input v-model="releaseForm.strategy_config_text" type="textarea" :rows="4" placeholder='可选扩展配置，例如：{"gateway":"istio","trafficPolicy":"header"}' /></el-form-item>
+    <el-dialog top="5vh" :close-on-click-modal="false" class="workbench-edit-dialog" v-model="releaseDialogVisible" title="新建发布单" width="960px" append-to-body destroy-on-close>
+      <el-form label-position="top" :model="releaseForm" label-width="110px" class="workbench-editor-form--sectioned release-form-grid">
+        <section class="workbench-editor-section">
+          <div class="workbench-editor-heading"><span class="workbench-editor-step">01</span><h3>发布信息</h3></div>
+          <div class="workbench-editor-grid">
+            <el-form-item label="应用名称" required><el-input v-model="releaseForm.app_name" /></el-form-item>
+            <el-form-item label="版本号" required><el-input v-model="releaseForm.version" /></el-form-item>
+            <el-form-item label="镜像地址" class="span-2"><el-input v-model="releaseForm.image" placeholder="为空时默认使用 应用名:版本号" /></el-form-item>
+            <el-form-item label="系统" required>
+              <el-select v-model="releaseForm.business_line" filterable placeholder="选择系统" style="width: 100%" @change="handleBusinessLineChange">
+                <el-option v-for="item in businessLineOptions" :key="item.value" :label="item.label" :value="item.value" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="发布环境" required>
+              <el-select v-model="releaseForm.environment" style="width: 100%">
+                <el-option v-for="item in releaseEnvironmentOptions" :key="item.value" :label="item.label" :value="item.value" />
+              </el-select>
+            </el-form-item>
+          </div>
+        </section>
+        <section class="workbench-editor-section workbench-editor-section--tinted">
+          <div class="workbench-editor-heading"><span class="workbench-editor-step">02</span><h3>部署目标</h3></div>
+          <div class="workbench-editor-grid">
+            <el-form-item label="发布模式" required>
+              <el-radio-group v-model="releaseForm.deploy_mode">
+                <el-radio-button label="docker_compose">Docker 环境</el-radio-button>
+                <el-radio-button label="k8s">K8s 集群</el-radio-button>
+              </el-radio-group>
+            </el-form-item>
+            <el-form-item v-if="releaseForm.deploy_mode === 'docker_compose'" label="Docker 环境" class="span-2" required>
+              <el-select v-model="releaseForm.docker_host" filterable placeholder="选择 Docker 环境" style="width: 100%">
+                <el-option v-for="host in dockerHosts" :key="host.id" :label="host.name" :value="host.id" />
+              </el-select>
+            </el-form-item>
+            <template v-else>
+              <el-form-item label="目标集群" required>
+                <el-select v-model="releaseForm.cluster" filterable placeholder="选择 K8s 集群" style="width: 100%">
+                  <el-option v-for="cluster in clusters" :key="cluster.id" :label="cluster.name" :value="cluster.id" />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="命名空间"><el-input v-model="releaseForm.namespace" placeholder="default" /></el-form-item>
+              <el-form-item label="发布名称"><el-input v-model="releaseForm.release_name" placeholder="为空时自动生成" /></el-form-item>
+              <el-form-item label="副本数"><el-input-number v-model="releaseForm.replicas" :min="1" :max="99" /></el-form-item>
+            </template>
+            <el-form-item label="容器端口"><el-input-number v-model="releaseForm.container_port" :min="1" :max="65535" /></el-form-item>
+            <el-form-item label="服务端口"><el-input-number v-model="releaseForm.service_port" :min="1" :max="65535" /></el-form-item>
+          </div>
+        </section>
+        <section class="workbench-editor-section workbench-editor-section--tinted">
+          <div class="workbench-editor-heading"><span class="workbench-editor-step">03</span><h3>发布策略与变更说明</h3></div>
+          <div class="workbench-editor-grid">
+            <el-form-item label="发布策略" class="span-2">
+              <el-radio-group v-model="releaseForm.release_strategy">
+                <el-radio-button label="standard">标准发布</el-radio-button>
+                <el-radio-button label="canary">灰度发布</el-radio-button>
+                <el-radio-button label="batch">批次发布</el-radio-button>
+              </el-radio-group>
+            </el-form-item>
+            <el-form-item v-if="releaseForm.release_strategy === 'canary'" label="灰度比例"><el-input-number v-model="releaseForm.canary_percent" :min="1" :max="100" /></el-form-item>
+            <template v-if="releaseForm.release_strategy === 'batch'">
+              <el-form-item label="批次数"><el-input-number v-model="releaseForm.batch_total" :min="2" :max="20" /></el-form-item>
+              <el-form-item label="单批规模"><el-input-number v-model="releaseForm.batch_size" :min="1" :max="100" /></el-form-item>
+            </template>
+            <el-form-item label="变更说明" class="workbench-editor-full span-2"><el-input v-model="releaseForm.change_summary" type="textarea" :rows="2" placeholder="发布目的、变更点、影响范围" /></el-form-item>
+            <el-form-item label="补充描述" class="workbench-editor-full span-2"><el-input v-model="releaseForm.description" type="textarea" :rows="2" /></el-form-item>
+          </div>
+        </section>
+        <el-collapse class="workbench-editor-advanced">
+          <el-collapse-item name="release-advanced" title="环境变量与扩展参数（可选）">
+            <div>
+              <el-form-item label="环境变量(JSON)" class="workbench-editor-full span-2"><el-input v-model="releaseForm.env_config_text" type="textarea" :rows="4" placeholder='例如：{"SPRING_PROFILES_ACTIVE":"prod"}' /></el-form-item>
+              <el-form-item label="策略配置(JSON)" class="workbench-editor-full span-2"><el-input v-model="releaseForm.strategy_config_text" type="textarea" :rows="4" placeholder='可选扩展配置，例如：{"gateway":"istio","trafficPolicy":"header"}' /></el-form-item>
+            </div>
+          </el-collapse-item>
+        </el-collapse>
       </el-form>
       <template #footer>
         <el-button @click="releaseDialogVisible = false">取消</el-button>
@@ -318,8 +339,8 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="approvalVisible" :title="approvalAction === 'approve' ? '审批通过' : '驳回发布'" width="520px" append-to-body destroy-on-close>
-      <el-form :model="approvalForm" label-width="96px">
+    <el-dialog top="5vh" :close-on-click-modal="false" class="workbench-edit-dialog" v-model="approvalVisible" :title="approvalAction === 'approve' ? '审批通过' : '驳回发布'" width="520px" append-to-body destroy-on-close>
+      <el-form label-position="top" :model="approvalForm" label-width="96px">
         <el-form-item label="发布单"><div>#{{ approvalTarget?.id }} · {{ approvalTarget?.app_name }} / {{ approvalTarget?.version }}</div></el-form-item>
         <el-form-item label="当前节点">
           <div>
@@ -334,8 +355,8 @@
         <el-button :type="approvalAction === 'approve' ? 'success' : 'danger'" :loading="approvalSubmitting" @click="submitApproval">{{ approvalAction === 'approve' ? '确认通过' : '确认驳回' }}</el-button>
       </template>
     </el-dialog>
-    <el-dialog v-model="flowDialogVisible" :title="flowEditingId ? '编辑审批流' : '新建审批流'" width="920px" append-to-body destroy-on-close>
-      <el-form :model="flowForm" label-width="100px">
+    <el-dialog top="5vh" :close-on-click-modal="false" class="workbench-edit-dialog" v-model="flowDialogVisible" :title="flowEditingId ? '编辑审批流' : '新建审批流'" width="920px" append-to-body destroy-on-close>
+      <el-form label-position="top" :model="flowForm" label-width="100px">
         <div class="release-form-grid">
           <el-form-item label="流程名称" required><el-input v-model="flowForm.name" /></el-form-item>
           <el-form-item label="适用环境">

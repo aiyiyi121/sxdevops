@@ -140,9 +140,9 @@ SYSTEM_POSTURE_ENABLED = _bool_value(
         FEATURE_CONFIG,
         ('system_posture_enabled', 'systemPostureEnabled', 'system_posture', 'systemPosture'),
         ('SXDEVOPS_SYSTEM_POSTURE_ENABLED', 'SYSTEM_POSTURE_ENABLED'),
-        False,
+        True,
     ),
-    False,
+    True,
 )
 
 
@@ -340,6 +340,13 @@ def _build_cache_config():
 
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = os.getenv('SECRET_KEY') or secrets.token_urlsafe(50)
+SECURITY_CONFIG = _app_config_section('security')
+CMDB_PASSWORD_ENCRYPTION_KEY = _setting_value(
+    SECURITY_CONFIG,
+    ('cmdb_password_encryption_key', 'cmdbPasswordEncryptionKey'),
+    ('CMDB_PASSWORD_ENCRYPTION_KEY',),
+    '',
+)
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = _bool_value(os.getenv('DEBUG'), False)
@@ -376,6 +383,7 @@ INSTALLED_APPS = [
     'cmdb',
     'iac',
     'multicloud',
+    'cloudsecurity',
     'aiops.apps.AiopsConfig',
     'rbac',
     'eventwall',
@@ -478,7 +486,7 @@ REST_FRAMEWORK = {
 }
 
 # Loki
-LOKI_URL = ''
+LOKI_URL = 'http://47.95.15.209:33100'
 
 LOG_PROVIDER_CONFIGS = {
     'loki': {
@@ -559,6 +567,7 @@ OBSERVABILITY_CONFIG = {
 }
 
 CACHES = _build_cache_config()
+
 
 def _build_channel_layers():
     redis_url = os.getenv('CHANNEL_REDIS_URL') or os.getenv('REDIS_URL', '')

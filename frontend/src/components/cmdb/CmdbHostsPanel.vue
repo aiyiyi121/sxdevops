@@ -113,51 +113,61 @@
     </div>
   </div>
 
-  <el-dialog v-model="dialogVisible" :title="editingId ? '编辑主机' : '新增主机'" width="90%" style="max-width: 620px" top="5vh" append-to-body destroy-on-close>
-    <el-form :model="form" label-width="90px">
-      <el-form-item label="主机名"><el-input v-model="form.hostname" placeholder="例如 web-server-01" /></el-form-item>
-      <div class="form-row">
-        <el-form-item label="业务线" class="form-col">
-          <el-select v-model="form.business_line" placeholder="选择业务线" clearable filterable style="width: 100%" @change="onBusinessChange">
-            <el-option v-for="node in bizNodes" :key="node.id" :label="node.name" :value="node.name" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="环境" class="form-col">
-          <el-select v-model="form.environment" placeholder="选择环境" :disabled="!form.business_line" style="width: 100%">
-            <el-option v-for="env in currentEnvOptions" :key="env.id" :label="env.name" :value="env.name" />
-          </el-select>
-        </el-form-item>
-      </div>
-      <div class="form-row">
-        <el-form-item label="IP 地址" class="form-col"><el-input v-model="form.ip_address" placeholder="例如 192.168.1.10" /></el-form-item>
-        <el-form-item label="负责人" class="form-col"><el-input v-model="form.admin_user" placeholder="例如 张三" /></el-form-item>
-      </div>
-      <div class="form-row">
-        <el-form-item label="操作系统" class="form-col"><el-input v-model="form.os_type" placeholder="例如 Ubuntu 22.04" /></el-form-item>
-        <el-form-item label="状态" class="form-col">
-          <el-select v-model="form.status" style="width: 100%">
-            <el-option label="在线" value="online" />
-            <el-option label="离线" value="offline" />
-            <el-option label="告警" value="warning" />
-          </el-select>
-        </el-form-item>
-      </div>
-      <el-form-item label="描述"><el-input v-model="form.description" type="textarea" :rows="2" /></el-form-item>
-      <el-divider content-position="left">SSH 连接</el-divider>
-      <div class="form-row">
-        <el-form-item label="SSH 用户" class="form-col"><el-input v-model="form.ssh_user" placeholder="root" /></el-form-item>
-        <el-form-item label="SSH 端口" class="form-col">
-          <el-input-number v-model="form.ssh_port" :min="1" :max="65535" controls-position="right" style="width: 100%" />
-        </el-form-item>
-      </div>
-      <el-form-item label="SSH 密码">
-        <el-input
+  <el-dialog :close-on-click-modal="false" class="workbench-edit-dialog" v-model="dialogVisible" :title="editingId ? '编辑主机' : '新增主机'" width="90%" style="max-width: 620px" top="5vh" append-to-body destroy-on-close>
+    <el-form class="workbench-editor-form--sectioned" label-position="top" :model="form" label-width="90px">
+      <section class="workbench-editor-section">
+        <div class="workbench-editor-heading"><span class="workbench-editor-step">01</span><h3>主机信息</h3></div>
+        <div>
+          <el-form-item label="主机名"><el-input v-model="form.hostname" placeholder="例如 web-server-01" /></el-form-item>
+          <div class="form-row">
+            <el-form-item label="业务线" class="form-col">
+              <el-select v-model="form.business_line" placeholder="选择业务线" clearable filterable style="width: 100%" @change="onBusinessChange">
+                <el-option v-for="node in bizNodes" :key="node.id" :label="node.name" :value="node.name" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="环境" class="form-col">
+              <el-select v-model="form.environment" placeholder="选择环境" :disabled="!form.business_line" style="width: 100%">
+                <el-option v-for="env in currentEnvOptions" :key="env.id" :label="env.name" :value="env.name" />
+              </el-select>
+            </el-form-item>
+          </div>
+          <div class="form-row">
+            <el-form-item label="IP 地址" class="form-col"><el-input v-model="form.ip_address" placeholder="例如 192.168.1.10" /></el-form-item>
+            <el-form-item label="负责人" class="form-col"><el-input v-model="form.admin_user" placeholder="例如 张三" /></el-form-item>
+          </div>
+          <div class="form-row">
+            <el-form-item label="操作系统" class="form-col"><el-input v-model="form.os_type" placeholder="例如 Ubuntu 22.04" /></el-form-item>
+            <el-form-item label="状态" class="form-col">
+              <el-select v-model="form.status" style="width: 100%">
+                <el-option label="在线" value="online" />
+                <el-option label="离线" value="offline" />
+                <el-option label="告警" value="warning" />
+              </el-select>
+            </el-form-item>
+          </div>
+          <el-form-item class="workbench-editor-full" label="描述"><el-input v-model="form.description" type="textarea" :rows="2" /></el-form-item>
+        </div>
+      </section>
+
+      <section class="workbench-editor-section workbench-editor-section--tinted">
+        <div class="workbench-editor-heading"><span class="workbench-editor-step">02</span><h3>SSH 连接</h3></div>
+        <div>
+          <div class="form-row">
+            <el-form-item label="SSH 用户" class="form-col"><el-input v-model="form.ssh_user" placeholder="root" /></el-form-item>
+            <el-form-item label="SSH 端口" class="form-col">
+              <el-input-number v-model="form.ssh_port" :min="1" :max="65535" controls-position="right" style="width: 100%" />
+            </el-form-item>
+          </div>
+          <el-form-item label="SSH 密码">
+            <el-input
           v-model="form.ssh_password"
           type="password"
           show-password
           :placeholder="editingId ? '留空则不更新' : '请输入 SSH 密码'"
         />
-      </el-form-item>
+          </el-form-item>
+        </div>
+      </section>
     </el-form>
     <template #footer>
       <el-button @click="dialogVisible = false">取消</el-button>

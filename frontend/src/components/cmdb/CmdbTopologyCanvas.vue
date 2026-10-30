@@ -22,16 +22,18 @@
 
     <button type="button" class="topology-fit-btn" @click="fitView()">{{ labels.resetCanvas }}</button>
 
-    <div class="topology-legend">
+    <div v-if="visibleCiTypes.length || relationLegendItems.length" class="topology-legend">
       <div class="legend-title">{{ labels.legend }}</div>
-      <div v-for="type in ciTypes" :key="type.id" class="legend-item">
+      <div v-for="type in visibleCiTypes" :key="type.id" class="legend-item">
         <span class="legend-dot" :style="{ background: type.color }"></span>
         <span>{{ type.name }}</span>
       </div>
-      <div class="legend-divider"></div>
-      <div class="legend-item"><span class="legend-line legend-solid"></span>{{ labels.dependsOn }}</div>
-      <div class="legend-item"><span class="legend-line legend-runs"></span>{{ labels.runsOn }}</div>
-      <div class="legend-item"><span class="legend-line legend-dashed"></span>{{ labels.connectsTo }}</div>
+      <template v-if="relationLegendItems.length">
+        <div v-if="visibleCiTypes.length" class="legend-divider"></div>
+        <div v-for="item in relationLegendItems" :key="item.type" class="legend-item">
+          <span class="legend-line" :class="item.className"></span>{{ item.label }}
+        </div>
+      </template>
     </div>
 
     <div v-if="minimapNodes.length" class="topology-minimap">
@@ -51,6 +53,7 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { resolveThemeColor, theme } from '@/theme'
 import {
   EDGE_COLORS,
   buildGraphLookup,
@@ -135,6 +138,23 @@ const tooltipStyle = computed(() => ({
   left: `${tooltipPos.value.x}px`,
   top: `${tooltipPos.value.y}px`,
 }))
+
+const visibleCiTypes = computed(() => {
+  const nodeTypes = new Set(layoutState.value.nodes.map(node => node.type))
+  return props.ciTypes.filter(type => nodeTypes.has(type.name))
+})
+
+const relationLegendItems = computed(() => {
+  const nodeIds = new Set(layoutState.value.nodes.map(node => node.id))
+  const edgeTypes = new Set(props.edges
+    .filter(edge => nodeIds.has(edge.source) && nodeIds.has(edge.target))
+    .map(edge => edge.type))
+  return [
+    { type: 'depends_on', label: labels.value.dependsOn, className: 'legend-solid' },
+    { type: 'runs_on', label: labels.value.runsOn, className: 'legend-runs' },
+    { type: 'connects_to', label: labels.value.connectsTo, className: 'legend-dashed' },
+  ].filter(item => edgeTypes.has(item.type))
+})
 
 const matchedNodeIdSet = computed(() => new Set(props.matchedNodeIds || []))
 const graphLookup = computed(() => buildGraphLookup(layoutState.value.nodes, props.edges))
@@ -699,7 +719,7 @@ function drawBlueprintGrid(ctx, width, height) {
   const major = minor * 4
 
   ctx.save()
-  ctx.strokeStyle = 'rgba(148, 163, 184, 0.07)'
+  ctx.strokeStyle = resolveThemeColor('rgba(148, 163, 184, 0.07)', 'surface')
   ctx.lineWidth = 1
   for (let x = 0; x <= width; x += minor) {
     ctx.beginPath()
@@ -714,7 +734,7 @@ function drawBlueprintGrid(ctx, width, height) {
     ctx.stroke()
   }
 
-  ctx.strokeStyle = 'rgba(59, 130, 246, 0.1)'
+  ctx.strokeStyle = resolveThemeColor('rgba(59, 130, 246, 0.1)', 'surface')
   for (let x = 0; x <= width; x += major) {
     ctx.beginPath()
     ctx.moveTo(x + 0.5, 0)
@@ -739,8 +759,8 @@ function drawGraph() {
   ctx.clearRect(0, 0, width, height)
 
   const background = ctx.createLinearGradient(0, 0, 0, height)
-  background.addColorStop(0, '#f8fbff')
-  background.addColorStop(1, '#f1f7fd')
+  background.addColorStop(0, resolveThemeColor('#f8fbff', 'surface'))
+  background.addColorStop(1, resolveThemeColor('#f1f7fd', 'surface'))
   ctx.fillStyle = background
   ctx.fillRect(0, 0, width, height)
   drawBlueprintGrid(ctx, width, height)
@@ -753,17 +773,17 @@ function drawGraph() {
     const laneTint = getLaneTint(section.businessLine)
     ctx.save()
     const sectionBackground = ctx.createLinearGradient(section.x, section.y, section.x, section.y + section.height)
-    sectionBackground.addColorStop(0, index % 2 === 0 ? 'rgba(255, 255, 255, 0.9)' : 'rgba(248, 250, 252, 0.92)')
-    sectionBackground.addColorStop(1, laneTint.fill)
+    sectionBackground.addColorStop(0, resolveThemeColor(index % 2 === 0 ? 'rgba(255, 255, 255, 0.9)' : 'rgba(248, 250, 252, 0.92)', 'surface'))
+    sectionBackground.addColorStop(1, resolveThemeColor(laneTint.fill, 'surface'))
     ctx.fillStyle = sectionBackground
-    ctx.strokeStyle = laneTint.border
+    ctx.strokeStyle = resolveThemeColor(laneTint.border, 'border')
     ctx.lineWidth = 1
     ctx.beginPath()
     ctx.roundRect(section.x, section.y, section.width, section.height, 18)
     ctx.fill()
     ctx.stroke()
 
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.28)'
+    ctx.strokeStyle = resolveThemeColor('rgba(255, 255, 255, 0.28)', 'surface')
     ctx.lineWidth = 0.8
     for (let x = section.x + 18; x < section.x + section.width - 18; x += 28) {
       ctx.beginPath()
@@ -806,7 +826,7 @@ function drawGraph() {
     if (!source || !target) return
 
     const emphasized = isEdgeEmphasized(edge)
-    const color = EDGE_COLORS[edge.type] || EDGE_COLORS.connects_to
+    const color = resolveThemeColor(EDGE_COLORS[edge.type] || EDGE_COLORS.connects_to)
     ctx.save()
     ctx.strokeStyle = color
     ctx.globalAlpha = emphasized ? 0.88 : 0.18
@@ -822,13 +842,13 @@ function drawGraph() {
 
     const middleX = (source.x + target.x) / 2
     const middleY = (source.y + target.y) / 2
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.96)'
+    ctx.fillStyle = resolveThemeColor('rgba(255, 255, 255, 0.96)', 'surface')
     ctx.beginPath()
     ctx.roundRect(middleX - 24, middleY - 12, 48, 18, 7)
     ctx.fill()
-    ctx.strokeStyle = 'rgba(148, 163, 184, 0.26)'
+    ctx.strokeStyle = resolveThemeColor('rgba(148, 163, 184, 0.26)', 'border')
     ctx.stroke()
-    ctx.fillStyle = emphasized ? '#0f172a' : '#64748b'
+    ctx.fillStyle = resolveThemeColor(emphasized ? '#0f172a' : '#64748b')
     ctx.font = '11px sans-serif'
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
@@ -856,7 +876,7 @@ function drawGraph() {
     ctx.arc(node.x, node.y, node.r, 0, Math.PI * 2)
     ctx.fill()
 
-    ctx.strokeStyle = props.selectedNodeId === node.id ? '#0f172a' : '#ffffff'
+    ctx.strokeStyle = resolveThemeColor(props.selectedNodeId === node.id ? '#0f172a' : '#ffffff')
     ctx.lineWidth = props.selectedNodeId === node.id ? 3 : 2
     ctx.stroke()
 
@@ -872,15 +892,15 @@ function drawGraph() {
 
     ctx.font = '600 12px sans-serif'
     const labelWidth = Math.max(76, ctx.measureText(node.name).width + 18)
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.98)'
+    ctx.fillStyle = resolveThemeColor('rgba(255, 255, 255, 0.98)', 'surface')
     ctx.beginPath()
     ctx.roundRect(node.x - labelWidth / 2, node.y + node.r + 10, labelWidth, 24, 10)
     ctx.fill()
-    ctx.strokeStyle = 'rgba(148, 163, 184, 0.24)'
+    ctx.strokeStyle = resolveThemeColor('rgba(148, 163, 184, 0.24)', 'border')
     ctx.lineWidth = 1
     ctx.stroke()
 
-    ctx.fillStyle = '#0f172a'
+    ctx.fillStyle = resolveThemeColor('#0f172a')
     ctx.textAlign = 'center'
     ctx.fillText(node.name, node.x, node.y + node.r + 26)
     ctx.restore()
@@ -891,13 +911,13 @@ function drawGraph() {
     ctx.save()
 
     if (label.type === 'business') {
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.98)'
+      ctx.fillStyle = resolveThemeColor('rgba(255, 255, 255, 0.98)', 'surface')
       ctx.beginPath()
       ctx.roundRect(label.x, label.y, label.width, label.height, 14)
       ctx.fill()
-      ctx.strokeStyle = 'rgba(59, 130, 246, 0.28)'
+      ctx.strokeStyle = resolveThemeColor('rgba(59, 130, 246, 0.28)', 'border')
       ctx.stroke()
-      ctx.fillStyle = '#0f172a'
+      ctx.fillStyle = resolveThemeColor('#0f172a')
       ctx.font = '600 15px sans-serif'
       ctx.textAlign = 'center'
       ctx.fillText(label.text, label.x + label.width / 2, label.y + 22)
@@ -907,11 +927,11 @@ function drawGraph() {
 
     if (label.type === 'environment') {
       const badgeWidth = Math.max(42, ctx.measureText(label.text).width + 12)
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.9)'
+      ctx.fillStyle = resolveThemeColor('rgba(255, 255, 255, 0.9)', 'surface')
       ctx.beginPath()
       ctx.roundRect(label.x - 6, label.y - 12, badgeWidth, 18, 8)
       ctx.fill()
-      ctx.fillStyle = '#475569'
+      ctx.fillStyle = resolveThemeColor('#475569')
       ctx.font = '600 12px sans-serif'
       ctx.textAlign = 'left'
       ctx.fillText(label.text, label.x, label.y)
@@ -920,11 +940,11 @@ function drawGraph() {
     }
 
     const groupWidth = Math.max(40, ctx.measureText(label.text).width + 12)
-    ctx.fillStyle = 'rgba(248, 250, 252, 0.92)'
+    ctx.fillStyle = resolveThemeColor('rgba(248, 250, 252, 0.92)', 'surface')
     ctx.beginPath()
     ctx.roundRect(label.x - 6, label.y - 10, groupWidth, 16, 8)
     ctx.fill()
-    ctx.fillStyle = '#64748b'
+    ctx.fillStyle = resolveThemeColor('#64748b')
     ctx.font = '11px sans-serif'
     ctx.textAlign = 'left'
     ctx.fillText(label.text, label.x, label.y)
@@ -1040,6 +1060,8 @@ watch(
   () => props.resetToken,
   () => fitView(),
 )
+
+watch(theme, scheduleDraw)
 
 onMounted(() => {
   resizeObserver = new ResizeObserver(() => {
