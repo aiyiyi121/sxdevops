@@ -290,7 +290,7 @@ async function copyCloneCommand() { try { await navigator.clipboard.writeText(cl
 .site-header { position: sticky; top: 0; z-index: 20; border-bottom: 1px solid var(--p-line); background: var(--p-translucent); backdrop-filter: blur(18px); }
 .header-inner { display: flex; align-items: center; justify-content: space-between; gap: 32px; height: 82px; }
 .brand { display: inline-flex; align-items: center; gap: 9px; font-size: 21px; font-weight: 750; letter-spacing: -.6px; white-space: nowrap; }
-.brand-symbol { width: 43px; height: 43px; display: grid; place-items: center; flex-shrink: 0; }
+.brand-symbol { width: 43px; height: 43px; display: grid; place-items: center; flex-shrink: 0; background: var(--p-raised); border: 1px solid var(--p-line); border-radius: 12px; }
 .brand-symbol img { width: 100%; height: 100%; object-fit: contain; }
 .brand-version { font-size: 11px; color: var(--p-accent); margin-left: 8px; letter-spacing: 0; font-weight: 500; vertical-align: super; }
 .main-nav { display: flex; align-items: center; gap: 17px; margin-left: auto; }
