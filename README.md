@@ -1,4 +1,4 @@
-<p align="center"><img src="frontend/src/assets/brand-mark.svg" alt="SxDevOps 网站图标" width="96" height="96" /></p>
+<p align="center"><img src="frontend/src/assets/brand-mark.png" alt="SxDevOps Logo" width="144" height="144" /></p>
 
 <h1 align="center">SxDevOps · v2</h1>
 

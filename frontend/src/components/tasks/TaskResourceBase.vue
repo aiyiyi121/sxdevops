@@ -1096,7 +1096,7 @@ onMounted(reloadAll)
 
 .cmdb-picker-layout {
   display: grid;
-  grid-template-columns: 230px minmax(0, 1fr);
+  grid-template-columns: 212px minmax(0, 1fr);
   gap: 18px;
 }
 
@@ -1235,8 +1235,8 @@ onMounted(reloadAll)
 .task-resource-cmdb-layout {
   display: grid;
   flex: 1;
-  grid-template-columns: 260px minmax(0, 1fr);
-  gap: 18px;
+  grid-template-columns: 236px minmax(0, 1fr);
+  gap: 14px;
   align-items: stretch;
   min-height: 560px;
   padding: 16px;

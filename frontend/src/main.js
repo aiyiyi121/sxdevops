@@ -38,7 +38,7 @@ watch(() => [router.currentRoute.value.meta?.title, siteStore.siteName, siteStor
     const favicon = document.querySelector('link[rel="icon"]')
     if (favicon) {
         favicon.href = siteStore.siteIcon
-        favicon.type = siteStore.customIconUrl ? 'image/png' : 'image/svg+xml'
+        favicon.type = 'image/png'
     }
 }, { immediate: true })
 

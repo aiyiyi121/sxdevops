@@ -1,6 +1,6 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
-import defaultSiteIcon from '@/assets/brand-mark.svg'
+import defaultSiteIcon from '@/assets/brand-mark.png'
 import { getSiteSettings, updateSiteSettings } from '@/api/modules/rbac'
 
 export const DEFAULT_SITE_NAME = 'SXDevOps'

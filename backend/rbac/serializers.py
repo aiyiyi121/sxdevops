@@ -202,6 +202,8 @@ class SystemModuleSettingUpdateSerializer(serializers.Serializer):
 
 
 class UserSerializer(serializers.ModelSerializer):
+    is_preview = serializers.SerializerMethodField()
+    preview_permissions = serializers.SerializerMethodField()
     can_manage = serializers.SerializerMethodField()
     can_remove = serializers.SerializerMethodField()
     k8s_unrestricted = serializers.SerializerMethodField()
@@ -220,6 +222,7 @@ class UserSerializer(serializers.ModelSerializer):
             'date_joined', 'last_login', 'password', 'role_ids', 'group_ids', 'roles', 'user_groups',
             'effective_permissions', 'display_name', 'k8s_unrestricted',
             'can_manage', 'can_remove',
+            'is_preview', 'preview_permissions',
         ]
         read_only_fields = ['date_joined', 'last_login', 'is_staff', 'is_superuser']
 
@@ -231,6 +234,17 @@ class UserSerializer(serializers.ModelSerializer):
             return False
         from .services import user_has_permissions
         return user_has_permissions(actor, ['rbac.user.manage'])
+
+    def get_is_preview(self, obj):
+        from .preview import is_preview_user
+        return is_preview_user(obj)
+
+    def get_preview_permissions(self, obj):
+        if not self.get_is_preview(obj):
+            return []
+        from .registry import PERMISSION_DEFINITIONS
+        from sxdevops.features import filter_feature_permissions
+        return filter_feature_permissions([code for code, *_ in PERMISSION_DEFINITIONS])
 
     def get_can_remove(self, obj):
         actor = getattr(self.context.get('request'), 'user', None)

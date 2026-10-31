@@ -43,6 +43,7 @@ from .security import (
     require_k8s_subset, require_safe_account_removal, revoke_user_credentials,
 )
 from .throttles import LoginAccountThrottle, LoginIPThrottle
+from .preview import is_preview_user
 
 
 User = get_user_model()
@@ -121,6 +122,9 @@ class UserViewSet(IdentityWriteMixin, EventWallModelViewSetMixin, RBACPermission
     @action(detail=False, methods=['get'])
     def options(self, request):
         candidates = self.filter_queryset(self.get_queryset())
+        if is_preview_user(request.user):
+            page = self.paginate_queryset(candidates.order_by('username', 'id'))
+            return self.get_paginated_response([{'id': user.id, 'username': user.username} for user in page])
         ids = []
         for user in candidates:
             try:
@@ -140,7 +144,8 @@ class UserViewSet(IdentityWriteMixin, EventWallModelViewSetMixin, RBACPermission
     @transaction.atomic
     def k8s_access(self, request, pk=None):
         user = self.get_object()
-        require_manageable_user(request.user, user)
+        if not (request.method == 'GET' and is_preview_user(request.user)):
+            require_manageable_user(request.user, user)
         if request.method == 'PUT':
             if user.is_superuser:
                 raise ValidationError('超级管理员拥有全部集群权限，无需配置范围。')
@@ -432,6 +437,12 @@ def sync_permissions_view(request):
 @permission_classes([IsAuthenticated])
 def assignment_options_view(request):
     actor = request.user
+    if is_preview_user(actor):
+        return Response({
+            'roles': list(Role.objects.values('id', 'name', 'code')),
+            'groups': list(UserGroup.objects.values('id', 'name', 'code')),
+            'permissions': PermissionDefinitionSerializer(PermissionDefinition.objects.all(), many=True).data,
+        })
     manage_users = user_has_permissions(actor, ['rbac.user.manage'])
     manage_groups = user_has_permissions(actor, ['rbac.group.manage'])
     manage_roles = user_has_permissions(actor, ['rbac.role.manage'])

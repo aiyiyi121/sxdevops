@@ -1,5 +1,5 @@
 ﻿<template>
-  <div class="posture-history-page">
+  <div class="posture-history-page" :class="{ 'workbench-page-shell': !props.embedded, 'posture-history-page--embedded': props.embedded }">
     <section v-if="!props.embedded" class="hero panel history-hero">
       <div class="hero-copy">
         <div class="hero-title-row">
@@ -11,7 +11,7 @@
     </section>
 
     <div v-if="!props.embedded" class="history-route-tabs">
-      <ObservabilityRouteTabs group="boards" />
+      <ObservabilityRouteTabs group="posture" />
     </div>
 
     <div class="status-stage">
@@ -505,6 +505,10 @@ onMounted(() => {
   width: 100%;
 }
 
+.posture-history-page--embedded {
+  min-height: 0;
+}
+
 .panel {
   background: linear-gradient(180deg, #ffffff 0%, #fbfcff 100%);
   border: 1px solid rgba(15, 23, 42, 0.08);
@@ -567,12 +571,13 @@ onMounted(() => {
 }
 
 .status-stage {
-  align-items: flex-start;
-  background: #f7f8f9;
+  align-items: stretch;
+  background: transparent;
   display: flex;
+  flex: 1;
   justify-content: center;
   margin-top: 0;
-  padding: 10px 12px 42px;
+  padding: 0;
   width: 100%;
 }
 
@@ -581,7 +586,7 @@ onMounted(() => {
   border: 1px solid var(--border);
   border-radius: 16px;
   box-shadow: 0 16px 36px rgba(17, 24, 28, 0.05);
-  max-width: 880px;
+  min-width: 0;
   overflow: hidden;
   width: 100%;
 }
@@ -1042,7 +1047,7 @@ onMounted(() => {
   }
 
   .status-stage {
-    padding: 24px 0;
+    padding: 0;
   }
 
   .status-wrap {

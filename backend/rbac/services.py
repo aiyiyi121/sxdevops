@@ -7,6 +7,7 @@ from sxdevops.features import filter_feature_permissions, permission_feature_ena
 
 from .models import PermissionDefinition, Role, SystemModuleSetting, UserGroup
 from .registry import BUILTIN_ROLES, PERMISSION_DEFINITIONS
+from .preview import is_preview_read_permission, is_preview_user
 
 
 User = get_user_model()
@@ -36,7 +37,8 @@ SYSTEM_MODULE_CATALOG = [
     {'code': 'containers.k8s', 'title': 'K8s 集群', 'required': False, 'description': 'K8s 集群入口。', 'sort_order': 47, 'parent_code': 'containers', 'level': 2},
     {'code': 'containers.docker', 'title': 'Docker 环境', 'required': False, 'description': 'Docker 环境入口。', 'sort_order': 48, 'parent_code': 'containers', 'level': 2},
     {'code': 'observability', 'title': '可观测性', 'required': False, 'description': '监控、日志、链路与告警入口。', 'sort_order': 50, 'level': 1},
-    {'code': 'observability.boards', 'title': '可视化', 'required': False, 'description': '可观测性看板入口。', 'sort_order': 51, 'parent_code': 'observability', 'level': 2},
+    {'code': 'observability.system-posture', 'title': '系统态势', 'required': False, 'description': '系统 SLO 与态势历史入口。', 'sort_order': 51, 'parent_code': 'observability', 'level': 2},
+    {'code': 'observability.boards', 'title': '仪表盘', 'required': False, 'description': 'Grafana 仪表盘入口。', 'sort_order': 52, 'parent_code': 'observability', 'level': 2},
     {'code': 'observability.metrics', 'title': '指标查询', 'required': False, 'description': '指标查询入口。', 'sort_order': 52, 'parent_code': 'observability', 'level': 2},
     {'code': 'observability.rum', 'title': 'RUM', 'required': False, 'incomplete': True, 'description': '真实用户监控入口。', 'sort_order': 53, 'parent_code': 'observability', 'level': 2},
     {'code': 'observability.logs', 'title': '日志中心', 'required': False, 'description': '日志查询入口。', 'sort_order': 54, 'parent_code': 'observability', 'level': 2},
@@ -81,7 +83,8 @@ SYSTEM_MODULE_PATHS = {
     'aiops.knowledge': '/aiops/knowledge',
     'aiops.config': '/aiops/config',
     'aiops.audit': '/aiops/audit',
-    'observability.boards': '/observability/boards',
+    'observability.system-posture': '/observability/system-posture',
+    'observability.boards': '/observability/grafana',
     'observability.metrics': '/observability/metrics',
     'observability.rum': '/observability/rum',
     'observability.logs': '/logs/query',
@@ -175,6 +178,10 @@ def get_user_group_roles(user):
 def get_user_effective_permissions(user):
     if not getattr(user, 'is_authenticated', False) or not getattr(user, 'is_active', False):
         return set()
+    if is_preview_user(user):
+        return set(filter_feature_permissions([
+            code for code, *_ in PERMISSION_DEFINITIONS if is_preview_read_permission(code)
+        ]))
     if getattr(user, 'is_superuser', False):
         return set(filter_feature_permissions(PermissionDefinition.objects.values_list('code', flat=True)))
 
@@ -195,7 +202,7 @@ def user_has_permissions(user, codes):
         return False
     if not codes:
         return True
-    if getattr(user, 'is_superuser', False):
+    if getattr(user, 'is_superuser', False) and not is_preview_user(user):
         return True
     granted = get_user_effective_permissions(user)
     return all(code in granted for code in codes)
@@ -220,7 +227,12 @@ def ensure_system_module_settings():
     for module in SYSTEM_MODULE_CATALOG:
         setting = existing.get(module['code'])
         if setting is None:
-            SystemModuleSetting.objects.create(code=module['code'], enabled=not module.get('incomplete', False))
+            legacy_boards = existing.get('observability.boards') if module['code'] == 'observability.system-posture' else None
+            SystemModuleSetting.objects.create(
+                code=module['code'],
+                enabled=legacy_boards.enabled if legacy_boards else not module.get('incomplete', False),
+                sort_order=legacy_boards.sort_order if legacy_boards else None,
+            )
 
 
 def get_default_system_module_code():

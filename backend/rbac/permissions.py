@@ -3,6 +3,7 @@
 from rest_framework.exceptions import PermissionDenied
 
 from .services import user_has_permissions
+from .preview import PREVIEW_LEGACY_READ_VIEWS, is_preview_user
 
 
 class RBACPermission(BasePermission):
@@ -21,6 +22,10 @@ class RBACPermission(BasePermission):
         if not codes:
             return True
         if user_has_permissions(request.user, codes):
+            return True
+        match = getattr(request, 'resolver_match', None)
+        if (is_preview_user(request.user) and request.method in {'GET', 'HEAD', 'OPTIONS'}
+                and match and match.url_name in PREVIEW_LEGACY_READ_VIEWS):
             return True
         self.message = f'缺少权限: {", ".join(codes)}'
         return False

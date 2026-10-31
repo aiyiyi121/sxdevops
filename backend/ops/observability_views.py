@@ -2398,7 +2398,9 @@ def execute_promql_query(query, *, range_query=False, start_time=None, end_time=
 
 def _grafana_api_base():
     grafana = _grafana_config()
-    grafana_url = str(grafana.get('url') or _prometheus_config().get('grafana_url') or '').strip().rstrip('/')
+    grafana_url = str(grafana.get('url') or '').strip().rstrip('/')
+    if not grafana_url or grafana_url.startswith('/'):
+        grafana_url = str(_prometheus_config().get('grafana_url') or '').strip().rstrip('/')
     if not grafana_url or _is_example_url(grafana_url):
         return ''
     return grafana_url

@@ -24,6 +24,7 @@ export const useAuthStore = defineStore('auth', () => {
 
   const isAuthenticated = computed(() => !!token.value && !!currentUser.value)
   const permissions = computed(() => currentUser.value?.effective_permissions || [])
+  const isPreview = computed(() => Boolean(currentUser.value?.is_preview))
   const displayName = computed(() => {
     if (!currentUser.value) return ''
     return currentUser.value.display_name || currentUser.value.username || ''
@@ -140,6 +141,7 @@ export const useAuthStore = defineStore('auth', () => {
   function hasPermission(code) {
     if (!isAuthenticated.value || !currentUser.value?.is_active) return false
     if (!code) return true
+    if (isPreview.value) return (currentUser.value?.preview_permissions || []).includes(code)
     return permissions.value.includes(code)
   }
 
@@ -160,6 +162,7 @@ export const useAuthStore = defineStore('auth', () => {
     moduleSettings,
     moduleSettingsLoaded,
     isAuthenticated,
+    isPreview,
     permissions,
     displayName,
     bootstrap,

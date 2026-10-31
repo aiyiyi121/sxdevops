@@ -30,7 +30,7 @@ const systemPostureRoutes = SYSTEM_POSTURE_ENABLED
         path: 'observability/system-posture',
         name: 'ObservabilitySystemPosture',
         component: () => import('@/views/ObservabilitySystemPosture.vue'),
-        meta: { title: '系统态势', icon: 'Aim', permission: 'ops.observability.system_posture.view' },
+        meta: { title: '系统SLO', icon: 'Aim', permission: 'ops.observability.system_posture.view' },
       },
       {
         path: 'observability/posture-history',
@@ -433,7 +433,8 @@ const routes = [
         path: 'observability',
         redirect: () => {
           const authStore = useAuthStore(pinia)
-          if (authStore.hasAnyPermission(observabilityBoardPermissions)) return '/observability/boards'
+          if (SYSTEM_POSTURE_ENABLED && authStore.hasPermission('ops.observability.system_posture.view')) return '/observability/system-posture'
+          if (authStore.hasPermission('ops.grafana.view')) return '/observability/grafana'
           if (authStore.hasPermission('ops.metric.query')) return '/observability/metrics'
           if (authStore.hasPermission('ops.rum.view')) return '/observability/rum'
           if (authStore.hasPermission('ops.log.query')) return '/logs/query'

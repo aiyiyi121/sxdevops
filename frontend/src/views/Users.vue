@@ -138,12 +138,12 @@
             <template #default="{ row }">
               <el-button link type="primary" @click="permissionUser = row">权限</el-button>
               <template v-if="canManageUsers">
-              <el-button link type="primary" :disabled="!row.can_manage" @click="openUserDialog(row)">编辑</el-button>
-              <el-button link type="primary" :disabled="!row.can_manage || row.is_superuser" @click="k8sAccessDialog?.open(row)">K8s 授权</el-button>
-              <el-button link type="warning" :disabled="!row.can_manage" @click="openPasswordDialog(row)">重置密码</el-button>
+              <el-button link type="primary" :disabled="!row.can_manage && !authStore.isPreview" @click="openUserDialog(row)">编辑</el-button>
+              <el-button link type="primary" :disabled="(!row.can_manage && !authStore.isPreview) || row.is_superuser" @click="k8sAccessDialog?.open(row)">K8s 授权</el-button>
+              <el-button link type="warning" :disabled="!row.can_manage && !authStore.isPreview" @click="openPasswordDialog(row)">重置密码</el-button>
               <el-popconfirm title="删除后账号及其聊天将不可恢复，确定删除？" @confirm="handleDeleteUser(row.id)">
                 <template #reference>
-                  <el-button link type="danger" :disabled="!row.can_remove">删除</el-button>
+                  <el-button link type="danger" :disabled="!row.can_remove && !authStore.isPreview">删除</el-button>
                 </template>
               </el-popconfirm>
               </template>
@@ -203,7 +203,7 @@
           </el-table-column>
           <el-table-column v-if="canManageGroups" label="操作" width="140" fixed="right">
             <template #default="{ row }">
-              <el-button link type="primary" :disabled="!row.can_manage" @click="openGroupDialog(row)">编辑</el-button>
+              <el-button link type="primary" :disabled="!row.can_manage && !authStore.isPreview" @click="openGroupDialog(row)">编辑</el-button>
               <el-popconfirm title="确定删除该用户组吗？" @confirm="handleDeleteGroup(row.id)">
                 <template #reference>
                   <el-button link type="danger" :disabled="row.is_builtin || !row.can_manage">删除</el-button>
@@ -489,7 +489,7 @@ const roleDialogVisible = ref(false)
 const editingRoleId = ref(null)
 const roleForm = ref({})
 const currentRoleBuiltin = computed(() => roles.value.find(item => item.id === editingRoleId.value)?.is_builtin || false)
-const currentRoleReadOnly = computed(() => Boolean(editingRoleId.value && !roles.value.find(item => item.id === editingRoleId.value)?.can_manage))
+const currentRoleReadOnly = computed(() => Boolean(!authStore.isPreview && editingRoleId.value && !roles.value.find(item => item.id === editingRoleId.value)?.can_manage))
 const rolePermissionOptions = computed(() => currentRoleReadOnly.value
   ? roles.value.find(item => item.id === editingRoleId.value)?.permissions || []
   : assignmentOptions.value.permissions)
@@ -642,7 +642,7 @@ function applyPermissionFilter() {
 }
 
 async function openUserDialog(row) {
-  if (!canManageUsers.value || (row && !row.can_manage)) return
+  if (!canManageUsers.value || (row && !row.can_manage && !authStore.isPreview)) return
   await fetchAssignmentOptions()
   resetUserForm()
   editingUserId.value = row?.id || null
@@ -663,7 +663,7 @@ async function openUserDialog(row) {
 
 async function openRoleDialog(row) {
   if (row ? !canViewRoles.value : !canManageRoles.value) return
-  if (!row || row.can_manage) await fetchAssignmentOptions()
+  if (!row || row.can_manage || authStore.isPreview) await fetchAssignmentOptions()
   resetRoleForm()
   editingRoleId.value = row?.id || null
   if (row) {
@@ -685,7 +685,7 @@ async function copyRole(row) {
 }
 
 async function openGroupDialog(row) {
-  if (!canManageGroups.value || (row && !row.can_manage)) return
+  if (!canManageGroups.value || (row && !row.can_manage && !authStore.isPreview)) return
   await fetchAssignmentOptions()
   resetGroupForm()
   editingGroupId.value = row?.id || null
@@ -704,7 +704,7 @@ async function openGroupDialog(row) {
 }
 
 function openPasswordDialog(row) {
-  if (!canManageUsers.value || !row.can_manage) return
+  if (!canManageUsers.value || (!row.can_manage && !authStore.isPreview)) return
   passwordUserId.value = row.id
   passwordForm.value = { password: '' }
   passwordDialogVisible.value = true

@@ -3,6 +3,14 @@ import { ElMessage } from 'element-plus'
 
 const TOKEN_KEY = 'sxdevops_token'
 const USER_KEY = 'sxdevops_user'
+const PREVIEW_MESSAGE = '访客体验模式：可浏览页面和表单，暂不支持提交或执行操作。'
+const PREVIEW_POST_PATHS = [
+    /^\/auth\/(login|logout)\/$/,
+    /^\/log\/query\/$/,
+    /^\/log\/providers\/[^/]+\/catalog\/$/,
+    /^\/observability\/(metrics\/query|grafana\/(promql|panel)\/query|tracing\/search)\/$/,
+    /^\/observability\/datasource-links\/resolve_(trace_to_logs|log_to_trace|trace_to_grafana|log_to_grafana|grafana_to_logs|grafana_to_trace)\/$/,
+]
 let isHandlingSessionExpired = false
 
 const request = axios.create({
@@ -101,6 +109,22 @@ function handleSessionExpired() {
 }
 
 request.interceptors.request.use((config) => {
+    const method = String(config.method || 'get').toUpperCase()
+    const url = new URL(config.url, window.location.origin)
+    const path = url.pathname.replace(/^\/api(?=\/)/, '')
+    const rebuildsHistory = path === '/observability/system-posture/history/' && ['refresh', 'backfill'].some(key =>
+        ['1', 'true', 'yes'].includes(String(config.params?.[key] ?? url.searchParams.get(key) ?? '').toLowerCase())
+    )
+    let user = null
+    try { user = JSON.parse(localStorage.getItem(USER_KEY) || 'null') } catch { /* Profile refresh repairs invalid cache. */ }
+    if (user?.is_preview && (rebuildsHistory || (!['GET', 'HEAD', 'OPTIONS'].includes(method)
+        && !(method === 'POST' && PREVIEW_POST_PATHS.some(pattern => pattern.test(path)))))) {
+        const error = new Error(PREVIEW_MESSAGE)
+        error.code = 'PREVIEW_READ_ONLY'
+        error.config = config
+        error.response = { status: 403, data: { detail: PREVIEW_MESSAGE } }
+        return Promise.reject(error)
+    }
     const token = localStorage.getItem(TOKEN_KEY)
     if (token) {
         config.headers = config.headers || {}

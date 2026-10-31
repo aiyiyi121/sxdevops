@@ -938,7 +938,7 @@ onMounted(() => {
 
 <style scoped>
 .cmdb-model-topology-page{display:flex;flex-direction:column;gap:6px}
-.asset-topology-workspace{display:grid;flex:1;grid-template-columns:260px minmax(0,1fr);gap:18px;align-items:stretch}
+.asset-topology-workspace{display:grid;flex:1;grid-template-columns:236px minmax(0,1fr);gap:14px;align-items:stretch}
 .asset-scope-panel{min-width:0;padding:0 12px 0 0;margin:0;min-height:520px;border-right:4px solid var(--el-border-color-lighter)}
 .asset-scope-heading{margin-bottom:12px;font-size:14px;font-weight:700;line-height:1.3;color:var(--text-primary)}
 .asset-scope-panel>.el-input{margin-bottom:12px}

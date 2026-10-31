@@ -2436,6 +2436,18 @@ class ObservabilityViewsTests(TestCase):
         self.assertIn('/api/dashboards/uid/k8s-workload', mock_get.call_args_list[0].args[0])
         self.assertIn('query_range', mock_get.call_args_list[2].args[0])
 
+    @override_settings(OBSERVABILITY_CONFIG={
+        'grafana': {'enabled': True, 'url': '/grafana'},
+        'prometheus': {'grafana_url': 'http://grafana.internal.local/grafana'},
+    })
+    def test_relative_grafana_embed_url_uses_internal_api_endpoint(self):
+        from ops.observability_views import _grafana_api_base, _grafana_meta
+
+        GrafanaSetting.objects.create(name='default', enabled=True, url='/grafana')
+
+        self.assertEqual(_grafana_api_base(), 'http://grafana.internal.local/grafana')
+        self.assertTrue(_grafana_meta()['embed_url'].startswith('/grafana/'))
+
     @patch('ops.observability_views.execute_promql_query')
     @patch('ops.observability_views.http_requests.get')
     def test_grafana_panel_query_resolves_configured_url_and_slo_variables(self, mock_get, mock_promql):

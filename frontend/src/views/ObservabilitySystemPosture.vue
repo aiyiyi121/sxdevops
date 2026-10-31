@@ -1,29 +1,24 @@
 <template>
-  <div class="system-posture-page" :class="{ 'system-posture-page--embedded': embedded }">
+  <div class="system-posture-page" :class="{ 'system-posture-page--embedded': embedded, 'workbench-page-shell': !embedded }">
     <section v-if="!embedded" class="hero panel">
       <div class="release-hero-copy">
         <div class="release-hero-title-row release-hero-title-inline">
           <span class="hero-icon"><el-icon><Aim /></el-icon></span>
-          <h2>系统态势</h2>
+          <h2>系统SLO</h2>
           <p class="page-inline-desc">按环境与系统聚合健康态势，结果导向定义系统 SLO，划清故障边界，快速定位异常节点、关键依赖与风险范围。</p>
         </div>
       </div>
-      <div class="hero-actions">
-        <el-button size="small" :loading="loading" @click="loadSystemPosture()">
-          <el-icon><RefreshRight /></el-icon>
-          刷新
-        </el-button>
-      </div>
     </section>
 
-    <ObservabilityRouteTabs v-if="!embedded" group="boards" />
+    <ObservabilityRouteTabs v-if="!embedded" group="posture" />
 
     <div
-      class="overview-shell"
+      class="overview-shell workbench-fill-panel"
       :class="{ 'is-root': !showFocusPanel }"
+      :aria-busy="loading"
       v-loading="loading"
-      element-loading-text="系统态势加载数据较多，请稍等..."
-      element-loading-background="rgba(255, 255, 255, 0.82)"
+      element-loading-text="系统SLO加载数据较多，请稍等..."
+      element-loading-background="var(--posture-loading-mask)"
     >
       <div class="overview-toolbar">
         <div>
@@ -39,6 +34,7 @@
           <span>{{ drillToolbarText }}</span>
         </div>
         <div class="overview-toolbar__actions">
+          <el-button size="small" :loading="loading" @click="loadSystemPosture()"><el-icon><RefreshRight /></el-icon>刷新</el-button>
           <el-date-picker
             v-model="timeRange"
             type="datetimerange"
@@ -1791,6 +1787,7 @@ onUnmounted(() => {
 
 <style scoped>
 .system-posture-page {
+  --posture-loading-mask: color-mix(in srgb, var(--card-bg) 82%, transparent);
   --fm-bg: #f7f8fa;
   --fm-panel: #ffffff;
   --fm-text: #1f2329;
@@ -1897,8 +1894,10 @@ onUnmounted(() => {
   border-radius: 8px;
   box-shadow: 0 8px 22px rgba(31, 35, 41, 0.04);
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
-  min-height: calc(100vh - 132px);
+  min-height: 0;
+  align-content: start;
   padding: 8px;
 }
 
@@ -2037,15 +2036,37 @@ onUnmounted(() => {
 .overview-systems-panel {
   border-color: rgba(203, 213, 225, 0.82);
   box-shadow: 0 0 0 1px rgba(226, 232, 240, 0.74), 0 4px 14px rgba(31, 35, 41, 0.025);
-  min-height: calc(100vh - 202px);
+  min-height: 0;
   min-width: 0;
 }
 
+.overview-shell :deep(.el-loading-mask) {
+  border-radius: inherit;
+}
+
+.overview-shell :deep(.el-loading-spinner) {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  margin-top: 0;
+  transform: translateY(-50%);
+}
+
+.overview-shell :deep(.el-loading-spinner .circular) {
+  width: 32px;
+  height: 32px;
+}
+
+.overview-shell :deep(.el-loading-spinner .path) {
+  stroke: var(--el-color-primary);
+}
+
 .overview-shell :deep(.el-loading-spinner .el-loading-text) {
-  color: var(--fm-blue);
+  color: var(--text-secondary);
   font-size: 13px;
   font-weight: 600;
-  margin-top: 10px;
+  margin: 0;
 }
 
 .overview-toolbar {
@@ -2465,7 +2486,7 @@ onUnmounted(() => {
   gap: 2px;
   min-width: 0;
   min-height: 58px;
-  padding: 8px 10px;
+  padding: 6px 8px;
 }
 
 .focus-kpi span,
@@ -2490,7 +2511,7 @@ onUnmounted(() => {
   display: grid;
   gap: 8px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  margin-top: 12px;
+  margin-top: 8px;
 }
 
 .focus-entry {
@@ -2596,8 +2617,8 @@ onUnmounted(() => {
 
 .focus-block {
   border-top: 1px solid var(--fm-border-soft);
-  margin-top: 12px;
-  padding-top: 12px;
+  margin-top: 8px;
+  padding-top: 8px;
 }
 
 .focus-block__title {
@@ -2692,7 +2713,8 @@ onUnmounted(() => {
 
 .compact-actions {
   border-top: 1px solid var(--fm-border-soft);
-  padding-top: 12px;
+  margin-top: 8px;
+  padding-top: 8px;
 }
 
 .action-row :deep(.el-button) {
@@ -2700,6 +2722,7 @@ onUnmounted(() => {
 }
 
 .compact-actions :deep(.el-button) {
+  margin-left: 0;
   background: #ffffff;
   border-color: rgba(226, 232, 240, 0.95);
   color: var(--fm-muted);
@@ -3114,10 +3137,15 @@ onUnmounted(() => {
 }
 
 @media (max-width: 1280px) {
-  .overview-layout,
   .drill-layout,
   .dependency-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 1100px) {
+  .overview-layout {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -3127,7 +3155,29 @@ onUnmounted(() => {
   .child-node-grid,
   .focus-entry-grid,
   .form-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .overview-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .overview-toolbar__actions,
+  .environment-group__head {
+    flex-wrap: wrap;
+  }
+
+  .overview-toolbar__actions .system-posture-time-picker {
+    flex: 1 1 100%;
+    order: 1;
+    min-width: 0;
+    width: 100%;
+  }
+
+  .environment-actions {
+    flex: 1 1 100%;
   }
 
   .hero {

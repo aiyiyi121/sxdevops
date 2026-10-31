@@ -5068,11 +5068,11 @@ const modelResourcePagination = reactive({
   pageSize: 20,
   total: 0,
 })
-const ledgerViewMode = ref('cloud')
+const ledgerViewMode = ref('business')
 const ledgerTreeContext = ref(null)
 const ledgerTreeKeyword = ref('')
 let ledgerTreeRequestSeq = 0
-const modelCatalogTreeMode = ref('cloud')
+const modelCatalogTreeMode = ref('business')
 const modelCatalogTreeContext = ref(null)
 const modelCatalogTreeKeyword = ref('')
 const expandedLedgerTreeKeys = ref(new Set())
@@ -5094,8 +5094,8 @@ const overviewServerLoading = ref(false)
 const overviewResourceDimension = ref('cloud_account')
 const overviewResourceScope = ref('')
 const overviewResourceDimensionOptions = [
-  { key: 'cloud_account', label: '云账号维度' },
   { key: 'business_environment', label: '业务环境维度' },
+  { key: 'cloud_account', label: '云账号维度' },
 ]
 const resourceNodeTree = ref([])
 const cloudResourceNodeTree = ref([])
@@ -5460,6 +5460,7 @@ function saveCmdbUiState() {
   if (typeof window === 'undefined') return
   try {
     window.localStorage.setItem(cmdbUiStateStorageKey, JSON.stringify({
+      assetTreeDefault: 'business',
       ledger: {
         filters: { ...ledgerFilters },
         viewMode: ledgerViewMode.value,
@@ -5511,14 +5512,19 @@ function restoreCmdbUiState() {
     const ledgerState = saved.ledger || {}
     const viewState = saved.views || {}
     const modelState = saved.model || {}
+    // 旧缓存首次切换到业务环境默认值，后续仍记住用户主动选择的维度。
+    const restoreLedgerTree = saved.assetTreeDefault === 'business' || ledgerState.viewMode === 'business'
+    const restoreModelTree = saved.assetTreeDefault === 'business' || modelState.treeMode === 'business'
     applySavedFilterValues(ledgerFilters, ledgerState.filters)
     applySavedFilterValues(viewFilters, viewState.filters)
     applySavedFilterValues(modelResourceFilters, modelState.resourceFilters)
-    if (['cloud', 'business'].includes(ledgerState.viewMode)) ledgerViewMode.value = ledgerState.viewMode
-    if (ledgerState.treeContext && typeof ledgerState.treeContext === 'object') ledgerTreeContext.value = { ...ledgerState.treeContext }
-    if (typeof ledgerState.treeKeyword === 'string') ledgerTreeKeyword.value = ledgerState.treeKeyword
-    if (Array.isArray(ledgerState.expandedKeys)) expandedLedgerTreeKeys.value = new Set(ledgerState.expandedKeys)
-    if (Array.isArray(ledgerState.collapsedKeys)) collapsedLedgerTreeKeys.value = new Set(ledgerState.collapsedKeys)
+    if (restoreLedgerTree) {
+      if (['cloud', 'business'].includes(ledgerState.viewMode)) ledgerViewMode.value = ledgerState.viewMode
+      if (ledgerState.treeContext && typeof ledgerState.treeContext === 'object') ledgerTreeContext.value = { ...ledgerState.treeContext }
+      if (typeof ledgerState.treeKeyword === 'string') ledgerTreeKeyword.value = ledgerState.treeKeyword
+      if (Array.isArray(ledgerState.expandedKeys)) expandedLedgerTreeKeys.value = new Set(ledgerState.expandedKeys)
+      if (Array.isArray(ledgerState.collapsedKeys)) collapsedLedgerTreeKeys.value = new Set(ledgerState.collapsedKeys)
+    }
     if (['application', 'host', 'physical'].includes(viewState.mode)) viewMode.value = viewState.mode
     if (typeof viewState.keyword === 'string') applicationViewKeyword.value = viewState.keyword
     if (typeof viewState.risk === 'string') applicationViewRisk.value = viewState.risk
@@ -5527,11 +5533,13 @@ function restoreCmdbUiState() {
     if (typeof viewState.tier === 'string') applicationViewTier.value = viewState.tier
     if (typeof viewState.treeKeyword === 'string') opsanyViewKeyword.value = viewState.treeKeyword
     if (viewState.selectedNode && typeof viewState.selectedNode === 'object') selectedOpsanyViewNode.value = { ...viewState.selectedNode }
-    if (['cloud', 'business'].includes(modelState.treeMode)) modelCatalogTreeMode.value = modelState.treeMode
-    if (modelState.treeContext && typeof modelState.treeContext === 'object') modelCatalogTreeContext.value = { ...modelState.treeContext }
-    if (typeof modelState.treeKeyword === 'string') modelCatalogTreeKeyword.value = modelState.treeKeyword
-    if (Array.isArray(modelState.expandedKeys)) expandedModelCatalogTreeKeys.value = new Set(modelState.expandedKeys)
-    if (Array.isArray(modelState.collapsedKeys)) collapsedModelCatalogTreeKeys.value = new Set(modelState.collapsedKeys)
+    if (restoreModelTree) {
+      if (['cloud', 'business'].includes(modelState.treeMode)) modelCatalogTreeMode.value = modelState.treeMode
+      if (modelState.treeContext && typeof modelState.treeContext === 'object') modelCatalogTreeContext.value = { ...modelState.treeContext }
+      if (typeof modelState.treeKeyword === 'string') modelCatalogTreeKeyword.value = modelState.treeKeyword
+      if (Array.isArray(modelState.expandedKeys)) expandedModelCatalogTreeKeys.value = new Set(modelState.expandedKeys)
+      if (Array.isArray(modelState.collapsedKeys)) collapsedModelCatalogTreeKeys.value = new Set(modelState.collapsedKeys)
+    }
     if (typeof modelState.groupKey === 'string') activeModelGroupKey.value = modelState.groupKey
     if (typeof modelState.modelKeyword === 'string') opsanyModelKeyword.value = modelState.modelKeyword
     if (typeof modelState.modelStatus === 'string') opsanyModelStatus.value = modelState.modelStatus
@@ -18418,7 +18426,7 @@ onMounted(async () => {
 .cmdb-content-card--opsany .view-mode-bar button{min-height:38px;padding:0 18px;border-radius:8px;color:#475569;font-weight:700;position:relative}
 .cmdb-content-card--opsany .view-mode-bar button.active{background:#e8f0ff;color:#245bdb;box-shadow:inset 0 0 0 1px rgba(51,112,255,.1)}
 .cmdb-content-card--opsany .view-mode-bar button.active::after{display:none}
-.opsany-view-layout{display:grid;grid-template-columns:260px minmax(0,1fr);gap:18px;align-items:start}
+.opsany-view-layout{display:grid;grid-template-columns:236px minmax(0,1fr);gap:14px;align-items:start}
 .opsany-view-tree{border-right:4px solid #e5e7eb;min-height:360px;padding-right:12px}
 .opsany-tree-search{margin-bottom:12px}
 .opsany-view-tree-list{display:flex;flex-direction:column;gap:4px}
@@ -18426,7 +18434,7 @@ onMounted(async () => {
 .opsany-view-tree-node:hover,.opsany-view-tree-node.active{background:#eaf8f0;color:#16a34a}
 .opsany-view-tree-node>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .opsany-view-tree-node strong{min-width:28px;height:20px;padding:0 6px;border-radius:2px;background:#e8fff4;color:#16a34a;font-size:12px;font-weight:500;display:inline-flex;align-items:center;justify-content:center}
-.ledger-host-layout{display:grid;grid-template-columns:260px minmax(0,1fr);gap:18px;align-items:start}
+.ledger-host-layout{display:grid;grid-template-columns:236px minmax(0,1fr);gap:14px;align-items:start}
 .ledger-resource-tree-panel{min-height:520px}
 .ledger-resource-tree-panel .ledger-perspective-tabs{width:100%;margin-bottom:12px;padding:3px;gap:6px;border-radius:12px;box-shadow:none}
 .ledger-resource-tree-panel .ledger-perspective-tabs .neo-tab-btn{flex:1;min-height:34px;padding:0 8px;border-radius:8px;font-size:12px;justify-content:center}
@@ -18607,7 +18615,7 @@ onMounted(async () => {
 .opsany-model-tabs button.active{background:#e8f0ff;color:#245bdb;box-shadow:inset 0 0 0 1px rgba(51,112,255,.1)}
 .opsany-model-tabs button.active::after{display:none}
 .opsany-model-catalog-layout{display:block}
-.opsany-model-catalog-layout--with-tree{display:grid;grid-template-columns:260px minmax(0,1fr);gap:18px;align-items:start}
+.opsany-model-catalog-layout--with-tree{display:grid;grid-template-columns:236px minmax(0,1fr);gap:14px;align-items:start}
 .opsany-model-catalog-main{min-width:0}
 .cmdb-model-surface-tabs{margin:0}
 .opsany-model-toolbar{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:10px}
@@ -18862,7 +18870,7 @@ onMounted(async () => {
 .resource-tree-summary-card{border:1px solid rgba(148,163,184,.18);border-radius:10px;background:#fff;padding:10px 12px;display:flex;align-items:center;justify-content:space-between;color:#475569;font-size:13px}
 .resource-tree-summary-card strong{font-size:20px;color:#0f172a}
 .resource-tree-summary-card.success{background:#f7fefb}.resource-tree-summary-card.warning{background:#fffaf0}.resource-tree-summary-card.info{background:#f8fafc}
-.resource-tree-grid{display:grid;grid-template-columns:minmax(280px,.8fr) minmax(0,1.2fr);gap:10px}
+.resource-tree-grid{display:grid;grid-template-columns:minmax(248px,.65fr) minmax(0,1.35fr);gap:10px}
 .resource-tree-list{display:flex;flex-direction:column;gap:8px;max-height:420px;overflow:auto}
 .resource-tree-biz{border:1px solid rgba(148,163,184,.16);border-radius:12px;background:#fff;padding:8px}
 .resource-tree-node{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:30px;border-radius:8px;font-size:13px}
@@ -19016,7 +19024,7 @@ onMounted(async () => {
 .sync-account-create-tile--private{border-color:rgba(15,118,110,.22);background:#f8fdfa;color:#0f766e}
 .sync-account-create-tile--private:hover{border-color:rgba(15,118,110,.36);background:#ecfdf5}
 .sync-account-create-tile--private strong{color:#0f766e}
-.sync-opsany-layout{display:grid;grid-template-columns:280px minmax(0,1fr);gap:16px;align-items:start}
+.sync-opsany-layout{display:grid;grid-template-columns:256px minmax(0,1fr);gap:14px;align-items:start}
 .sync-account-shell--side{position:sticky;top:8px;margin-bottom:0}
 .sync-account-shell--side .phase-one-guide-head{margin-bottom:10px}
 .sync-account-shell--side .sync-account-grid{grid-template-columns:1fr;max-height:620px;overflow:auto;padding-right:2px}

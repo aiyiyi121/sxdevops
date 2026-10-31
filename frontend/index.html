@@ -5,13 +5,14 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <script>
+      let savedTheme = 'charcoal'
       try {
         const preference = localStorage.getItem('sxdevops-theme')
-        const savedTheme = ['light', 'dark', 'charcoal'].includes(preference) ? preference : 'light'
-        document.documentElement.classList.toggle('dark', savedTheme !== 'light')
-        document.documentElement.dataset.theme = savedTheme
-        document.documentElement.style.colorScheme = savedTheme === 'light' ? 'light' : 'dark'
+        if (['light', 'dark', 'charcoal'].includes(preference)) savedTheme = preference
       } catch {}
+      document.documentElement.classList.toggle('dark', savedTheme !== 'light')
+      document.documentElement.dataset.theme = savedTheme
+      document.documentElement.style.colorScheme = savedTheme === 'light' ? 'light' : 'dark'
     </script>
     <title>SXDevOps 运维智能体平台</title>
     <meta

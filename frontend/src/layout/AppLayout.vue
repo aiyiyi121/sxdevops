@@ -15,6 +15,9 @@
         :default-active="activeMenuPath"
         class="sidebar-nav el-menu-vertical"
         :collapse="appStore.sidebarCollapsed"
+        popper-class="sidebar-menu-popper"
+        popper-effect="light"
+        :popper-offset="8"
         router
         :collapse-transition="false"
         :default-openeds="defaultOpenMenuKeys"
@@ -47,7 +50,7 @@
           <el-menu-item
             v-else
             class="sidebar-direct-item"
-            :index="item.menuKey || item.moduleKey || item.path"
+            :index="item.menuKey || item.path || item.moduleKey"
             :route="item.route || item.path"
           >
             <el-icon><component :is="item.icon" /></el-icon>
@@ -55,7 +58,12 @@
               <span>{{ item.title }}</span>
               <span v-if="item.badge" class="menu-status-badge">{{ item.badge }}</span>
             </span>
-            <template v-if="appStore.sidebarCollapsed" #title>{{ item.title }}</template>
+            <template v-if="appStore.sidebarCollapsed" #title>
+              <span class="sidebar-menu-hint" :class="{ 'is-active': activeMenuPath === (item.menuKey || item.path || item.moduleKey) }">
+                <el-icon><component :is="item.icon" /></el-icon>
+                <span>{{ item.title }}</span>
+              </span>
+            </template>
           </el-menu-item>
         </template>
       </el-menu>
@@ -227,9 +235,6 @@ const moduleSettingsLoaded = computed(() => authStore.moduleSettingsLoaded)
 const moduleOrder = computed(() => new Map((authStore.moduleSettings || []).map((item, index) => [item.code, index])))
 const MODULE_SETTINGS_EVENT = 'sxdevops-module-settings-updated'
 const TASK_SCHEDULES_VISIBLE = false
-const observabilityBoardPermissions = SYSTEM_POSTURE_ENABLED
-  ? ['ops.grafana.view', 'ops.observability.system_posture.view']
-  : ['ops.grafana.view']
 const defaultOpenMenuKeys = []
 let notificationTimer = null
 const menuItems = [
@@ -276,7 +281,8 @@ const menuItems = [
     title: '可观测性',
     icon: 'DataLine',
     children: [
-      { path: '/observability/boards', visibilityKey: 'observability.boards', title: '可视化', icon: 'DataLine', anyPermissions: observabilityBoardPermissions },
+      { path: '/observability/system-posture', visibilityKey: 'observability.system-posture', title: '系统态势', icon: 'Aim', hidden: !SYSTEM_POSTURE_ENABLED, permission: 'ops.observability.system_posture.view' },
+      { path: '/observability/grafana', visibilityKey: 'observability.boards', title: '仪表盘', icon: 'Histogram', permission: 'ops.grafana.view' },
       { path: '/observability/metrics', visibilityKey: 'observability.metrics', title: '指标查询', icon: 'DataAnalysis', permission: 'ops.metric.query' },
       { path: '/observability/rum', visibilityKey: 'observability.rum', title: 'RUM', icon: 'Monitor', permission: 'ops.rum.view' },
       { path: '/logs/query', visibilityKey: 'observability.logs', title: '日志中心', icon: 'Search', permission: 'ops.log.query' },
@@ -337,11 +343,6 @@ const menuItems = [
   },
 ]
 
-const observabilityBoardPaths = new Set([
-  '/observability/boards',
-  '/observability/grafana',
-  ...(SYSTEM_POSTURE_ENABLED ? ['/observability/system-posture', '/observability/posture-history'] : []),
-])
 const observabilityQueryPaths = new Set([
   '/observability/query',
   '/observability/metrics',
@@ -436,9 +437,8 @@ const normalizedMenuPath = computed(() => {
   if (route.path.startsWith('/events/')) {
     return route.path
   }
-  if (observabilityBoardPaths.has(route.path)) {
-    return '/observability/boards'
-  }
+  if (route.path === '/observability/boards') return '/observability/grafana'
+  if (route.path === '/observability/posture-history') return '/observability/system-posture'
   if (observabilityQueryPaths.has(route.path) && route.query.tab !== 'datasources') {
     if (route.path === '/observability/query') return '/observability/metrics'
     return route.path
@@ -1186,6 +1186,92 @@ onBeforeUnmount(() => {
   }
 }
 
+</style>
+
+<style>
+.sidebar-menu-popper.el-popper {
+  overflow: hidden;
+  padding: 0;
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 14px;
+  background: var(--card-bg);
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.14);
+}
+
+.sidebar-menu-popper .el-popper__arrow {
+  display: none;
+}
+
+.sidebar-menu-popper .el-menu--popup {
+  min-width: 180px;
+  max-width: min(260px, calc(100vw - 96px));
+  max-height: calc(100dvh - 24px);
+  margin: 0;
+  padding: 6px;
+  overflow-y: auto;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.sidebar-menu-popper .el-menu-item,
+.sidebar-menu-popper .sidebar-menu-hint {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 38px;
+  min-width: 0;
+  margin: 2px 0;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.2;
+  transition: background-color 160ms ease, color 160ms ease, border-color 160ms ease;
+}
+
+.sidebar-menu-popper .sidebar-menu-hint {
+  width: 168px;
+  max-width: calc(100vw - 110px);
+  margin: 8px 6px;
+}
+
+.sidebar-menu-popper .sidebar-menu-hint > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-menu-popper .el-menu-item:hover,
+.sidebar-menu-popper .el-menu-item:focus {
+  background: var(--sidebar-hover);
+  color: var(--text-primary);
+}
+
+.sidebar-menu-popper .el-menu-item.is-active,
+.sidebar-menu-popper .sidebar-menu-hint.is-active {
+  border-color: var(--el-color-primary-light-7);
+  background: var(--sidebar-active);
+  color: var(--sidebar-text-active);
+  font-weight: 600;
+}
+
+.sidebar-menu-popper .el-menu-item:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+
+.sidebar-menu-popper .el-menu-item .el-icon,
+.sidebar-menu-popper .sidebar-menu-hint .el-icon {
+  flex-shrink: 0;
+  width: 18px;
+  margin-right: 0;
+  color: inherit;
+  font-size: 16px;
+}
 </style>
 
 

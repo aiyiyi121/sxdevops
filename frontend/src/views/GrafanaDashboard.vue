@@ -1,5 +1,5 @@
 <template>
-  <div class="observability-page" :class="{ 'is-immersive': fullscreenVisible }">
+  <div class="observability-page workbench-page-shell" :class="{ 'is-immersive': fullscreenVisible }">
     <section v-if="fullscreenVisible && selectedDashboardUrl" class="immersive-shell panel">
       <div class="immersive-toolbar">
         <div class="immersive-toolbar__meta">
@@ -21,12 +21,9 @@
       </div>
       <div class="immersive-stage">
         <iframe
-          ref="immersiveFrameRef"
           class="immersive-frame"
           :src="selectedDashboardUrl"
-          :style="{ height: `${immersiveFrameHeight}px` }"
           :title="`${selectedDashboard.title}-immersive`"
-          @load="handleGrafanaFrameLoad"
         />
       </div>
     </section>
@@ -42,17 +39,9 @@
             <p class="page-inline-desc">{{ pageDescription }}</p>
           </div>
         </div>
-        <div class="hero-actions">
-          <el-button size="small" @click="loadOverview" :loading="loading">
-            <el-icon><RefreshRight /></el-icon>
-            刷新
-          </el-button>
-        </div>
       </section>
 
-      <ObservabilityRouteTabs group="boards" />
-
-      <section class="panel">
+      <section class="panel dashboard-list-panel workbench-fill-panel">
         <div class="section-head section-head--list">
           <div class="section-title-block">
             <div class="section-title-main">
@@ -60,6 +49,7 @@
             </div>
           </div>
           <div class="list-head-actions">
+            <el-button size="small" @click="loadOverview" :loading="loading"><el-icon><RefreshRight /></el-icon>刷新</el-button>
             <el-button size="small" plain @click="collapseAllFolders">全部折叠</el-button>
             <el-button v-if="canManageGrafana" size="small" type="primary" plain @click="openBatchDialog">
               <el-icon><Plus /></el-icon>
@@ -166,7 +156,8 @@
                         <i></i>
                       </span>
                     </span>
-                    <strong>{{ node.title }}</strong>
+                    <button v-if="node.url" type="button" class="dashboard-title-link" @click.stop="openFullscreen(node)">{{ node.title }}</button>
+                    <strong v-else>{{ node.title }}</strong>
                     <div class="dashboard-tags dashboard-tags--inline">
                       <span v-for="tag in node.tags" :key="`${node.key}-${tag}`" class="dashboard-chip">{{ tag }}</span>
                     </div>
@@ -223,7 +214,7 @@
         <el-input v-model="batchDialog.text" type="textarea" :rows="9" resize="vertical" placeholder="订单总览 | https://grafana.example.com/d/orders | 业务/订单&#10;节点资源 | https://grafana.example.com/d/nodes | 基础设施/节点" />
         <div class="batch-import-options">
           <el-input v-model.trim="batchDialog.defaultFolder" size="small" placeholder="未填写目录时使用（可选）" style="width: 240px" />
-          <el-switch v-model="batchDialog.appendKioskParams" active-text="自动追加 kiosk=true 并跟随平台主题" />
+          <el-switch v-model="batchDialog.appendKioskParams" :active-text="`自动追加 kiosk=true 和 theme=${colorScheme}`" />
           <span class="batch-import-count">{{ batchImportRows.length }} 条有效记录</span>
         </div>
       </div>
@@ -384,8 +375,8 @@ org_role = Viewer</pre>
         <div class="drawer-field drawer-field--inline">
           <label>展示参数</label>
           <div class="drawer-inline-control">
-            <el-switch v-model="dashboardDrawer.appendKioskParams" active-text="自动追加 kiosk=true 并跟随平台主题" inactive-text="不追加" />
-            <span class="config-url-hint">用于嵌入展示时隐藏 Grafana 菜单并跟随平台主题。</span>
+            <el-switch v-model="dashboardDrawer.appendKioskParams" :active-text="`自动追加 kiosk=true 和 theme=${colorScheme}`" inactive-text="不追加" />
+            <span class="config-url-hint">用于嵌入展示时隐藏 Grafana 菜单和跟随平台颜色主题。</span>
           </div>
         </div>
         <div class="drawer-field__hint">
@@ -403,7 +394,7 @@ org_role = Viewer</pre>
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowDown, ArrowRight, Delete, EditPen, Folder, FolderAdd, FolderOpened, Histogram, Link, MoreFilled, Plus, QuestionFilled, RefreshRight } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -411,7 +402,6 @@ import { getGrafanaConfig, getObservabilityOverview, resolveGrafanaToLogs, resol
 import { useAuthStore } from '@/stores/auth'
 import { colorScheme } from '@/theme'
 import { openRouteInNewTab } from '@/utils/router'
-import ObservabilityRouteTabs from '@/components/observability/ObservabilityRouteTabs.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -422,8 +412,6 @@ const configSaving = ref(false)
 const overviewLoaded = ref(false)
 const fullscreenVisible = ref(false)
 const embedHelpVisible = ref(false)
-const immersiveFrameRef = ref(null)
-const immersiveFrameHeight = ref(fallbackGrafanaFrameHeight())
 const overview = ref({ modules: {}, summary: {}, tips: [] })
 const selectedKey = ref('')
 const selectedFolderPath = ref('')
@@ -460,9 +448,6 @@ const dashboardDrawer = reactive({
   appendKioskParams: true,
 })
 const dashboardDraft = reactive(createEmptyDashboard())
-let grafanaFrameMeasureTimer = null
-let grafanaFrameMeasureInterval = null
-let grafanaFrameResizeObserver = null
 
 const grafana = computed(() => overview.value.modules?.grafana || {})
 const dashboards = computed(() => grafana.value.dashboards || [])
@@ -1682,81 +1667,6 @@ function collapseAllFolders() {
   })
 }
 
-function fallbackGrafanaFrameHeight() {
-  if (typeof window === 'undefined') return 2600
-  const isMobile = window.innerWidth <= 760
-  const ratio = isMobile ? 3.6 : 3.4
-  return Math.max(isMobile ? 2200 : 2600, Math.round(window.innerHeight * ratio))
-}
-
-function clearGrafanaFrameMeasure() {
-  if (grafanaFrameMeasureTimer) {
-    window.clearTimeout(grafanaFrameMeasureTimer)
-    grafanaFrameMeasureTimer = null
-  }
-  if (grafanaFrameMeasureInterval) {
-    window.clearInterval(grafanaFrameMeasureInterval)
-    grafanaFrameMeasureInterval = null
-  }
-  if (grafanaFrameResizeObserver) {
-    grafanaFrameResizeObserver.disconnect()
-    grafanaFrameResizeObserver = null
-  }
-}
-
-function measureGrafanaFrameHeight() {
-  const frame = immersiveFrameRef.value
-  if (!frame) return false
-  try {
-    const doc = frame.contentDocument || frame.contentWindow?.document
-    if (!doc) return false
-    const body = doc.body
-    const root = doc.documentElement
-    const measuredHeight = Math.max(
-      body?.scrollHeight || 0,
-      body?.offsetHeight || 0,
-      root?.clientHeight || 0,
-      root?.scrollHeight || 0,
-      root?.offsetHeight || 0
-    )
-    if (measuredHeight > 0) {
-      immersiveFrameHeight.value = Math.max(measuredHeight + 24, fallbackGrafanaFrameHeight())
-    }
-    return true
-  } catch {
-    immersiveFrameHeight.value = fallbackGrafanaFrameHeight()
-    return false
-  }
-}
-
-function scheduleGrafanaFrameMeasure() {
-  clearGrafanaFrameMeasure()
-  immersiveFrameHeight.value = fallbackGrafanaFrameHeight()
-  if (!fullscreenVisible.value || !selectedDashboardUrl.value) return
-  grafanaFrameMeasureTimer = window.setTimeout(() => {
-    const canReadFrame = measureGrafanaFrameHeight()
-    if (!canReadFrame) return
-    const frame = immersiveFrameRef.value
-    const doc = frame?.contentDocument || frame?.contentWindow?.document
-    const resizeTarget = doc?.body || doc?.documentElement
-    if (resizeTarget && typeof ResizeObserver !== 'undefined') {
-      grafanaFrameResizeObserver = new ResizeObserver(() => measureGrafanaFrameHeight())
-      grafanaFrameResizeObserver.observe(resizeTarget)
-    }
-    grafanaFrameMeasureInterval = window.setInterval(measureGrafanaFrameHeight, 1000)
-    window.setTimeout(() => {
-      if (grafanaFrameMeasureInterval) {
-        window.clearInterval(grafanaFrameMeasureInterval)
-        grafanaFrameMeasureInterval = null
-      }
-    }, 12000)
-  }, 300)
-}
-
-function handleGrafanaFrameLoad() {
-  scheduleGrafanaFrameMeasure()
-}
-
 function openFullscreen(item) {
   if (item?.key) {
     selectedKey.value = item.key
@@ -1765,12 +1675,10 @@ function openFullscreen(item) {
     return
   }
   fullscreenVisible.value = true
-  nextTick(scheduleGrafanaFrameMeasure)
 }
 
 function closeFullscreen() {
   fullscreenVisible.value = false
-  clearGrafanaFrameMeasure()
 }
 
 function handleKeydown(event) {
@@ -1846,21 +1754,13 @@ watch(
   syncRouteQuery
 )
 
-watch(
-  () => [fullscreenVisible.value ? '1' : '0', selectedDashboardUrl.value].join('|'),
-  () => nextTick(scheduleGrafanaFrameMeasure)
-)
-
 onMounted(() => {
   window.addEventListener('keydown', handleKeydown)
-  window.addEventListener('resize', scheduleGrafanaFrameMeasure)
   loadOverview()
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleKeydown)
-  window.removeEventListener('resize', scheduleGrafanaFrameMeasure)
-  clearGrafanaFrameMeasure()
 })
 </script>
 
@@ -1873,7 +1773,31 @@ onBeforeUnmount(() => {
 
 .observability-page.is-immersive {
   gap: 0;
-  min-height: auto;
+  height: var(--page-content-height);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.dashboard-title-link {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--el-color-primary);
+  font: inherit;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+
+.dashboard-title-link:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.dashboard-title-link:focus-visible {
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: 3px;
+  border-radius: 3px;
 }
 
 .panel {
@@ -2566,9 +2490,11 @@ onBeforeUnmount(() => {
 
 .immersive-shell {
   display: flex;
+  flex: 1;
   flex-direction: column;
   gap: 4px;
-  min-height: auto;
+  min-height: 0;
+  overflow: hidden;
   padding: 2px;
   border: 0;
   box-shadow: none;
@@ -2643,18 +2569,21 @@ onBeforeUnmount(() => {
 }
 
 .immersive-stage {
-  flex: 0 0 auto;
-  min-height: auto;
-  overflow: visible;
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
   border-radius: 8px;
   border: 0;
   background: linear-gradient(180deg, #fff 0%, #f8fafc 100%);
 }
 
 .immersive-frame {
+  position: absolute;
+  inset: 0;
   width: 100%;
-  height: max(1800px, 220vh);
-  min-height: calc(100vh - 148px);
+  height: 100%;
+  min-height: 0;
   display: block;
   border: 0;
   border-radius: 8px;
@@ -2713,10 +2642,6 @@ onBeforeUnmount(() => {
     justify-content: flex-start;
   }
 
-  .immersive-frame {
-    height: max(1400px, 240vh);
-    min-height: calc(100vh - 204px);
-  }
 }
 
 .hero.panel {

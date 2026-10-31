@@ -60,6 +60,21 @@
           <h2>登录工作台</h2>
           <p class="auth-subtitle">使用平台账号进入 {{ siteStore.siteName }}</p>
 
+          <aside v-if="visitorAccess" class="visitor-access" aria-label="访客体验账号">
+            <div class="visitor-access-heading">
+              <strong>访客体验账号</strong>
+              <span>只读体验</span>
+            </div>
+            <dl class="visitor-credentials">
+              <div><dt>账号</dt><dd>{{ visitorAccess.username }}</dd></div>
+              <div><dt>密码</dt><dd>{{ visitorAccess.password }}</dd></div>
+            </dl>
+            <div class="visitor-access-footer">
+              <p>查看平台功能与运行数据</p>
+              <el-button size="small" :disabled="loading" @click="fillVisitorAccess">填入访客账号</el-button>
+            </div>
+          </aside>
+
           <el-form class="login-form" :model="form" label-position="top" @submit.prevent="handleLogin">
             <el-form-item label="用户名">
               <el-input
@@ -125,6 +140,18 @@ const form = reactive({
   username: '',
   password: '',
 })
+const visitorAccess = import.meta.env.VITE_PUBLIC_VISITOR_USERNAME && import.meta.env.VITE_PUBLIC_VISITOR_PASSWORD
+  ? {
+      username: import.meta.env.VITE_PUBLIC_VISITOR_USERNAME,
+      password: import.meta.env.VITE_PUBLIC_VISITOR_PASSWORD,
+    }
+  : null
+
+function fillVisitorAccess() {
+  if (!visitorAccess || loading.value) return
+  form.username = visitorAccess.username
+  form.password = visitorAccess.password
+}
 
 const features = [
   {
@@ -266,7 +293,7 @@ async function handleLogin() {
   font-size: 20px;
   font-weight: 800;
   line-height: 1.1;
-  background: var(--brand-gradient);
+  background: linear-gradient(135deg, light-dark(#67b7ab, #8ce4d6) 0%, light-dark(#5586b6, #a4ceff) 58%, light-dark(#49639a, #c5c8ff) 100%);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
@@ -490,6 +517,70 @@ async function handleLogin() {
 
 .auth-panel-inner {
   width: min(340px, 100%);
+}
+
+.visitor-access {
+  margin: -8px 0 22px;
+  padding: 14px;
+  border: 1px solid var(--el-color-primary-light-7);
+  border-radius: 14px;
+  background: var(--el-color-primary-light-9);
+  color: var(--el-text-color-primary);
+}
+
+.visitor-access-heading,
+.visitor-access-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.visitor-access-heading strong {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.visitor-access-heading span {
+  color: var(--el-color-primary);
+  font-size: 12px;
+}
+
+.visitor-credentials {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.visitor-credentials > div {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  gap: 10px;
+}
+
+.visitor-credentials dt,
+.visitor-access-footer p {
+  margin: 0;
+  color: var(--el-text-color-secondary);
+}
+
+.visitor-credentials dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+  user-select: all;
+}
+
+.visitor-access-footer p {
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.visitor-access-footer :deep(.el-button) {
+  flex: 0 0 auto;
+  border-radius: 8px;
 }
 
 .auth-panel h2 {

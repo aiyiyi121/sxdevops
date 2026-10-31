@@ -15,7 +15,9 @@
         </nav>
         <a class="header-github" :href="repository" target="_blank" rel="noopener noreferrer" aria-label="在 GitHub 查看 SxDevOps 源码">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 .9a11.1 11.1 0 0 0-3.51 21.63c.56.1.76-.24.76-.54v-2.07c-3.1.67-3.75-1.32-3.75-1.32-.5-1.29-1.24-1.64-1.24-1.64-1.01-.69.08-.68.08-.68 1.12.08 1.71 1.15 1.71 1.15.99 1.7 2.6 1.21 3.23.92.1-.72.39-1.21.71-1.49-2.47-.28-5.07-1.24-5.07-5.49 0-1.21.43-2.2 1.14-2.98-.11-.28-.5-1.41.11-2.94 0 0 .93-.3 3.05 1.14a10.6 10.6 0 0 1 5.55 0c2.12-1.44 3.05-1.14 3.05-1.14.61 1.53.22 2.66.11 2.94.71.78 1.14 1.77 1.14 2.98 0 4.26-2.6 5.21-5.08 5.49.4.35.75 1.02.75 2.06v3.07c0 .3.2.65.77.54A11.1 11.1 0 0 0 12 .9Z" /></svg>
-          <span>GitHub</span><el-icon><TopRight /></el-icon>
+          <span class="github-label">GitHub</span>
+          <span class="repository-stars" :aria-label="`GitHub Star 数：${starsLabel}`"><span aria-hidden="true">☆</span>{{ starsLabel }}</span>
+          <el-icon><TopRight /></el-icon>
         </a>
       </div>
     </header>
@@ -62,9 +64,9 @@
                   <button type="button" :aria-pressed="confirmationPreview" @click="confirmationPreview = !confirmationPreview">{{ confirmationPreview ? '返回' : '预览流程' }}<el-icon><ArrowRight /></el-icon></button>
                 </div>
               </div>
-              <div class="window-footer"><span class="status-dot"></span> 先有证据，再有行动 <span>DEMO / {{ String(scenarioIndex + 1).padStart(2, '0') }}</span></div>
+              <div class="window-footer"><span class="status-dot"></span> 先有证据，再有行动 <span>场景 / {{ String(scenarioIndex + 1).padStart(2, '0') }}</span></div>
             </div>
-            <p class="scenario-caption">场景与数据为演示，不会发起真实查询或执行。</p>
+            <p class="scenario-caption">交互流程示意；实际查询与执行在登录后的工作台发起。</p>
           </div>
         </div>
         <div class="page-width value-strip">
@@ -121,7 +123,7 @@
 
       <ProductResources>
         <div class="start-grid">
-          <div class="start-main"><span class="card-kicker">从这里开始</span><h3>你的基础设施，<br />你的运维工作台。</h3><p>支持 Docker Compose 与 Kubernetes 部署。<br />按部署指南配置环境，再逐步连接 CMDB、可观测数据与 AI 模型。</p><div class="start-actions"><a class="button button-primary" href="https://www.sxdevops.top" target="_blank" rel="noopener noreferrer">在线体验 <el-icon><TopRight /></el-icon></a><a class="text-link" :href="repository" target="_blank" rel="noopener noreferrer">查看源码 <el-icon><ArrowRight /></el-icon></a></div><span class="license-note">MIT 开源许可 · 自由使用，欢迎共建</span></div>
+          <div class="start-main"><span class="card-kicker">从这里开始</span><h3>你的基础设施，<br />你的运维工作台。</h3><p>支持 Docker Compose 与 Kubernetes 部署。<br />按部署指南配置环境，再逐步连接 CMDB、可观测数据与 AI 模型。</p><div class="start-actions"><a class="button button-primary" href="/login" target="_blank" rel="noopener noreferrer">在线体验 <el-icon><TopRight /></el-icon></a><a class="text-link" :href="repository" target="_blank" rel="noopener noreferrer">查看源码 <el-icon><ArrowRight /></el-icon></a></div><span class="license-note">MIT 开源许可 · 自由使用，欢迎共建</span></div>
           <div class="start-resources">
             <div class="clone-block"><div><span><el-icon><FolderOpened /></el-icon> 获取源码</span><button type="button" @click="copyCloneCommand">{{ copyState === 'copied' ? '已复制' : copyState === 'failed' ? '请手动复制' : '复制命令' }}</button></div><pre><code>{{ cloneCommand }}</code></pre><span class="sr-only" role="status">{{ copyState === 'copied' ? '源码命令已复制到剪贴板' : copyState === 'failed' ? '无法访问剪贴板，请选中命令手动复制' : '' }}</span></div>
             <a v-for="resource in resources" :key="resource.title" class="resource-link" :href="resource.href" target="_blank" rel="noopener noreferrer"><span class="resource-icon"><el-icon><component :is="resource.icon" /></el-icon></span><div><h3>{{ resource.title }}</h3><p>{{ resource.description }}</p></div><el-icon><TopRight /></el-icon></a>
@@ -144,14 +146,16 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft, ArrowRight, Box, Check, CircleCheck, Close, Connection, Cpu, DataAnalysis, Document, Finished, FolderOpened, FullScreen, Lock, MagicStick, Menu, Monitor, Search, Tickets, TopRight } from '@element-plus/icons-vue'
-import brandMark from '@/assets/brand-mark.svg'
+import brandMark from '@/assets/brand-mark.png'
 import ProductDeepDive from '@/components/product/ProductDeepDive.vue'
 import ProductResources from '@/components/product/ProductResources.vue'
 import ProductTroubleshooting from '@/components/product/ProductTroubleshooting.vue'
 import ProductPrinciples from '@/components/product/ProductPrinciples.vue'
 import { productSections, sectionLabel } from '@/components/product/sections'
+import { useRepositoryStars } from '@/composables/useRepositoryStars'
 
 const repository = 'https://github.com/aiyiyi121/sxdevops'
+const { starsLabel } = useRepositoryStars()
 const navigation = productSections.filter(section => section.navigation)
 const mobileMenu = ref(false)
 const pageRoot = ref(null)
@@ -196,8 +200,8 @@ const scenarioIndex = ref(0)
 const confirmationPreview = ref(false)
 const scenarios = [
   { title: '服务排障', context: '生产环境 / order-center', question: '订单服务的错误率升高了，帮我结合日志和最近变更分析原因。', sources: [{ name: '指标与告警', result: '错误率出现上升' }, { name: '应用日志', result: '发现连接池超时' }, { name: '事件与变更', result: '关联近期发布记录' }], insight: '异常时间与近期变更重合，日志中出现连接池超时。建议先检查连接与配置，再决定下一步处置。', tags: ['时间线关联', '保留证据', '待确认建议'] },
-  { title: 'K8s 诊断', context: '演示集群 / demo / order-api', question: '这个 Pod 最近频繁重启，帮我看看事件、日志和资源情况。', sources: [{ name: 'Pod 状态', result: '最近发生多次重启' }, { name: '集群事件', result: '发现 OOMKilled 记录' }, { name: '资源用量', result: '内存接近配置上限' }], insight: '退出记录与内存用量提示资源压力。建议结合历史峰值检查配置，调整前先查看 YAML 差异与预检结果。', tags: ['集群范围约束', '资源证据', '变更预检'] },
-  { title: '主机巡检', context: '演示资源组 / web-servers', question: '帮我给这组主机做一次只读巡检，重点看磁盘和核心服务状态。', sources: [{ name: 'CMDB 资产', result: '明确目标资源与归属' }, { name: '执行资源', result: '检查任务资源关联' }, { name: '巡检模板', result: '准备磁盘与服务检查' }], insight: '根据目标资源准备巡检草稿，展示检查项与执行范围。确认后在任务中心执行，再查看逐台主机的返回结果。', tags: ['目标可核对', '模板复用', '执行可追踪'] },
+  { title: 'K8s 诊断', context: '生产集群 / production / order-api', question: '这个 Pod 最近频繁重启，帮我看看事件、日志和资源情况。', sources: [{ name: 'Pod 状态', result: '最近发生多次重启' }, { name: '集群事件', result: '发现 OOMKilled 记录' }, { name: '资源用量', result: '内存接近配置上限' }], insight: '退出记录与内存用量提示资源压力。建议结合历史峰值检查配置，调整前先查看 YAML 差异与预检结果。', tags: ['集群范围约束', '资源证据', '变更预检'] },
+  { title: '主机巡检', context: '生产资源组 / web-servers', question: '帮我给这组主机做一次只读巡检，重点看磁盘和核心服务状态。', sources: [{ name: 'CMDB 资产', result: '明确目标资源与归属' }, { name: '执行资源', result: '检查任务资源关联' }, { name: '巡检模板', result: '准备磁盘与服务检查' }], insight: '根据目标资源准备巡检草稿，展示检查项与执行范围。确认后在任务中心执行，再查看逐台主机的返回结果。', tags: ['目标可核对', '模板复用', '执行可追踪'] },
 ]
 const currentScenario = computed(() => scenarios[scenarioIndex.value])
 function selectScenario(index) { scenarioIndex.value = index; confirmationPreview.value = false }
@@ -298,6 +302,8 @@ async function copyCloneCommand() { try { await navigator.clipboard.writeText(cl
 .header-github { display: inline-flex; align-items: center; gap: 9px; border: 1px solid var(--p-line); border-radius: 8px; padding: 9px 14px; font-size: 12px; background: var(--p-surface); }
 .header-github svg { width: 17px; height: 17px; }
 .header-github > .el-icon { color: var(--p-subtle); }
+.repository-stars { display: inline-flex; align-items: center; gap: 5px; padding-left: 9px; border-left: 1px solid var(--p-line); color: var(--p-ink); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.repository-stars > span { color: var(--p-accent); font-size: 16px; }
 .menu-toggle { display: none; background: none; border: 1px solid var(--p-line); width: 38px; height: 38px; border-radius: 8px; }
 .hero-section { position: relative; isolation: isolate; padding-top: 78px; }
 .hero-grid { pointer-events: none; position: absolute; z-index: -1; inset: 0; opacity: .22; background-image: linear-gradient(var(--p-line) 1px, transparent 1px), linear-gradient(90deg, var(--p-line) 1px, transparent 1px); background-size: 64px 64px; mask-image: radial-gradient(ellipse at 78% 28%, black, transparent 66%); }
@@ -525,8 +531,9 @@ async function copyCloneCommand() { try { await navigator.clipboard.writeText(cl
   .screenshot-dialog { width: calc(100vw - 20px); max-height: calc(100dvh - 30px); border-radius: 8px; } .lightbox-toolbar, .lightbox-bottom { padding: 12px; gap: 8px; } .lightbox-bottom p { display: none; } .lightbox-bottom button { font-size: 10px; } .screenshot-dialog > img { max-height: calc(100dvh - 170px); }
 }
 @media (max-width: 360px) {
-  .header-github { width: 36px; height: 36px; padding: 0; justify-content: center; flex-shrink: 0; }
-  .header-github > span { display: none; }
+  .header-github { height: 36px; padding: 0 8px; gap: 6px; justify-content: center; flex-shrink: 0; }
+  .header-github > .github-label { display: none; }
+  .repository-stars { padding-left: 6px; }
   .menu-toggle { flex-shrink: 0; }
 }
 @media (prefers-reduced-motion: reduce) { .product-intro *, .product-intro *::before, .product-intro *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }

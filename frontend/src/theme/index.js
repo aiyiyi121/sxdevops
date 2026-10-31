@@ -2,8 +2,9 @@ import { computed, ref } from 'vue'
 import { darkColor, themePalette } from './palette'
 
 const THEME_STORAGE_KEY = 'sxdevops-theme'
+const DEFAULT_THEME = 'charcoal'
 export const THEME_CHANGE_EVENT = 'sxdevops-theme-changed'
-export const theme = ref('light')
+export const theme = ref(DEFAULT_THEME)
 export const themeOptions = [
   { value: 'light', label: '浅色' },
   { value: 'charcoal', label: '炭灰', recommended: true },
@@ -13,7 +14,7 @@ export const themeLabel = computed(() => themeOptions.find(option => option.valu
 export const colorScheme = computed(() => theme.value === 'light' ? 'light' : 'dark')
 
 function normalizeTheme(value) {
-  return themeOptions.some(option => option.value === value) ? value : 'light'
+  return themeOptions.some(option => option.value === value) ? value : DEFAULT_THEME
 }
 
 export function resolveThemeColor(value, role = 'text') {
@@ -24,7 +25,7 @@ function savedTheme() {
   try {
     return normalizeTheme(localStorage.getItem(THEME_STORAGE_KEY))
   } catch {
-    return 'light'
+    return DEFAULT_THEME
   }
 }
 

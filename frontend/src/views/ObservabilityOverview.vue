@@ -26,7 +26,7 @@
         @click="activeOverviewTab = 'system-posture'"
       >
         <el-icon><Aim /></el-icon>
-        系统态势
+        系统SLO
       </button>
       <button
         v-if="canViewSystemPosture"
@@ -97,7 +97,7 @@ const activeOverviewTab = ref(resolveOverviewTab(route.query.tab))
 const overviewHero = computed(() => {
   if (activeOverviewTab.value === 'system-posture') {
     return {
-      title: '系统态势',
+      title: '系统SLO',
       description: '按环境与系统聚合健康态势，结果导向定义系统 SLO，划清故障边界，快速定位异常节点、关键依赖与风险范围。',
       icon: Aim,
     }

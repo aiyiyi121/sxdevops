@@ -32,11 +32,10 @@ const router = useRouter()
 const authStore = useAuthStore()
 
 const tabGroups = {
-  boards: [
-    { key: 'grafana', title: '仪表盘', icon: 'Histogram', path: '/observability/grafana', permission: 'ops.grafana.view' },
+  posture: [
     ...(SYSTEM_POSTURE_ENABLED
       ? [
-          { key: 'system-posture', title: '系统态势', icon: 'Aim', path: '/observability/system-posture', permission: 'ops.observability.system_posture.view' },
+          { key: 'system-posture', title: '系统SLO', icon: 'Aim', path: '/observability/system-posture', permission: 'ops.observability.system_posture.view' },
           { key: 'posture-history', title: '态势历史', icon: 'TrendCharts', path: '/observability/posture-history', permission: 'ops.observability.system_posture.view' },
         ]
       : []),

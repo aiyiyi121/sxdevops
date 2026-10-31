@@ -392,6 +392,18 @@ ALLOWED_HOSTS = [
 ]
 
 X_FRAME_OPTIONS = os.getenv('X_FRAME_OPTIONS', 'SAMEORIGIN')
+SECURE_PROXY_SSL_HEADER = (
+    ('HTTP_X_FORWARDED_PROTO', 'https')
+    if _bool_value(os.getenv('TRUST_X_FORWARDED_PROTO'), False)
+    else None
+)
+SESSION_COOKIE_SECURE = _bool_value(os.getenv('SESSION_COOKIE_SECURE'), False)
+CSRF_COOKIE_SECURE = _bool_value(os.getenv('CSRF_COOKIE_SECURE'), False)
+CSRF_TRUSTED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv('CSRF_TRUSTED_ORIGINS', '').split(',')
+    if origin.strip()
+]
 
 
 # Application definition
@@ -503,10 +515,14 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 CORS_ALLOW_ALL_ORIGINS = _bool_value(os.getenv('CORS_ALLOW_ALL_ORIGINS'), True)
 
 # DRF
+PUBLIC_PREVIEW_USERNAMES = tuple(
+    value.strip() for value in os.getenv('PUBLIC_PREVIEW_USERNAMES', '').split(',') if value.strip()
+)
+
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
-        'rest_framework.authentication.TokenAuthentication',
-        'rest_framework.authentication.SessionAuthentication',
+        'rbac.preview.PreviewTokenAuthentication',
+        'rbac.preview.PreviewSessionAuthentication',
     ],
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',

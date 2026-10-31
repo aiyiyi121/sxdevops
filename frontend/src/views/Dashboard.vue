@@ -1,5 +1,5 @@
 <template>
-  <div v-loading="loading" class="dashboard-page">
+  <div v-loading="loading" class="dashboard-page workbench-page-shell">
     <div v-if="canViewSystemPosture" class="stats-grid dashboard-stats">
       <article v-for="card in summaryCards" :key="card.label" class="summary-card" :class="card.tone">
         <div class="summary-card__head">
@@ -43,7 +43,7 @@
           <el-icon><RefreshRight /></el-icon>
           重算今日
         </el-button>
-        <el-button size="small" @click="openOverview('system-posture')">查看系统态势</el-button>
+        <el-button size="small" @click="openOverview('system-posture')">查看系统SLO</el-button>
         <el-button size="small" text @click="openOverview('posture-history')">查看完整历史</el-button>
       </div>
     </section>
@@ -325,7 +325,7 @@ onMounted(() => {
 <style scoped>
 .dashboard-page {
   min-height: 100%;
-  padding: 0 0 24px;
+  padding: 0;
 }
 
 .panel {
@@ -348,7 +348,7 @@ onMounted(() => {
   display: grid;
   gap: 6px;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  margin-bottom: 6px;
+  margin-bottom: 0;
 }
 
 .summary-card {
@@ -461,7 +461,7 @@ onMounted(() => {
   background: #ffffff;
   border: 1px solid #e5e7eb;
   border-radius: 14px;
-  margin-bottom: 8px;
+  margin-bottom: 0;
   padding: 10px 12px;
   position: relative;
 }
@@ -598,6 +598,7 @@ onMounted(() => {
 }
 
 .dashboard-history-shell {
+  flex: 1;
   padding: 12px 15px 14px;
 }
 
