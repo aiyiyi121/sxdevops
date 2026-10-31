@@ -745,9 +745,15 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+.sidebar-logo .logo-icon {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+
 .brand-mark {
-  width: 24px;
-  height: 24px;
+  width: 34px;
+  height: 34px;
   display: block;
   object-fit: contain;
 }

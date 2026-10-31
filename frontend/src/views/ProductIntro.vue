@@ -290,8 +290,8 @@ async function copyCloneCommand() { try { await navigator.clipboard.writeText(cl
 .site-header { position: sticky; top: 0; z-index: 20; border-bottom: 1px solid var(--p-line); background: var(--p-translucent); backdrop-filter: blur(18px); }
 .header-inner { display: flex; align-items: center; justify-content: space-between; gap: 32px; height: 82px; }
 .brand { display: inline-flex; align-items: center; gap: 9px; font-size: 21px; font-weight: 750; letter-spacing: -.6px; white-space: nowrap; }
-.brand-symbol { width: 43px; height: 43px; display: grid; place-items: center; background: var(--p-raised); border: 1px solid var(--p-line); border-radius: 12px; }
-.brand-symbol img { width: 45px; height: 45px; }
+.brand-symbol { width: 43px; height: 43px; display: grid; place-items: center; flex-shrink: 0; }
+.brand-symbol img { width: 100%; height: 100%; object-fit: contain; }
 .brand-version { font-size: 11px; color: var(--p-accent); margin-left: 8px; letter-spacing: 0; font-weight: 500; vertical-align: super; }
 .main-nav { display: flex; align-items: center; gap: 17px; margin-left: auto; }
 .main-nav a { position: relative; font-size: 13px; color: var(--p-muted); transition: color .2s; white-space: nowrap; }
@@ -484,11 +484,11 @@ async function copyCloneCommand() { try { await navigator.clipboard.writeText(cl
   .start-main { padding: 35px; } .start-resources { padding: 25px; } .site-footer { gap: 15px; } .site-footer nav { gap: 17px; }
 }
 @media (max-width: 1100px) {
-  .header-inner { height: 70px; } .brand { font-size: 19px; } .brand-symbol { width: 36px; height: 36px; } .brand-symbol img { width: 39px; height: 39px; }
+  .header-inner { height: 70px; } .brand { font-size: 19px; } .brand-symbol { width: 36px; height: 36px; }
   .main-nav { display: none; position: absolute; left: 0; right: 0; top: 70px; padding: 16px 32px; border-bottom: 1px solid var(--p-line); background: var(--p-bg); } .main-nav.is-open { display: flex; flex-direction: column; align-items: stretch; gap: 0; } .main-nav a { padding: 12px 8px; font-size: 13px; } .main-nav a::after { inset-inline: 8px; bottom: 5px; transform-origin: left; } .header-github { font-size: 11px; margin-left: auto; } .menu-toggle { display: grid; place-items: center; order: 3; }
 }
 @media (max-width: 900px) {
-  .header-inner { height: 70px; } .brand { font-size: 19px; } .brand-symbol { width: 36px; height: 36px; } .brand-symbol img { width: 39px; height: 39px; }
+  .header-inner { height: 70px; } .brand { font-size: 19px; } .brand-symbol { width: 36px; height: 36px; }
   .main-nav { display: none; position: absolute; left: 0; right: 0; top: 70px; padding: 16px 32px; border-bottom: 1px solid var(--p-line); background: var(--p-bg); } .main-nav.is-open { display: flex; flex-direction: column; align-items: stretch; gap: 0; } .main-nav a { padding: 12px 8px; font-size: 13px; } .main-nav a::after { inset-inline: 8px; bottom: 5px; transform-origin: left; } .header-github { font-size: 11px; margin-left: auto; } .menu-toggle { display: grid; place-items: center; order: 3; }
   .hero-section { padding-top: 55px; } .hero-layout { grid-template-columns: 1fr; gap: 48px; } .hero-copy { text-align: center; } .hero-copy h1 { font-size: 55px; letter-spacing: -2px; }
   .hero-eyebrow, .hero-actions, .hero-footnote { justify-content: center; } .hero-eyebrow { margin-top: 27px; } .hero-description { font-size: 14px; } .hero-footnote { font-size: 10px; gap: 20px; }
