@@ -1,5 +1,12 @@
 <template>
   <div class="task-resource-base">
+    <section class="resource-content-card">
+      <div class="section-toolbar resource-section-head">
+        <div class="toolbar-head">
+          <h3 class="toolbar-title">资源底座</h3>
+          <span class="toolbar-desc">按业务线和环境组织主机、K8s 集群及手工资源。</span>
+        </div>
+      </div>
     <div class="cmdb-items-layout task-resource-cmdb-layout">
     <TaskResourceScopeTree :data="managedScopeTree" :loading="loading.scopeTree" :selection="selectedScope" @select="selectResourceScope">
       <template #actions>
@@ -17,7 +24,7 @@
     <div class="cmdb-items-main resource-list-card">
       <div class="section-toolbar resource-list-head">
         <div class="toolbar-head">
-          <h3 class="toolbar-title">业务环境维度执行资源</h3>
+          <h3 class="toolbar-title">执行资源</h3>
           <span class="toolbar-desc resource-inline-summary">{{ selectedScopeName }} · 主机 {{ stats.host || 0 }} · K8s {{ stats.k8s || 0 }} · 可用 {{ stats.active || 0 }} · 异常 {{ stats.warning || 0 }}</span>
         </div>
         <div class="resource-head-actions">
@@ -121,6 +128,7 @@
       </div>
     </div>
     </div>
+    </section>
 
     <el-dialog v-model="cmdbPickerVisible" title="从 CMDB 接入资产" width="1120px" top="8vh" append-to-body destroy-on-close class="cmdb-picker-dialog">
       <div class="cmdb-picker-layout">
@@ -947,6 +955,41 @@ onMounted(reloadAll)
   min-width: 0;
 }
 
+.resource-content-card {
+  flex: 1;
+  min-width: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 16px;
+  background: var(--el-bg-color);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.03);
+}
+
+.resource-section-head {
+  margin: 0 0 10px;
+  padding: 0;
+  border: 0;
+}
+
+.resource-section-head .toolbar-head {
+  display: inline-flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+}
+
+.resource-section-head .toolbar-title {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.resource-section-head .toolbar-desc {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
 .resource-list-head,
 .resource-head-actions,
 .resource-list-head .toolbar-head {
@@ -1244,16 +1287,10 @@ onMounted(reloadAll)
 
 .task-resource-cmdb-layout {
   display: grid;
-  flex: 1;
   grid-template-columns: 236px minmax(0, 1fr);
   gap: 14px;
   align-items: start;
   min-height: 0;
-  padding: 16px;
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 16px;
-  background: var(--el-bg-color);
-  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.03);
 }
 
 .cmdb-resource-tree-panel {

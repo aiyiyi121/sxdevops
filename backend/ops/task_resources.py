@@ -165,42 +165,30 @@ def resource_business_tree(queryset, *, cmdb=False, include_cmdb_nodes=True, cmd
                 business = ensure_business(node.parent_id, node_map[node.parent_id].name)
                 ensure_environment(business, node.pk, node.name)
 
-    def add_resource(row, actual_fields, attributes, count, asset_count=0):
+    def add_resource(row, actual_fields, count, asset_count=0):
         business = ensure_business(row[actual_fields[0]], row[actual_fields[1]] or '')
         environment = ensure_environment(business, row[actual_fields[2]], row[actual_fields[3]] or '')
-        system = next((str(attributes[key]).strip() for key in SYSTEM_ATTRIBUTE_KEYS if attributes.get(key) and str(attributes[key]).strip()), '')
-        branch = [business, environment]
-        if system:
-            token = f'name:{system}'
-            system_node = next((child for child in environment['children'] if child['scope_system'] == token), None)
-            if not system_node:
-                system_node = {
-                    'key': f"{environment['key']}/system:{token}", 'name': system, 'node_type': 'system',
-                    'scope_business': business['scope_business'], 'scope_environment': environment['scope_environment'],
-                    'scope_system': token, 'resource_count': 0, 'children': [],
-                }
-                environment['children'].append(system_node)
-            branch.append(system_node)
-        for node in branch:
+        for node in (business, environment):
             node['resource_count'] += count
             node['asset_count'] = node.get('asset_count', 0) + asset_count
             node.setdefault('search_names', []).append(row['name'])
 
     ci_fields = ('business_node_id', 'business_line', 'environment_node_id', 'environment')
     if include_cmdb_nodes and cmdb_structure is not None:
-        # Use only authorized assets for the system placeholders and resource-name search.
-        for row in cmdb_structure.order_by().values(*ci_fields, 'attributes', 'name'):
-            add_resource(row, ci_fields, row['attributes'] or {}, 0, asset_count=1)
+        # Align business/environment ordering and search with authorized ledger assets.
+        # Services remain in the ledger; execution-resource trees stop at environments.
+        for row in cmdb_structure.order_by().values(*ci_fields, 'name'):
+            add_resource(row, ci_fields, 0, asset_count=1)
 
     fields = ci_fields if cmdb else (
         'system__cmdb_node_id', 'system__name', 'environment__cmdb_node_id', 'environment__name',
     )
     prefix = '' if cmdb else 'cmdb_ci__'
     related_fields = () if cmdb else ('cmdb_ci_id', *(f'{prefix}{field}' for field in ci_fields))
-    for row in queryset.order_by().values(*fields, *related_fields, f'{prefix}attributes', 'name'):
+    for row in queryset.order_by().values(*fields, *related_fields, 'name'):
         # Linked resources follow current assets even if older connection groups are stale.
         actual_fields = tuple(f'{prefix}{field}' for field in ci_fields) if cmdb or row['cmdb_ci_id'] else fields
-        add_resource(row, actual_fields, row[f'{prefix}attributes'] or {}, 1, asset_count=1 if cmdb else 0)
+        add_resource(row, actual_fields, 1, asset_count=1 if cmdb else 0)
     return list(businesses.values())
 
 

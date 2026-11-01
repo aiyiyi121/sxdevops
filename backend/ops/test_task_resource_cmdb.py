@@ -109,7 +109,7 @@ class TaskResourceCmdbTests(TestCase):
         tree = self.client.get('/api/task-resources/scope-tree/').json()
         self.assertEqual(sum(node['resource_count'] for node in tree), 3)
 
-    def test_system_placeholders_and_filters_follow_the_asset_ledger(self):
+    def test_resource_trees_stop_at_environments_while_preserving_asset_counts(self):
         business = ResourceNode.objects.create(name='支付业务', node_type='biz')
         production = ResourceNode.objects.create(name='prod', node_type='env', parent=business)
         staging = ResourceNode.objects.create(name='test', node_type='env', parent=business)
@@ -125,8 +125,11 @@ class TaskResourceCmdbTests(TestCase):
         tree = self.client.get('/api/task-resources/scope-tree/').json()
         branch = next(node for node in tree if node['scope_business'] == f'node:{business.pk}')
         environment = next(node for node in branch['children'] if node['cmdb_node'] == production.pk)
-        self.assertEqual({node['name']: node['resource_count'] for node in environment['children']},
-                         {'支付核心': 1, '风控系统': 0})
+        self.assertEqual(environment['children'], [])
+        self.assertTrue(all(not env['children'] for biz in tree for env in biz['children']))
+        picker_tree = self.client.get('/api/task-resources/cmdb-tree/').json()
+        self.assertTrue(all(not env['children'] for biz in picker_tree for env in biz['children']))
+        self.assertEqual(environment['resource_count'], 1)
         self.assertEqual(environment['asset_count'], 2)
         self.assertIn('payment-api', environment['search_names'])
         params = {'scope_business': f'node:{business.pk}', 'scope_environment': f'node:{production.pk}',
@@ -155,7 +158,8 @@ class TaskResourceCmdbTests(TestCase):
         self.assertEqual(self.client.get('/api/task-resources/stats/', params).data['total'], 1)
         tree = self.client.get('/api/task-resources/scope-tree/').json()
         branch = next(node for node in tree if node['cmdb_node'] == business.pk)
-        self.assertEqual(branch['children'][0]['children'][0]['resource_count'], 1)
+        self.assertEqual(branch['children'][0]['resource_count'], 1)
+        self.assertEqual(branch['children'][0]['children'], [])
         self.assertEqual(self.client.get('/api/task-resources/', {'scope_business': f'node:{old_business.pk}'}).data['count'], 0)
         resource.refresh_from_db()
         self.assertEqual((resource.environment_id, resource.system_id), previous_groups)
@@ -280,7 +284,7 @@ class TaskResourceCmdbTests(TestCase):
         scope_tree = self.client.get('/api/task-resources/scope-tree/').json()
         self.assertNotIn('hidden-system', str(scope_tree))
         self.assertNotIn('forbidden-vm', str(scope_tree))
-        self.assertIn('allowed-system', str(scope_tree))
+        self.assertIn('allowed-vm', str(scope_tree))
         response = self.client.get('/api/task-resources/cmdb-options/', {'scope_business': 'name:forbidden'})
         self.assertEqual(response.data['count'], 0)
         self.assertEqual(self.connect(forbidden).status_code, 403)
