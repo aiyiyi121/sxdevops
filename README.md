@@ -233,9 +233,11 @@ flowchart TB
 
 ![Kubernetes 工作台](docs/screenshots/v2-k8s-workbench.png)
 
-### 日志排障取证
+### 日志与链路追踪
 
 ![日志查询](docs/screenshots/v2-logs-query.png)
+
+![服务拓扑与 Trace 详情](docs/screenshots/链路追踪.png)
 
 ### 系统 SLO 与仪表盘
 
@@ -243,9 +245,7 @@ flowchart TB
 
 ![Grafana 指标仪表盘](docs/screenshots/仪表盘.png)
 
-### 链路追踪与事件中心
-
-![服务拓扑与 Trace 详情](docs/screenshots/链路追踪.png)
+### 事件中心
 
 ![事件时间线与详情](docs/screenshots/事件中心.png)
 
