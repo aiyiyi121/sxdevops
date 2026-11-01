@@ -215,10 +215,6 @@ flowchart TB
 
 ![系统态势与 SLA 统计](docs/screenshots/v2-dashboard.png)
 
-### 炭灰主题与系统设置
-
-![炭灰主题与网站基础配置](docs/screenshots/v2-system-settings-charcoal.png)
-
 ### AI Agent
 
 默认聊天支持分阶段取证和断点恢复，执行追踪可查看节点与动作结果。
@@ -236,11 +232,22 @@ flowchart TB
 ### 容器管理
 
 ![Kubernetes 工作台](docs/screenshots/v2-k8s-workbench.png)
-![Docker 工作台](docs/screenshots/v2-docker-workbench.png)
 
 ### 日志排障取证
 
 ![日志查询](docs/screenshots/v2-logs-query.png)
+
+### 系统 SLO 与仪表盘
+
+![系统 SLO、可用率与错误预算](docs/screenshots/系统SLO.png)
+
+![Grafana 指标仪表盘](docs/screenshots/仪表盘.png)
+
+### 链路追踪与事件中心
+
+![服务拓扑与 Trace 详情](docs/screenshots/链路追踪.png)
+
+![事件时间线与详情](docs/screenshots/事件中心.png)
 
 更多截图保存在 [docs/screenshots](docs/screenshots)。
 
@@ -359,3 +366,21 @@ Dockerfile           前后端一体镜像
 ## 开源协议
 
 SxDevOps 使用 [MIT License](LICENSE)，允许使用、修改、分发和商业使用。分发软件副本或实质性部分时，需保留版权与许可声明；软件按原样提供，不提供担保。第三方依赖继续遵循各自许可证，分发时保留其要求的许可及声明文件。
+
+## 关于项目与致谢
+
+SxDevOps 是一个由个人独立维护的开源项目。从 UI 与架构设计，到功能开发、测试验证，主要依靠我的业余时间推进；模型调用所需的 Token 费用也由我个人承担。
+
+受限于个人时间与精力，当前版本仍有不少需要打磨的地方。欢迎通过 [Issue](https://github.com/aiyiyi121/sxdevops/issues) 反馈问题、提出建议，也欢迎提交 [PR](https://github.com/aiyiyi121/sxdevops/pulls) 参与共建。我会在能力范围内持续维护、迭代新版本。
+
+### 关注公众号
+
+欢迎关注我的公众号。
+
+<img src="frontend/public/promo/wechat-qrcode.png" alt="作者微信公众号二维码" width="180" height="180" />
+
+### 最后感谢支持与传播
+
+感谢阿铭老师对本项目的启发与宣传。如有大模型或 AIOps 学习需求，可通过 [铭科智联 · 跟阿铭学大模型/AIOps](https://www.amingedu.com/) 的公开渠道添加微信咨询。
+
+感谢 [Agent2048](https://agent2048.com/zh/projects/2cmcyhvxsk4q) 对本项目的推广与展示。

@@ -38,4 +38,4 @@
 - 本次文案发布备份：`/opt/sxdevops/.deploy-backups/execution-trace-label-20261101/`。
 - 静态资源目录：`/var/www/sxdevops/releases/20261101-105930`。126 个部署文件及 125 个发布静态文件校验通过，Django check 和线上 HTTPS 健康检查通过。
 
-![模型调用首列会话与执行追踪](screenshots/session-audit-20261101.jpg)
+![智能体执行追踪与节点时间线](screenshots/execution-trace-fix-20261101.png)

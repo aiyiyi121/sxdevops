@@ -115,10 +115,10 @@
         <div class="gallery-selectors" role="group" aria-label="选择产品界面"><button v-for="(shot, index) in screenshots" :key="shot.id" type="button" :aria-pressed="screenshotIndex === index" @click="screenshotIndex = index"><el-icon><component :is="shot.icon" /></el-icon>{{ shot.label }}</button></div>
         <div class="gallery-frame">
           <div class="gallery-topline"><div class="window-dots" aria-hidden="true"><i></i><i></i><i></i></div><span>{{ currentScreenshot.path }}</span><span class="gallery-counter">{{ String(screenshotIndex + 1).padStart(2, '0') }} / {{ String(screenshots.length).padStart(2, '0') }}</span></div>
-          <button class="screenshot-button" :class="{ 'is-archived': currentScreenshot.archived }" type="button" :aria-label="`放大查看${currentScreenshot.label}截图`" @click="openLightbox(screenshotIndex)"><img :src="currentScreenshot.src" :alt="currentScreenshot.alt" width="1600" :height="currentScreenshot.archived ? 1000 : 803" loading="lazy" decoding="async" /><span class="zoom-hint"><el-icon><FullScreen /></el-icon> 点击查看大图</span></button>
+          <button class="screenshot-button" type="button" :aria-label="`放大查看${currentScreenshot.label}截图`" @click="openLightbox(screenshotIndex)"><img :src="currentScreenshot.src" :alt="currentScreenshot.alt" width="1679" height="944" loading="lazy" decoding="async" /><span class="zoom-hint"><el-icon><FullScreen /></el-icon> 点击查看大图</span></button>
           <div class="gallery-caption" aria-live="polite"><div><h3>{{ currentScreenshot.title }}</h3><p>{{ currentScreenshot.description }}</p></div><span class="real-capture"><span class="status-dot"></span> 真实界面</span></div>
         </div>
-        <p class="gallery-note">{{ currentScreenshot.archived ? '功能截图展示模块工作方式，当前界面样式以工作台为准。' : '截图展示已实现功能，界面细节随版本持续迭代。' }}</p>
+        <p class="gallery-note">截图展示已实现功能，界面细节随版本持续迭代。</p>
       </section>
 
       <ProductResources>
@@ -132,6 +132,7 @@
       </ProductResources>
 
       <section class="closing-section page-width"><span class="closing-label">为真实运维现场而建</span><h2>少一些来回切换，<br /><span>多一些有据可依。</span></h2><router-link class="button button-primary" to="/dashboard">开始探索 SxDevOps <el-icon><ArrowRight /></el-icon></router-link><div class="closing-orbit" aria-hidden="true"></div></section>
+      <ProductCommunity />
     </main>
 
     <footer class="site-footer page-width">
@@ -149,12 +150,13 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowLeft, ArrowRight, Box, Check, CircleCheck, Close, Connection, Cpu, DataAnalysis, Document, Finished, FolderOpened, FullScreen, Lock, MagicStick, Menu, Monitor, Search, Tickets, TopRight } from '@element-plus/icons-vue'
+import { ArrowLeft, ArrowRight, Box, Check, CircleCheck, Close, Connection, DataAnalysis, Document, Finished, FolderOpened, FullScreen, Lock, MagicStick, Menu, Monitor, Search, Tickets, TopRight } from '@element-plus/icons-vue'
 import brandMark from '@/assets/brand-mark.png'
 import ProductDeepDive from '@/components/product/ProductDeepDive.vue'
 import ProductResources from '@/components/product/ProductResources.vue'
 import ProductTroubleshooting from '@/components/product/ProductTroubleshooting.vue'
 import ProductPrinciples from '@/components/product/ProductPrinciples.vue'
+import ProductCommunity from '@/components/product/ProductCommunity.vue'
 import { productSections, sectionLabel } from '@/components/product/sections'
 import { useRepositoryStars } from '@/composables/useRepositoryStars'
 
@@ -226,16 +228,16 @@ const workflow = [
 ]
 const screenshots = [
   { id: 'assistant', label: '智能助手', icon: MagicStick, path: 'workspace / aiops / chat', src: '/promo/v2/assistant.webp', title: '用一个问题，打开有上下文的运维分析', description: '围绕资源与证据展开对话，查看分析依据、建议与后续操作入口。', alt: '智能助手真实产品截图：历史会话、分析结论、证据明细和对话输入区' },
-  { id: 'posture', label: '系统态势', icon: Monitor, path: 'workspace / dashboard / sla', src: '/promo/v2/posture.webp', title: '先看全局态势，再收敛故障边界', description: '按环境与系统查看 SLA 历史和当前状态，区分故障、未知与数据缺口。', alt: '系统态势功能截图：环境分组、系统 SLA 历史条带与当前状态', archived: true },
-  { id: 'observability', label: '可观测总览', icon: DataAnalysis, path: 'workspace / observability / overview', src: '/promo/v2/observability.webp', title: '告警、日志、Trace 与看板，从同一入口展开', description: '汇集可观测性摘要、工具入口与最近活动，为排查提供连续的事实来源。', alt: '可观测性总览功能截图：日志、告警、链路追踪与 Grafana 摘要', archived: true },
-  { id: 'events', label: '事件中心', icon: Connection, path: 'workspace / events / timeline', src: '/promo/v2/events.webp', title: '异常前后发生了什么，回到时间线里找', description: '按环境、系统、服务、事件源与时间查看变更和执行记录，追踪最终结果与失败线索。', alt: '事件中心功能截图：环境筛选、事件时间线、应用发布与运维任务记录', archived: true },
-  { id: 'cmdb', label: 'CMDB', icon: Connection, path: 'workspace / cmdb', src: '/promo/v2/cmdb.webp', title: '先把资产看清，再把上下文连起来', description: '资产总览、业务归属、容量水位与治理入口，统一理解你的基础设施。', alt: 'CMDB 真实产品截图：资源树、资产总览、业务归属、容量与资源治理面板' },
+  { id: 'agent-config', label: '智能体配置', icon: MagicStick, path: 'workspace / aiops / config', src: '/promo/v2/agent-config.webp', title: '把助手的能力与边界，配置清楚', description: '配置建议问题、系统提示词与能力范围，明确默认模型和任务草稿生成方式。', alt: '智能体配置真实产品截图：建议问题、系统提示词、能力范围、默认模型与人工确认提示' },
+  { id: 'posture', label: '系统态势', icon: Monitor, path: 'workspace / dashboard', src: '/promo/v2/posture.webp', title: '先看全局态势，再收敛故障边界', description: '按环境与系统查看 SLA 历史和当前状态，区分故障、未知与数据缺口。', alt: '系统态势真实产品截图：系统统计、环境筛选、SLA 历史条带与当前状态' },
+  { id: 'slo', label: '系统 SLO', icon: Finished, path: 'workspace / observability / system-posture', src: '/promo/v2/slo.webp', title: '从可用率与错误预算，判断服务风险', description: '集中查看各系统的 SLO 达标情况、可用率与错误预算，展开服务详情定位风险。', alt: '系统 SLO 真实产品截图：系统目标卡片、可用率、错误预算与服务详情面板' },
+  { id: 'dashboards', label: '仪表盘', icon: DataAnalysis, path: 'workspace / observability / grafana', src: '/promo/v2/dashboards.webp', title: '把关键指标，放在同一张看板上', description: '在平台内查看 Grafana 看板，结合时间范围与筛选条件观察请求、错误和资源变化。', alt: '仪表盘真实产品截图：Grafana 看板、时间筛选、请求趋势、错误率与资源指标' },
+  { id: 'events', label: '事件中心', icon: Tickets, path: 'workspace / events / wall', src: '/promo/v2/events.webp', title: '异常前后发生了什么，回到时间线里找', description: '按范围与时间梳理事件，展开详情查看来源、执行结果与原始记录，保留复盘依据。', alt: '事件中心真实产品截图：事件筛选、时间线、事件详情抽屉与原始记录' },
+  { id: 'cmdb', label: 'CMDB', icon: Connection, path: 'workspace / cmdb', src: '/promo/v2/cmdb.webp', title: '先把资产看清，再把上下文连起来', description: '集中查看容量水位、资产类型与运行状态，结合治理和成本概览掌握资源情况。', alt: 'CMDB 真实产品截图：容量水位、资产类型、运行状态、资源治理与成本概览' },
+  { id: 'topology', label: '资产拓扑', icon: Connection, path: 'workspace / cmdb / topology', src: '/promo/v2/topology.webp', title: '沿着资产关系，找到业务依赖', description: '结合业务环境树与关系规则查看资产拓扑，梳理系统、服务和基础设施之间的关联。', alt: '资产拓扑真实产品截图：业务环境树、多层资产关系图、分类关系规则与属性面板' },
   { id: 'logs', label: '日志检索', icon: DataAnalysis, path: 'workspace / observability / logs', src: '/promo/v2/logs.webp', title: '从异常趋势，追到具体日志', description: '组合数据源与查询条件，查看趋势、日志内容与关联上下文。', alt: '日志中心真实产品截图：数据源筛选、查询条件、日志趋势柱状图与结果列表' },
-  { id: 'kubernetes', label: 'Kubernetes', icon: Box, path: 'workspace / containers / kubernetes', src: '/promo/v2/kubernetes.webp', title: '多集群资源，集中放进一个工作台', description: '从集群概况进入工作负载、资源与终端，结合授权范围开展操作。', alt: 'Kubernetes 工作台真实产品截图：集群卡片、资源入口、集群概要和容量统计' },
-  { id: 'docker', label: 'Docker', icon: Cpu, path: 'workspace / containers / docker', src: '/promo/v2/docker.webp', title: '容器、镜像与环境，切换更顺手', description: '按环境查看容器与镜像，支持分页搜索、交互终端及历史日志。', alt: 'Docker 工作台真实产品截图：环境信息、容器列表、运行状态、镜像和操作入口' },
-  { id: 'audit', label: '智能体审计', icon: Search, path: 'workspace / aiops / audit', src: '/promo/v2/audit.webp', title: '让智能体的工作过程可以被检查', description: '查看会话、工具调用与执行记录，把分析过程与最终动作串起来。', alt: '智能体审计真实产品截图：会话查询、执行记录、状态、工具调用和明细入口' },
-  { id: 'execution', label: '任务执行', icon: Tickets, path: 'workspace / tasks / execution', src: '/promo/v2/execution.webp', title: '每一次执行，都有结果可查', description: '查看执行明细与逐项返回内容，为后续验证与复盘保留依据。', alt: '任务执行真实产品截图：执行详情弹窗、目标资源、状态和执行结果' },
-  { id: 'settings', label: '工作台主题', icon: Monitor, path: 'workspace / settings', src: '/promo/v2/settings.webp', title: '按你的习惯，调整工作台', description: '浅色、炭灰和深蓝灰三套主题，支持网站名称、图标与菜单显示配置。', alt: '炭灰主题系统设置真实产品截图：网站名称、图标配置、菜单列表和显示开关' },
+  { id: 'tracing', label: '链路追踪', icon: Connection, path: 'workspace / observability / tracing', src: '/promo/v2/tracing.webp', title: '从服务依赖，追到一次请求的耗时', description: '结合服务拓扑、Trace 列表与 Span 瀑布图，查看调用路径和各环节耗时。', alt: '链路追踪真实产品截图：服务拓扑、Trace 查询结果、请求详情与 Span 耗时瀑布图' },
+  { id: 'kubernetes', label: 'Kubernetes', icon: Box, path: 'workspace / containers / k8s', src: '/promo/v2/kubernetes.webp', title: '多集群资源，集中放进一个工作台', description: '从集群卡片查看 CPU、内存容量与 Requests / Limits，掌握节点和 Pod 概况。', alt: 'Kubernetes 工作台真实产品截图：集群卡片、CPU 和内存容量、Requests / Limits 与 Pod 摘要' },
 ]
 const screenshotIndex = ref(0)
 const currentScreenshot = computed(() => screenshots[screenshotIndex.value])
@@ -424,8 +426,7 @@ async function copyCloneCommand() { try { await navigator.clipboard.writeText(cl
 .window-dots i:first-child { background: var(--p-subtle); }
 .gallery-counter { margin-left: auto; }
 .screenshot-button { display: block; position: relative; width: 100%; border: 0; padding: 0; overflow: hidden; background: var(--p-raised); }
-.screenshot-button img { width: 100%; height: auto; aspect-ratio: 1600 / 803; object-fit: contain; object-position: top; display: block; transition: transform .4s; }
-.screenshot-button.is-archived img { aspect-ratio: 1600 / 1000; }
+.screenshot-button img { width: 100%; height: auto; aspect-ratio: 1679 / 944; object-fit: contain; object-position: top; display: block; transition: transform .4s; }
 .screenshot-button:hover img { transform: scale(1.006); }
 .zoom-hint { position: absolute; bottom: 16px; right: 16px; display: flex; align-items: center; gap: 7px; color: var(--p-ink); background: var(--p-translucent); border: 1px solid var(--p-line); border-radius: 5px; padding: 6px 10px; font-size: 10px; }
 .gallery-caption { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 23px 25px; border-top: 1px solid var(--p-line); }
