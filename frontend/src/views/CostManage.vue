@@ -64,6 +64,12 @@
       </div>
 
       <template v-if="activeTab === 'overview'">
+        <div class="audit-grid cost-overview-totals">
+          <div v-for="item in overviewTotalCards" :key="item.label" class="audit-card audit-card--inline">
+            <span>{{ item.label }}</span>
+            <strong>{{ item.value }}</strong>
+          </div>
+        </div>
         <div v-loading="loading" class="cost-account-overview">
           <div class="cost-overview-head">
             <div>
@@ -468,6 +474,12 @@ const cloudAccountRows = computed(() => listOf(report.value.by_cloud_account))
 const overviewCloudAccountRows = computed(() => overviewAccount.value
   ? cloudAccountRows.value.filter(item => item.source_account === overviewAccount.value)
   : cloudAccountRows.value)
+const overviewTotalCards = computed(() => [
+  { label: '总资源数', value: overviewCloudAccountRows.value.reduce((sum, item) => sum + Number(item.count || 0), 0) },
+  { label: '当月总成本', value: formatMoney(overviewCloudAccountRows.value.reduce((sum, item) => sum + Number(item.total_cost || 0), 0)) },
+  { label: '云账号数', value: overviewCloudAccountRows.value.length },
+  { label: '预计可节省 / 月', value: formatMoney(suggestions.value.filter(item => !overviewAccount.value || item.source_account === overviewAccount.value).reduce((sum, item) => sum + Number(item.potential_saving || 0), 0)) },
+])
 const businessLines = computed(() => listOf(report.value.by_business).map(item => item.business_line).filter(item => item && item !== '未归类'))
 const environments = computed(() => environmentRows.value.map(item => item.environment).filter(Boolean))
 const providers = computed(() => providerRows.value.map(item => item.provider).filter(Boolean))
@@ -912,6 +924,11 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+.cost-overview-totals { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 0 0 8px; }
+.cost-overview-totals .audit-card { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 14px 16px; min-height: 68px; border: 1px solid var(--el-border-color-light); border-radius: 14px; background: var(--card-bg); }
+.cost-overview-totals .audit-card span { color: var(--text-secondary); font-size: 13px; font-weight: 600; }
+.cost-overview-totals .audit-card strong { color: var(--text-primary); font-size: 24px; }
+@media (max-width: 1000px) { .cost-overview-totals { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .cost-manage-page{display:flex;flex-direction:column;gap:6px}
 .hero.panel{padding:14px 16px;border:1px solid rgba(36,91,219,.09);border-radius:20px;background:linear-gradient(135deg,#fbfdff 0%,#f7faff 52%,#f9fbfd 100%)}
 .cost-hero-title-row{display:flex;align-items:center;gap:10px;min-width:0}.cost-hero-title-row h2{margin:0;color:#0f172a;font-size:20px;line-height:1.3}.page-inline-desc{margin:0;color:#64748b;font-size:13px;line-height:1.45}.cost-header-icon{width:42px;height:42px;border-radius:12px;background:#eaf2ff;color:#245bdb;display:inline-flex;align-items:center;justify-content:center;font-size:20px;flex:none}

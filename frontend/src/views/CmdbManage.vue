@@ -6671,7 +6671,7 @@ function overviewCiKey(row) {
 
 function overviewRowMatchesCloudAccount(row) {
   const account = isOverviewProviderSummaryRow(row) ? overviewProviderSummaryAccount(row) : overviewCloudAccountLabel(row)
-  return account && account !== '未关联账号' && !!overviewResourceScope.value && account === overviewResourceScope.value
+  return account && account !== '未关联账号' && (!overviewResourceScope.value || account === overviewResourceScope.value)
 }
 
 function overviewRowMatchesBusinessEnvironment(row) {
@@ -6720,7 +6720,7 @@ function overviewRecordMatchesScope(row = {}) {
     ...(Array.isArray(row.job_source_accounts) ? row.job_source_accounts : []),
   ].filter(value => value !== undefined && value !== null && String(value).trim() !== '').map(value => String(value).trim())
   if (overviewResourceDimension.value === 'cloud_account') {
-    return accounts.some(account => !!overviewResourceScope.value && account === overviewResourceScope.value)
+    return !overviewResourceScope.value || accounts.some(account => account === overviewResourceScope.value)
   }
   const businessLines = [
     row.business_line,
@@ -7048,7 +7048,7 @@ const overviewCloudAccountScopeOptions = computed(() => {
     const label = overviewCloudAccountLabel(row)
     resourceCounts.set(label, (resourceCounts.get(label) || 0) + 1)
   })
-  return Array.from(resourceCounts.entries())
+  return [{ value: '', title: '全部云账号', selectedLabel: '全部云账号', label: '全部云账号' }, ...Array.from(resourceCounts.entries())
     .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
     .map(([label]) => {
       const accountRows = overviewAccountRows.value.filter(row => overviewCloudAccountLabel(row) === label)
@@ -7061,7 +7061,7 @@ const overviewCloudAccountScopeOptions = computed(() => {
         selectedLabel: label,
         label: `${label} · ${kind.label}`,
       }
-    })
+    })]
 })
 const overviewBusinessEnvironmentScopeOptions = computed(() => {
   const resourceCounts = new Map()
@@ -7108,13 +7108,13 @@ watch([overviewResourceDimension, overviewResourceScope], () => {
 const overviewResourceScopePlaceholder = computed(() => overviewResourceDimension.value === 'business_environment' ? '选择业务线 / 环境' : '选择云账号')
 const overviewResourceScopeDesc = computed(() => overviewResourceDimension.value === 'business_environment'
   ? '按业务线与环境汇总服务器 CPU、内存、磁盘水位和治理事项，方便从业务视角判断容量与风险。'
-  : '按云账号独立汇总服务器 CPU、内存、磁盘水位与同步规格，直接判断是否需要申请扩容。')
+  : '汇总所选云账号的 CPU、内存、磁盘容量与使用水位；选择全部云账号可查看总资源。')
 const overviewFilteredServerRows = computed(() => {
   return overviewResourceDimension.value === 'business_environment'
     ? overviewServerRows.value.filter(overviewRowMatchesScope)
     : overviewCloudServerRows.value.filter(overviewRowMatchesScope)
 })
-const showOverviewTotalResourceView = computed(() => overviewFilteredServerRows.value.some(isOverviewCloudServer))
+const showOverviewTotalResourceView = computed(() => overviewResourceDimension.value === 'cloud_account' || overviewFilteredServerRows.value.some(isOverviewCloudServer))
 const overviewAllocatedServerRows = computed(() => overviewFilteredServerRows.value.filter(isOverviewCloudServer))
 const overviewProviderSummaryRows = computed(() => overviewAllRows.value.filter((row) => {
   return isOverviewProviderSummaryRow(row)
@@ -7130,7 +7130,7 @@ const overviewMetricCiKeySet = computed(() => new Set(overviewFilteredServerRows
 const overviewResourceScopeLabel = computed(() => {
   const count = overviewFilteredServerRows.value.length
   if (overviewServerLoading.value) return '服务器加载中'
-  return `${overviewResourceScope.value || overviewResourceScopePlaceholder.value} ${count} 台`
+  return `${overviewResourceScope.value || (overviewResourceDimension.value === 'cloud_account' ? '全部云账号' : overviewResourceScopePlaceholder.value)} ${count} 台`
 })
 const overviewScopeTitle = computed(() => overviewResourceScope.value || (overviewResourceDimension.value === 'business_environment' ? '当前业务环境范围' : '当前云账号范围'))
 
@@ -8386,9 +8386,14 @@ const ledgerBusinessTreeNodes = computed(() => {
   treeRows.forEach((row) => {
     const businessLabel = ledgerBusinessLineText(row)
     const businessLine = ledgerBusinessLineFilter(row)
-    const businessNode = row?.business_node || ''
+    // Legacy assets may only carry names: attach them to the existing tree node.
+    const matchedBusiness = resourceNodeTree.value.find(biz => row?.business_node
+      ? String(biz.id) === String(row.business_node)
+      : ledgerTreeText(biz.name) === businessLabel)
+    const businessNode = row?.business_node || matchedBusiness?.id || ''
     const environment = ledgerEnvironmentText(row)
-    const environmentNode = row?.environment_node || ''
+    const matchedEnvironment = (matchedBusiness?.children || []).find(env => normalizeEnvironmentValue(env.name) === normalizeEnvironmentValue(environment))
+    const environmentNode = row?.environment_node || matchedEnvironment?.id || ''
     const system = ledgerSystemText(row)
     const modelText = ledgerTreeText(row?.ci_type_name || row?.ci_type_code)
     const resourceText = ledgerTreeText(row?.name || row?.display_name)
