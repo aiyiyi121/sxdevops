@@ -1385,6 +1385,19 @@ class AIOpsPendingActionViewSet(RBACPermissionMixin, mixins.DestroyModelMixin, v
         if username:
             queryset = queryset.filter(session__user__username__icontains=username)
         queryset = _filter_audit_time_range(queryset, self.request, 'updated_at')
+        session_id = _audit_query_param(self.request, 'session_id')
+        if session_id:
+            if not session_id.isdigit():
+                return queryset.none()
+            queryset = queryset.filter(session_id=int(session_id))
+        message_id = _audit_query_param(self.request, 'message_id')
+        if message_id:
+            if not message_id.isdigit():
+                return queryset.none()
+            queryset = queryset.filter(
+                Q(message_id=int(message_id))
+                | Q(message__metadata__orchestration_user_message_id=int(message_id))
+            )
         return queryset.order_by('-created_at', '-id')
 
     def destroy(self, request, *args, **kwargs):

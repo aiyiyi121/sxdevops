@@ -1,5 +1,5 @@
 from django.db.models import Case, CharField, Count, Max, OuterRef, Q, Subquery, Sum, Value, When
-from django.db.models.functions import Coalesce
+from django.db.models.functions import Cast, Coalesce
 from django.db.models.fields.json import KeyTextTransform
 from django.utils import timezone
 from rest_framework import serializers
@@ -12,10 +12,13 @@ def execution_queryset():
     graphs = AIOpsGraphNodeRun.objects.filter(message_id=OuterRef('pk'), node='__graph__').order_by('-id')
     assistants = AIOpsChatMessage.objects.filter(
         session_id=OuterRef('session_id'), role='assistant', mirror_source__isnull=True,
+    ).annotate(
+        orchestration_user_message_id_text=KeyTextTransform('orchestration_user_message_id', 'metadata'),
+        resume_status=KeyTextTransform('langgraph_resume_status', 'metadata'),
     ).filter(
         Q(metadata__langgraph_thread_id=OuterRef('metadata__langgraph_thread_id'))
-        | Q(metadata__orchestration_user_message_id=OuterRef('pk')),
-    ).annotate(resume_status=KeyTextTransform('langgraph_resume_status', 'metadata')).order_by('-id')
+        | Q(orchestration_user_message_id_text=Cast(OuterRef('pk'), output_field=CharField())),
+    ).order_by('-id')
     nodes = Q(graph_node_runs__node='__graph__')
     return AIOpsChatMessage.objects.filter(
         role='user', mirror_source__isnull=True, session__mirror_source__isnull=True,

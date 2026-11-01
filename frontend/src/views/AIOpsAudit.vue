@@ -235,9 +235,9 @@
         </button>
       </div>
 
-      <div v-if="correlationScope && ['sessions', 'executions', 'tools', 'models'].includes(activeTab)" class="audit-correlation-scope">
+      <div v-if="correlationScope && ['sessions', 'executions', 'tools', 'models', 'actions'].includes(activeTab)" class="audit-correlation-scope">
         <el-tag size="small" closable @close="clearCorrelationScope">{{ correlationScope }}</el-tag>
-        <span>仅展示关联范围内的记录</span>
+        <span>仅展示关联范围内的记录，切换页签可查看相关审计；关闭标签返回全部会话</span>
       </div>
       <div class="workbench-toolbar workbench-toolbar--history audit-list-toolbar">
         <div class="workbench-toolbar-left">
@@ -269,7 +269,7 @@
             <el-date-picker v-model="auditFilters.tools.timeRange" class="audit-filter-time" size="small" type="datetimerange" format="YYYY-MM-DD HH:mm" range-separator="至" start-placeholder="开始时间" end-placeholder="结束时间" clearable @change="applyAuditFilters" />
           </template>
           <template v-else-if="activeTab === 'models'">
-            <el-input v-model="auditFilters.models.q" class="audit-filter-search" size="small" clearable placeholder="搜索供应商 / 模型" @keyup.enter="applyAuditFilters" />
+            <el-input v-model="auditFilters.models.q" class="audit-filter-search" size="small" clearable placeholder="搜索会话 / 供应商 / 模型" @keyup.enter="applyAuditFilters" />
             <el-select v-model="auditFilters.models.status" size="small" clearable placeholder="状态" @change="applyAuditFilters">
               <el-option v-for="item in modelStatusOptions" :key="item.value" :label="item.label" :value="item.value" />
             </el-select>
@@ -385,8 +385,10 @@
       </el-table>
 
       <el-table v-else-if="activeTab === 'executions'" v-loading="loading.executions" :data="auditExecutions" stripe size="small" class="console-table" empty-text="暂无 LangGraph 执行记录">
+        <el-table-column prop="session_title" label="会话" min-width="190" show-overflow-tooltip>
+          <template #default="{ row }"><el-button class="audit-session-link" link type="primary" @click="filterAuditSession(row)">{{ row.session_title || `会话 #${row.session_id}` }}</el-button></template>
+        </el-table-column>
         <el-table-column prop="question" label="本轮问题" min-width="240" show-overflow-tooltip />
-        <el-table-column prop="session_title" label="会话" min-width="140" show-overflow-tooltip />
         <el-table-column prop="username" label="用户" width="90" show-overflow-tooltip />
         <el-table-column label="运行方式" width="100">
           <template #default="{ row }"><el-tag size="small" effect="plain" :type="row.orchestration_degraded ? 'warning' : 'info'">{{ row.orchestration_degraded ? '兼容降级' : 'LangGraph' }}</el-tag></template>
@@ -417,8 +419,10 @@
             <div class="json-preview">{{ formatJsonCompact({ request_payload: row.request_payload, response_summary: row.response_summary }) }}</div>
           </template>
         </el-table-column>
+        <el-table-column prop="session_title" label="会话" min-width="190" show-overflow-tooltip>
+          <template #default="{ row }"><el-button class="audit-session-link" link type="primary" @click="filterAuditSession(row)">{{ row.session_title || `会话 #${row.session}` }}</el-button></template>
+        </el-table-column>
         <el-table-column prop="tool_name" label="MCP 工具" min-width="112" show-overflow-tooltip />
-        <el-table-column prop="session_title" label="会话" min-width="156" show-overflow-tooltip />
         <el-table-column prop="username" label="用户" width="82" show-overflow-tooltip />
         <el-table-column label="状态" width="82">
           <template #default="{ row }">
@@ -435,9 +439,9 @@
             {{ formatDateTimeCompact(row.created_at) }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="108" fixed="right">
+        <el-table-column label="操作" width="138" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" :disabled="!row.message" @click="navigateAuditScope({ tab: 'executions', sessionId: row.session, messageId: row.message })">执行</el-button>
+            <el-button link type="primary" :disabled="!row.message" @click="navigateAuditScope({ tab: 'executions', sessionId: row.session, messageId: row.message })">执行追踪</el-button>
             <el-button v-if="canManageAudit" link type="danger" @click="handleDeleteAuditTool(row)">删除</el-button>
           </template>
         </el-table-column>
@@ -496,6 +500,9 @@
             </div>
           </template>
         </el-table-column>
+        <el-table-column prop="session_title" label="会话" min-width="190" show-overflow-tooltip>
+          <template #default="{ row }"><el-button class="audit-session-link" link type="primary" @click="filterAuditSession(row)">{{ row.session_title || `会话 #${row.session}` }}</el-button></template>
+        </el-table-column>
         <el-table-column prop="name" label="Skill" min-width="102" show-overflow-tooltip>
           <template #default="{ row }">
             <div class="trace-name-cell">
@@ -504,7 +511,6 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column prop="session_title" label="会话" min-width="118" show-overflow-tooltip />
         <el-table-column label="命中来源" width="118" show-overflow-tooltip>
           <template #default="{ row }">
             {{ traceHitReasonLabel(row.hit_reason) }}
@@ -582,6 +588,9 @@
             </div>
           </template>
         </el-table-column>
+        <el-table-column prop="session_title" label="会话" min-width="190" show-overflow-tooltip>
+          <template #default="{ row }"><el-button class="audit-session-link" link type="primary" @click="filterAuditSession(row)">{{ row.session_title || `会话 #${row.session}` }}</el-button></template>
+        </el-table-column>
         <el-table-column label="问答类型" min-width="112" show-overflow-tooltip>
           <template #default="{ row }">
             <div class="trace-name-cell">
@@ -590,7 +599,6 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column prop="session_title" label="会话" min-width="154" show-overflow-tooltip />
         <el-table-column label="风险" width="64">
           <template #default="{ row }">
             <el-tag v-if="row.risk_level || row.risk_level_display" size="small" :type="riskTone(row.risk_level)" effect="plain">{{ row.risk_level_display || row.risk_level }}</el-tag>
@@ -635,6 +643,12 @@
             <div class="json-preview">{{ formatJsonCompact({ request_summary: row.request_summary, response_summary: row.response_summary }) }}</div>
           </template>
         </el-table-column>
+        <el-table-column prop="session_title" label="会话" min-width="190" show-overflow-tooltip>
+          <template #default="{ row }">
+            <el-button v-if="row.session" class="audit-session-link" link type="primary" @click="filterAuditSession(row)">{{ row.session_title || `会话 #${row.session}` }}</el-button>
+            <span v-else class="muted-text">无关联会话</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="provider_name" label="提供商" min-width="150" show-overflow-tooltip />
         <el-table-column prop="purpose_display" label="用途" width="110" />
         <el-table-column prop="resolved_model" label="模型" min-width="160" show-overflow-tooltip />
@@ -663,9 +677,9 @@
             {{ formatDateTimeDisplay(row.created_at) }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="108" fixed="right">
+        <el-table-column label="操作" width="138" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" :disabled="!row.message" @click="navigateAuditScope({ tab: 'executions', sessionId: row.session, messageId: row.message })">执行</el-button>
+            <el-button link type="primary" :disabled="!row.message" @click="navigateAuditScope({ tab: 'executions', sessionId: row.session, messageId: row.message })">执行追踪</el-button>
             <el-button v-if="canManageAudit" link type="danger" @click="handleDeleteAuditModel(row)">删除</el-button>
           </template>
         </el-table-column>
@@ -681,6 +695,9 @@
         @selection-change="handleAuditActionSelectionChange"
       >
         <el-table-column v-if="canManageAudit" type="selection" width="34" />
+        <el-table-column prop="session_title" label="会话" min-width="190" show-overflow-tooltip>
+          <template #default="{ row }"><el-button class="audit-session-link" link type="primary" @click="filterAuditSession(row)">{{ row.session_title || `会话 #${row.session}` }}</el-button></template>
+        </el-table-column>
         <el-table-column prop="title" label="动作标题" min-width="180" show-overflow-tooltip />
         <el-table-column prop="environment_display" label="环境" width="112" show-overflow-tooltip />
         <el-table-column label="风险" width="84">
@@ -769,8 +786,9 @@ const auditExecutions = ref([])
 const executionDetailVisible = ref(false)
 const executionDetailId = ref(null)
 const correlationScope = computed(() => {
-  if (route.query.message_id) return `会话 #${route.query.session_id || '-'} · 消息 #${route.query.message_id}`
-  return route.query.session_id ? `会话 #${route.query.session_id}` : ''
+  const title = route.query.session_title || `会话 #${route.query.session_id || '-'}`
+  if (route.query.message_id) return `${title} · 消息 #${route.query.message_id}`
+  return route.query.session_id ? title : ''
 })
 const auditTools = ref([])
 const auditSkillTraces = ref([])
@@ -1098,7 +1116,7 @@ function auditPageSize(tab, subTab = invocationAuditTab.value) {
 
 function buildAuditListParams(tab, page = 1, subTab = invocationAuditTab.value) {
   const base = { page, page_size: auditPageSize(tab, subTab) }
-  if (['sessions', 'executions', 'tools', 'models'].includes(tab)) {
+  if (['sessions', 'executions', 'tools', 'models', 'actions'].includes(tab)) {
     base.session_id = route.query.session_id
     base.message_id = route.query.message_id
   }
@@ -1255,14 +1273,28 @@ function switchTab(tab) {
 async function navigateAuditScope({ tab, sessionId, messageId }) {
   clearAuditFilterGroup(auditFilters[tab])
   if (tab === 'tools') invocationAuditTab.value = 'mcp'
+  const session = auditSessions.value.find(item => String(item.id) === String(sessionId))
+  const row = [...auditExecutions.value, ...auditTools.value, ...auditSkillTraces.value, ...auditActionTraces.value, ...auditModels.value, ...auditActions.value]
+    .find(item => String(item.session_id || item.session) === String(sessionId))
+  const sessionTitle = session?.title || row?.session_title || (String(route.query.session_id) === String(sessionId) ? route.query.session_title : undefined)
   await router.replace({ path: route.path, query: compactParams({
-    ...route.query, tab, session_id: sessionId, message_id: messageId,
+    ...route.query, tab, session_id: sessionId, session_title: sessionTitle, message_id: messageId,
+  }) })
+}
+
+async function filterAuditSession(row) {
+  const sessionId = row.session_id || row.session
+  if (!sessionId) return
+  clearAuditFilterGroup(auditFilters[activeTab.value])
+  await router.replace({ path: route.path, query: compactParams({
+    ...route.query, session_id: sessionId, session_title: row.session_title, message_id: undefined,
   }) })
 }
 
 async function clearCorrelationScope() {
   const query = { ...route.query }
   delete query.session_id
+  delete query.session_title
   delete query.message_id
   await router.replace({ path: route.path, query })
 }
@@ -1787,6 +1819,8 @@ watch(
 </script>
 
 <style scoped>
+.audit-session-link { max-width: 100%; vertical-align: middle; }
+.audit-session-link :deep(span) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .audit-session-actions { display: inline-flex; align-items: center; flex-wrap: nowrap; gap: 12px; white-space: nowrap; }
 .audit-session-actions :deep(.el-button) { margin-left: 0; flex-shrink: 0; }
 .aiops-audit-page {
@@ -1931,7 +1965,7 @@ watch(
   box-shadow: 0 2px 8px rgba(15, 23, 42, 0.025);
 }
 
-.audit-correlation-scope { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; color: #64748b; font-size: 12px; }
+.audit-correlation-scope { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; color: var(--text-secondary); font-size: 12px; }
 
 .audit-tab-btn {
   min-height: 38px;

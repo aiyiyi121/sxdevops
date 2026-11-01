@@ -99,6 +99,43 @@ class AIOpsAuditExecutionTests(TestCase):
         self.assertEqual(response.data['count'], 1)
         self.assertEqual(response.data['results'][0]['status'], 'completed')
 
+    @mock.patch('aiops.langgraph_pilot.get_langgraph_chat_graph')
+    def test_assistant_user_message_id_accepts_json_number_or_string_without_crossing_rounds(self, graph):
+        graph.return_value.get_state.return_value = SimpleNamespace(values={})
+        self.assistant.delete()
+        second = self.make_message('thread-two')
+        for identifier in [self.message.id, str(self.message.id)]:
+            with self.subTest(identifier=identifier):
+                wanted = AIOpsChatMessage.objects.create(
+                    session=self.session, role='assistant', content='本轮回复', metadata={
+                        'orchestration_user_message_id': identifier, 'langgraph_resume_status': 'completed',
+                    },
+                )
+                other = AIOpsChatMessage.objects.create(
+                    session=self.session, role='assistant', content='下一轮回复', metadata={
+                        'orchestration_user_message_id': second.id, 'langgraph_resume_status': 'running',
+                    },
+                )
+                AIOpsChatMessage.objects.create(
+                    session=self.session, role='assistant', content='旧格式无效关联', metadata={
+                        'orchestration_user_message_id': 'invalid-message-id', 'langgraph_resume_status': 'failed',
+                    },
+                )
+
+                response = self.client.get(self.url, {'status': 'completed'})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.data['count'], 1)
+                self.assertEqual(response.data['results'][0]['message_id'], self.message.id)
+                self.assertEqual(response.data['results'][0]['assistant_message_id'], wanted.id)
+                response = self.client.get(f'{self.url}{self.message.id}/')
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.data['assistant_message_id'], wanted.id)
+                self.assertEqual(response.data['status'], 'completed')
+                response = self.client.get(f'{self.url}{second.id}/')
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.data['assistant_message_id'], other.id)
+                self.assertEqual(response.data['status'], 'running')
+
     def test_cleaned_synchronous_execution_remains_completed(self):
         self.message.metadata['langgraph_checkpoint_expired'] = True
         self.message.save(update_fields=['metadata'])

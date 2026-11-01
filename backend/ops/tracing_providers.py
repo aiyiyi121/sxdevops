@@ -1,5 +1,7 @@
 ﻿from datetime import datetime, timedelta
 
+import json
+
 import requests as http_requests
 from django.conf import settings
 from rest_framework import status
@@ -1195,6 +1197,8 @@ def _search_jaeger_traces(config, payload, services):
         params['minDuration'] = f"{int(payload['min_duration_ms'])}ms"
     if payload.get('keyword'):
         params['operation'] = payload['keyword']
+    if payload.get('trace_state') == 'ERROR':
+        params['tags'] = json.dumps({'error': 'true'})
     raw = _http_get(_jaeger_base(config, '/api/traces'), params=params, config=config)
     traces = raw.get('data') or []
     items = [_jaeger_trace_summary(item, preferred_service=params['service']) for item in traces]

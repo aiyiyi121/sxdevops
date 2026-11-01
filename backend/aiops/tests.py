@@ -3209,7 +3209,10 @@ class AIOpsApiTests(TestCase):
         self.assertGreater(mocked_promql.call_count, 0)
         self.assertLessEqual(mocked_promql.call_count, 6)
         self.assertEqual(mocked_panel.call_args.args[0], 'commerce-slo')
-        self.assertEqual(mocked_panel.call_args.kwargs['variables'], {'namespace': 'production'})
+        self.assertEqual(mocked_panel.call_args.kwargs['variables'], {
+            'namespace': 'production', 'service': 'order-service', 'environment': 'ecommerce-test',
+        })
+        self.assertEqual(mocked_panel.call_args.kwargs['limit'], 4)
         self.assertIn('Checkout Success Rate', result['content'])
 
     @mock.patch('aiops.services.execute_promql_query')

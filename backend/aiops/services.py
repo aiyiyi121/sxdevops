@@ -202,9 +202,6 @@ def _normalize_suggested_questions(questions):
             candidate = DEFAULT_SUGGESTED_QUESTIONS[index]
         if candidate not in normalized:
             normalized.append(candidate)
-    for item in DEFAULT_SUGGESTED_QUESTIONS:
-        if item not in normalized:
-            normalized.append(item)
     return normalized
 
 DEFAULT_SYSTEM_PROMPT = (
@@ -3311,24 +3308,26 @@ def _build_log_datasource_scope(knowledge_environment):
     return datasources, links
 
 
-def _labels_from_observability_links(links, service_name='', namespace=''):
+def _labels_from_observability_links(links, service_name='', namespace='', environment=''):
     labels = {}
+    mappings = []
     for link in links:
         for item in link.log_label_mappings or []:
             if not isinstance(item, dict):
                 continue
             trace_tag = str(item.get('trace_tag') or '').strip()
             log_label = str(item.get('log_label') or '').strip()
-            if not log_label:
-                continue
-            if trace_tag in {'service.name', 'service', 'serviceName'} and service_name:
-                labels.setdefault(log_label, service_name)
-            if trace_tag in {'service.namespace', 'namespace', 'k8s.namespace.name'} and namespace:
-                labels.setdefault(log_label, namespace)
-    if service_name:
-        labels.setdefault('container', service_name)
-    if namespace:
-        labels.setdefault('namespace', namespace)
+            if trace_tag and log_label:
+                mappings.append((trace_tag, log_label))
+    if not mappings:
+        mappings = [('service.name', 'container'), ('service.namespace', 'namespace')]
+    for trace_tag, log_label in mappings:
+        if trace_tag in {'service.name', 'service', 'serviceName'} and service_name:
+            labels.setdefault(log_label, service_name)
+        if trace_tag in {'service.namespace', 'namespace', 'k8s.namespace.name'} and namespace:
+            labels.setdefault(log_label, namespace)
+        if trace_tag in {'deployment.environment', 'deployment.environment.name', 'environment'} and environment:
+            labels.setdefault(log_label, environment)
     return labels
 
 
@@ -3345,6 +3344,13 @@ def _query_live_log_datasources(knowledge_environment, query='', service='', lev
             if isinstance(values, list) and values:
                 namespace = str(values[0] or '').strip()
                 break
+    source_environments = list(dict.fromkeys(
+        str(value).strip()
+        for key in ('alert_environments', 'event_environments')
+        for value in (knowledge_environment or {}).get(key) or []
+        if str(value).strip()
+    ))
+    environment = source_environments[0] if len(source_environments) == 1 else ''
     start_ms = int((timezone.now() - timedelta(minutes=duration_minutes)).timestamp() * 1000)
     end_ms = int(timezone.now().timestamp() * 1000)
     all_logs = []
@@ -3364,6 +3370,7 @@ def _query_live_log_datasources(knowledge_environment, query='', service='', lev
                 [link for link in links if link.log_datasource_id == datasource.id],
                 service_name=service,
                 namespace=namespace,
+                environment=environment,
             )
             selector = _render_loki_selector(labels)
             payload['query'] = f'{selector} {_loki_level_pipeline(resolved_levels)}' if resolved_levels else selector
@@ -3796,6 +3803,16 @@ def _resolve_cmdb_environment_scope(query='', environment='', business_line='', 
             .values_list('environment', flat=True)
             .distinct()[:100]
         )
+        matched_terms = {
+            term.lower()
+            for node in matched_nodes
+            for term in _cmdb_environment_name_terms(node.name)
+        }
+        legacy_values.extend(
+            value for value in queryset.filter(environment_node__isnull=True).exclude(environment='')
+            .values_list('environment', flat=True).distinct()[:500]
+            if str(value).strip().lower() in matched_terms
+        )
     if not matched_nodes and explicit and queryset is not None:
         legacy_values = [
             value for value in queryset.exclude(environment='').values_list('environment', flat=True).distinct()[:500]
@@ -3830,6 +3847,32 @@ def _apply_cmdb_environment_scope(queryset, environment_scope):
     return queryset
 
 
+def _match_cmdb_business_line(text, business_lines):
+    lowered = str(text or '').lower()
+    generic_aliases = {
+        '数据', '基础', '业务', '资源', '资产', '应用', '服务', '系统', '平台',
+        '当前', '全部', '所有', '环境', '生产', '测试', '开发', '运维',
+    }
+    matches = []
+    for value in business_lines:
+        original = str(value or '').strip()
+        normalized = original.lower()
+        if not normalized:
+            continue
+        terms = [normalized]
+        for suffix in ('业务线', '业务', '平台', '系统'):
+            if normalized.endswith(suffix):
+                alias = normalized[:-len(suffix)]
+                if len(alias) > 1 and alias not in generic_aliases:
+                    terms.append(alias)
+        for term in terms:
+            prefix = r'(?<![a-z0-9_.-])' if re.match(r'[a-z0-9_.-]', term[0]) else ''
+            suffix = r'(?![a-z0-9_.-])' if re.match(r'[a-z0-9_.-]', term[-1]) else ''
+            if re.search(prefix + re.escape(term) + suffix, lowered):
+                matches.append((len(term), len(normalized), original))
+    return max(matches, default=(0, 0, ''))[2]
+
+
 def _extract_cmdb_business_line(text, user):
     from cmdb.views import _apply_ci_authorization_scope
 
@@ -3842,15 +3885,17 @@ def _extract_cmdb_business_line(text, user):
         .values_list('business_line', flat=True)
         .distinct()[:500]
     )
-    for business_line in sorted(business_lines, key=lambda item: (-len(item), item)):
-        if business_line.lower() in lowered:
+    matched = _match_cmdb_business_line(text, business_lines)
+    if matched:
+        return matched
+    # Preserve an explicitly requested, existing out-of-scope business filter.
+    # Ignoring it would widen the query to every asset the user can otherwise see.
+    for business_line in ConfigItem.objects.exclude(business_line='').values_list('business_line', flat=True).distinct()[:500]:
+        prefix = r'(?<![a-z0-9_.-])' if re.match(r'[a-z0-9_.-]', business_line[0].lower()) else ''
+        pattern = prefix + re.escape(business_line.lower()) + r'\s*(?:业务线|业务)'
+        if re.search(pattern, lowered):
             return business_line
-    explicit_match = re.search(r'([a-zA-Z0-9_.\-\u4e00-\u9fff]{1,50})\s*(?:业务线|业务)', str(text or ''))
-    if explicit_match:
-        candidate = re.sub(r'^(?:分析|查询|查看|盘点|统计|cmdb)+', '', explicit_match.group(1), flags=re.IGNORECASE)
-        if candidate and candidate not in {'本月', '上月', '当前', '全部', '所有', '资产', '资源'}:
-            return candidate
-    return _extract_system_name(text)
+    return ''
 
 
 def _extract_cmdb_cost_month(text):
@@ -5871,7 +5916,7 @@ def query_dashboard_metadata(session, user_message, user, query='', limit=6):
     dashboards = []
     for setting in GrafanaSetting.objects.filter(enabled=True).order_by('name'):
         for dashboard in (setting.dashboards if isinstance(setting.dashboards, list) else []):
-            folder = str(dashboard.get('folder') or '').strip()
+            folder = str(dashboard.get('folder_key') or dashboard.get('folder') or '').strip()
             if selected_folders and folder not in selected_folders and not any(folder.startswith(f'{item}/') for item in selected_folders):
                 continue
             key = dashboard.get('key') or dashboard.get('uid') or dashboard.get('title') or dashboard.get('name')
@@ -5907,7 +5952,7 @@ def _analysis_dashboard_candidates(knowledge_environment):
             if not isinstance(dashboard, dict):
                 continue
             key = str(dashboard.get('key') or dashboard.get('uid') or dashboard.get('slug') or '').strip()
-            folder = str(dashboard.get('folder') or '').strip()
+            folder = str(dashboard.get('folder_key') or dashboard.get('folder') or '').strip()
             in_folder = any(folder == item or folder.startswith(f'{item}/') for item in folders)
             if not key or (not in_folder if folders else key not in linked_keys):
                 continue
@@ -6140,14 +6185,38 @@ def query_observability_links(session, user_message, user, query='', limit=6):
     return {'summary': {'count': len(links)}, 'sections': sections, 'citations': [{'title': '可观测性关联', 'path': '/observability/links'}], 'links': links}
 
 
+def _event_query_search_tokens(query, knowledge_environment=None, service_options=None):
+    text = str(query or '').strip()
+    quoted = [value.strip() for value in re.findall(r'["“「]([^"”」]{2,80})["”」]', text) if value.strip()]
+    candidates = _service_candidates_from_text(text)
+    service = _match_service_from_options(text, service_options)
+    if not service:
+        service = _match_service_from_options(' '.join(candidates), service_options)
+    if not service:
+        environment_terms = {value.lower() for value in _environment_scope_terms(knowledge_environment)}
+        query_words = {
+            'last', 'hour', 'hours', 'minute', 'minutes', 'today', 'event', 'events',
+            'service', 'application', 'release', 'releases', 'deployment', 'change',
+            'changes', 'and', 'the', 'for', 'timeline', 'slo', 'sla',
+        }
+        service = next((
+            value for value in candidates
+            if re.fullmatch(r'[A-Za-z][A-Za-z0-9_.@-]{2,}', value)
+            and value.lower() not in environment_terms | query_words
+        ), '')
+    if service:
+        return list(dict.fromkeys([service, *quoted]))
+    if re.search(r'请|帮我|帮忙|分析|梳理|查看|查询|判断|最近|过去|今天|今日|时间线|关联|证据|有哪些|有什么|是否|有没有', text):
+        return list(dict.fromkeys(quoted))
+    cleaned = _strip_knowledge_environment_name(text, knowledge_environment)
+    cleaned = _strip_common_query_phrases(cleaned, ['环境', '事件', '变更', '发布', '列表'])
+    return _clean_tokens(cleaned)
+
+
 def query_events(session, user_message, user, query='', date_filter='', limit=8):
     started_at = time.time()
     knowledge_environment = getattr(session, '_k8s_environment_snapshot', None) or _resolve_knowledge_environment_for_query(query)
-    search_query = _strip_common_query_phrases(
-        _strip_knowledge_environment_name(query, knowledge_environment),
-        ['今天', '今日', '当天', '这个', '环境', '有哪些', '有什么', '事件', '变更', '发布', '当前', '最近', '列表', '多少', '看下', '看一下'],
-    )
-    tokens = _clean_tokens(search_query)
+    tokens = []
     resolved_date_filter = (date_filter or '').strip().lower()
     if not resolved_date_filter and any(keyword in str(query or '').lower() for keyword in ['今天', '今日', '当天', 'today']):
         resolved_date_filter = 'today'
@@ -6172,6 +6241,10 @@ def query_events(session, user_message, user, query='', date_filter='', limit=8)
     if knowledge_environment:
         event_environments = knowledge_environment.get('event_environments') or []
         queryset = queryset.filter(environment__in=event_environments) if event_environments else EventRecord.objects.none()
+    service_options = list(queryset.exclude(application='').values_list('application', flat=True).distinct()[:500])
+    tokens = _event_query_search_tokens(query, knowledge_environment, service_options)
+    invocation.request_payload['tokens'] = tokens
+    invocation.save(update_fields=['request_payload'])
     if resolved_date_filter == 'today':
         queryset = queryset.filter(occurred_at__date=timezone.localdate())
     elif resolved_date_filter == 'last_hour':
@@ -8119,7 +8192,7 @@ def _cmdb_grounded_query_arguments(question, user, session=None):
     type_names = list(authorized.values_list('ci_type__name', flat=True).distinct()[:500])
     type_codes = list(authorized.values_list('ci_type__code', flat=True).distinct()[:500])
     asset_names = list(authorized.values_list('name', flat=True).order_by('-updated_at')[:2000])
-    business_line = match_value(business_lines, suffixes=('业务线', '业务', '平台', '系统'))
+    business_line = _match_cmdb_business_line(text, business_lines)
     environment = match_value(environment_names, suffixes=('环境',))
     ci_type = match_value(type_names) or match_value(type_codes)
     asset_name = match_value(asset_names)
@@ -8380,13 +8453,14 @@ def _cmdb_question_has_catalog_reference(question, user):
         return False
 
     has_type = references(type_names)
-    has_business = references(business_lines, suffixes=('业务线', '业务', '平台', '系统'))
+    has_business = bool(_match_cmdb_business_line(text, business_lines))
     has_environment = references(environment_names, suffixes=('环境',))
     has_asset = references(asset_names)
     return has_asset or has_type or (has_business and has_environment)
 
 
 def _runtime_tool_is_available(active_mcp_servers, user, tool_name):
+    tool_name = 'query_event_wall' if tool_name == 'query_events' else tool_name
     return _tool_allowed(user, tool_name) and any(
         server.server_type == AIOpsMCPServer.SERVER_PLATFORM_BUILTIN
         and tool_name in filter_feature_tools(server.tool_whitelist or [])
@@ -12307,6 +12381,8 @@ def _detect_formatter_profile(question, pending_action_draft, message_type, coll
         return 'task'
     if _action_question_matches('slo.analysis', text):
         return 'slo'
+    if _collect_log_context(collected_tool_outputs or []).get('samples'):
+        return 'incident'
     if alert_context.get('entries'):
         if any(keyword in text for keyword in ['异常', '分析', '排查', '根因']):
             return 'incident'
@@ -13791,12 +13867,21 @@ def _resolve_k8s_task_resource_targets(question='', environment='', draft_reques
 
 def _build_k8s_target_items(k8s_sources, namespace='', name='', kind='service', container=''):
     targets = []
-    for source in k8s_sources or []:
+    seen = set()
+    sources = list(k8s_sources or [])
+    if namespace:
+        sources.sort(key=lambda source: getattr(source, 'namespace', '') != namespace)
+    for source in sources:
         cluster = source.cluster if isinstance(source, TaskResource) else source
         if not cluster and isinstance(source, TaskResource):
             cluster = K8sCluster.objects.filter(name=source.name).first()
         if not cluster:
             continue
+        target_namespace = '' if kind == 'cluster' else (namespace or getattr(source, 'namespace', '') or 'default')
+        identity = (cluster.id, target_namespace, kind, name, container or '')
+        if identity in seen:
+            continue
+        seen.add(identity)
         targets.append({
             'cluster_id': cluster.id,
             'cluster_name': cluster.name,
@@ -13805,7 +13890,7 @@ def _build_k8s_target_items(k8s_sources, namespace='', name='', kind='service', 
             'resource_name': source.name if isinstance(source, TaskResource) else cluster.name,
             'environment_name': source.environment.name if isinstance(source, TaskResource) and source.environment_id else '',
             'system_name': source.system.name if isinstance(source, TaskResource) and source.system_id else '',
-            'namespace': '' if kind == 'cluster' else (namespace or getattr(source, 'namespace', '') or 'default'),
+            'namespace': target_namespace,
             'name': name,
             'kind': kind,
             'container': container or '',
@@ -13873,7 +13958,7 @@ def _build_k8s_service_patch_draft(user, question='', draft_request=None):
         'task_type': HostTask.TASK_K8S_POD_EXEC,
         'payload': payload,
         'host_ids': [],
-        'resource_ids': [item.id for item in k8s_sources if isinstance(item, TaskResource)],
+        'resource_ids': _dedupe_int_list([item.get('resource_id') for item in k8s_targets if item.get('resource_id')]),
         'target_refs': [],
         'target_hosts': _build_k8s_target_snapshot_for_draft(k8s_targets),
         'k8s_targets': k8s_targets,
@@ -13944,7 +14029,7 @@ def _build_k8s_install_draft(user, question='', draft_request=None):
             'task_type': HostTask.TASK_K8S_POD_EXEC,
             'payload': payload,
             'host_ids': [],
-            'resource_ids': [item.id for item in k8s_sources if isinstance(item, TaskResource)],
+            'resource_ids': _dedupe_int_list([item.get('resource_id') for item in k8s_targets if item.get('resource_id')]),
             'target_refs': [],
             'target_hosts': _build_k8s_target_snapshot_for_draft(k8s_targets),
             'k8s_targets': k8s_targets,
@@ -13995,7 +14080,7 @@ def _build_k8s_install_draft(user, question='', draft_request=None):
         'task_type': HostTask.TASK_K8S_POD_EXEC,
         'payload': payload,
         'host_ids': [],
-        'resource_ids': [item.id for item in k8s_sources if isinstance(item, TaskResource)],
+        'resource_ids': _dedupe_int_list([item.get('resource_id') for item in k8s_targets if item.get('resource_id')]),
         'target_refs': [],
         'target_hosts': _build_k8s_target_snapshot_for_draft(k8s_targets),
         'k8s_targets': k8s_targets,
@@ -14050,7 +14135,7 @@ def _build_k8s_scale_workload_draft(user, question='', draft_request=None):
         'task_type': HostTask.TASK_K8S_SCALE_WORKLOAD,
         'payload': payload,
         'host_ids': [],
-        'resource_ids': [item.id for item in k8s_sources if isinstance(item, TaskResource)],
+        'resource_ids': _dedupe_int_list([item.get('resource_id') for item in k8s_targets if item.get('resource_id')]),
         'target_refs': [],
         'target_hosts': _build_k8s_target_snapshot_for_draft(k8s_targets),
         'k8s_targets': k8s_targets,
@@ -14099,7 +14184,7 @@ def _build_k8s_restart_pod_draft(user, question='', draft_request=None):
         'task_type': HostTask.TASK_K8S_RESTART_POD,
         'payload': payload,
         'host_ids': [],
-        'resource_ids': [item.id for item in k8s_sources if isinstance(item, TaskResource)],
+        'resource_ids': _dedupe_int_list([item.get('resource_id') for item in k8s_targets if item.get('resource_id')]),
         'target_refs': [],
         'target_hosts': _build_k8s_target_snapshot_for_draft(k8s_targets),
         'k8s_targets': k8s_targets,

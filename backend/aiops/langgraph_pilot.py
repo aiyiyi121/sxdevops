@@ -1928,9 +1928,21 @@ def _slo_panels_node(state: ChatState, config=None) -> ChatState:
         str(namespace) for values in (state['slo_environment'].get('k8s_namespaces') or {}).values()
         for namespace in values
     }
+    variables = {'namespace': next(iter(namespaces))} if len(namespaces) == 1 else {}
+    service = str(state.get('slo_service') or '').strip()
+    if service:
+        variables['service'] = service
+    for key in ('event_environments', 'alert_environments'):
+        environments = {
+            str(value).strip() for value in state['slo_environment'].get(key) or []
+            if str(value).strip()
+        }
+        if len(environments) == 1:
+            variables['environment'] = next(iter(environments))
+            break
     return _slo_collect_node(state, config, 'slo_panels', 'query_dashboard_panel_data', {
-        'query': state['slo_query'], 'duration_minutes': state['slo_duration_minutes'], 'limit': 3,
-        'variables': {'namespace': next(iter(namespaces))} if len(namespaces) == 1 else {},
+        'query': state['slo_query'], 'duration_minutes': state['slo_duration_minutes'], 'limit': 4,
+        'variables': variables,
     })
 
 
@@ -2346,7 +2358,7 @@ def _action_execute_node(state: ActionState, config=None) -> ActionState:
     user = get_user_model().objects.get(pk=state['confirmed_by_id'])
     request = ((config or {}).get('configurable') or {}).get('request')
     with transaction.atomic():
-        action = AIOpsPendingAction.objects.select_for_update().select_related('session', 'message').get(pk=state['action_id'])
+        action = AIOpsPendingAction.objects.select_for_update().select_related('session').get(pk=state['action_id'])
         result = confirm_action(action, user, request=request, payload=state.get('submitted_payload'))
     return {'result': _json_safe(result), 'status': 'completed'}
 

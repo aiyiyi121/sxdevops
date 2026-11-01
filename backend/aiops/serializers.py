@@ -319,13 +319,14 @@ class AIOpsKnowledgeEnvironmentSerializer(serializers.ModelSerializer):
 
 
 class AIOpsPendingActionSerializer(serializers.ModelSerializer):
+    session_title = serializers.CharField(source='session.title', read_only=True)
     risk_level_display = serializers.CharField(source='get_risk_level_display', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
 
     class Meta:
         model = AIOpsPendingAction
         fields = [
-            'id', 'action_type', 'title', 'risk_level', 'risk_level_display', 'status', 'status_display',
+            'id', 'session', 'session_title', 'message', 'action_type', 'title', 'risk_level', 'risk_level_display', 'status', 'status_display',
             'action_payload', 'result_payload', 'confirmed_by', 'confirmed_at', 'created_at', 'updated_at',
         ]
 
