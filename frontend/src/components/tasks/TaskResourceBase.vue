@@ -17,10 +17,11 @@
     <div class="cmdb-items-main resource-list-card">
       <div class="section-toolbar resource-list-head">
         <div class="toolbar-head">
-          <h3 class="toolbar-title">执行资源</h3>
+          <h3 class="toolbar-title">业务环境维度执行资源</h3>
           <span class="toolbar-desc resource-inline-summary">{{ selectedScopeName }} · 主机 {{ stats.host || 0 }} · K8s {{ stats.k8s || 0 }} · 可用 {{ stats.active || 0 }} · 异常 {{ stats.warning || 0 }}</span>
         </div>
         <div class="resource-head-actions">
+          <el-tag size="small" type="info">共 {{ pagination.total }} 个资源</el-tag>
           <el-button size="small" :loading="loading.resources" @click="reloadAll"><el-icon><RefreshRight /></el-icon>刷新</el-button>
           <el-button v-if="canManage" size="small" @click="openResourceDialog()"><el-icon><Plus /></el-icon>手工添加</el-button>
           <el-button v-if="canImportCmdb" type="primary" size="small" @click="openCmdbPicker"><el-icon><Connection /></el-icon>从 CMDB 接入</el-button>
@@ -381,14 +382,14 @@ const stats = ref({})
 const k8sClusters = ref([])
 const eventEnvironmentOptions = ref([])
 const loading = reactive({ tree: false, scopeTree: false, resources: false, submit: false, cmdb: false, cmdbTree: false })
-const filters = reactive({ search: '', resource_type: '', source_type: '', status: '', environment: '', system: '', scope_business: '', scope_environment: '' })
+const filters = reactive({ search: '', resource_type: '', source_type: '', status: '', environment: '', system: '', scope_business: '', scope_environment: '', scope_system: '' })
 const pagination = reactive({ page: 1, total: 0 })
 const cmdbPickerVisible = ref(false)
 const cmdbAssets = ref([])
 const cmdbTotal = ref(0)
 const cmdbTree = ref([])
 const selectedCmdbScope = ref(null)
-const cmdbQuery = reactive({ search: '', resource_type: '', scope_business: '', scope_environment: '', page: 1 })
+const cmdbQuery = reactive({ search: '', resource_type: '', scope_business: '', scope_environment: '', scope_system: '', page: 1 })
 const cmdbContext = reactive({ name: '', environment_name: '', system_name: '', fields: [], deleted: false })
 
 const nodeDialogVisible = ref(false)
@@ -414,7 +415,8 @@ const eventEnvironmentSelectOptions = computed(() => eventEnvironmentOptions.val
 })))
 const nodeDialogTitle = computed(() => `${editingNodeId.value ? '编辑' : '新增'}节点`)
 const resourceDialogTitle = computed(() => `${editingResourceId.value ? '编辑' : '新增'}执行资源`)
-const emptyText = computed(() => (pagination.total ? '暂无匹配资源' : '暂无执行资源，可从 CMDB 接入或手工添加'))
+const emptyText = computed(() => (selectedScope.value || filters.search || filters.resource_type || filters.source_type || filters.status
+  ? '暂无匹配资源' : '暂无执行资源，可从 CMDB 接入或手工添加'))
 
 const managedScopeTree = computed(() => {
   const tree = scopeTree.value.map(business => ({ ...business, children: business.children.map(environment => ({ ...environment })) }))
@@ -465,7 +467,7 @@ function groupScopeToken(group) {
 }
 
 function nodeActions(node) {
-  if (!canManage.value) return []
+  if (!canManage.value || node.node_type === 'system') return []
   if (node.cmdb_node && !node.taskSystem) {
     if (!canManageCmdbTree.value) return []
     return [
@@ -538,7 +540,7 @@ async function submitCmdbNode() {
 
 async function refreshTreeAfterChange() {
   selectedScope.value = null
-  Object.assign(filters, { scope_business: '', scope_environment: '' })
+  Object.assign(filters, { scope_business: '', scope_environment: '', scope_system: '' })
   pagination.page = 1
   await reloadAll()
 }
@@ -546,6 +548,10 @@ async function refreshTreeAfterChange() {
 function scopeName(selection, tree) {
   if (!selection) return '全部资源'
   const business = tree.find(node => node.scope_business === selection.scope_business)
+  if (selection.node_type === 'system') {
+    const environment = business?.children?.find(node => node.scope_environment === selection.scope_environment)
+    return [business?.name, environment?.name, selection.name].filter(Boolean).join(' / ')
+  }
   return selection.node_type === 'env' ? `${business?.name || '未归属业务线'} / ${selection.name}` : selection.name
 }
 
@@ -614,7 +620,7 @@ function isCmdbField(field) {
 
 async function openCmdbPicker() {
   if (!canImportCmdb.value) return
-  Object.assign(cmdbQuery, { search: '', resource_type: '', scope_business: '', scope_environment: '', page: 1 })
+  Object.assign(cmdbQuery, { search: '', resource_type: '', scope_business: '', scope_environment: '', scope_system: '', page: 1 })
   selectedCmdbScope.value = null
   cmdbAssets.value = []
   cmdbTotal.value = 0
@@ -635,6 +641,7 @@ function selectCmdbScope(node) {
   selectedCmdbScope.value = node
   cmdbQuery.scope_business = node?.scope_business || ''
   cmdbQuery.scope_environment = node?.scope_environment || ''
+  cmdbQuery.scope_system = node?.scope_system || ''
   return searchCmdbAssets()
 }
 
@@ -669,11 +676,12 @@ function selectResourceScope(node) {
   filters.system = ''
   filters.scope_business = node?.scope_business || ''
   filters.scope_environment = node?.scope_environment || ''
+  filters.scope_system = node?.scope_system || ''
   return refreshResourceView()
 }
 
 function resetFilters() {
-  Object.assign(filters, { search: '', resource_type: '', source_type: '', status: '', environment: '', system: '', scope_business: '', scope_environment: '' })
+  Object.assign(filters, { search: '', resource_type: '', source_type: '', status: '', environment: '', system: '', scope_business: '', scope_environment: '', scope_system: '' })
   selectedScope.value = null
   return refreshResourceView()
 }
@@ -807,6 +815,7 @@ function statFilterParams() {
     source_type: filters.source_type || undefined,
     scope_business: filters.scope_business || undefined,
     scope_environment: filters.scope_environment || undefined,
+    scope_system: filters.scope_system || undefined,
   }
 }
 
@@ -947,30 +956,31 @@ onMounted(reloadAll)
 }
 
 .resource-list-head {
+  align-items: flex-start;
   justify-content: space-between;
   flex-wrap: wrap;
   margin-bottom: 10px;
 }
 
 .resource-list-head .toolbar-title {
-  margin: 0;
+  margin: 0 0 3px;
   font-size: 13px;
   font-weight: 800;
-  color: #1f2937;
+  color: var(--text-primary);
 }
 
 .resource-list-head .toolbar-desc {
-  color: #64748b;
+  color: var(--text-secondary);
   font-size: 12px;
 }
 
 .resource-list-head .toolbar-head {
-  flex-wrap: wrap;
-  gap: 6px 8px;
+  display: block;
+  min-width: 0;
 }
 
 .resource-inline-summary {
-  line-height: 1.6;
+  line-height: 1.4;
 }
 
 .resource-head-actions :deep(.el-button) {
@@ -1237,12 +1247,12 @@ onMounted(reloadAll)
   flex: 1;
   grid-template-columns: 236px minmax(0, 1fr);
   gap: 14px;
-  align-items: stretch;
-  min-height: 560px;
+  align-items: start;
+  min-height: 0;
   padding: 16px;
-  border: 1px solid rgba(148, 163, 184, 0.16);
+  border: 1px solid var(--el-border-color-lighter);
   border-radius: 16px;
-  background: #fff;
+  background: var(--el-bg-color);
   box-shadow: 0 8px 20px rgba(15, 23, 42, 0.03);
 }
 
@@ -1267,8 +1277,8 @@ onMounted(reloadAll)
 
 .resource-list-card {
   gap: 0;
-  background: #fbfdff;
-  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: light-dark(#fbfdff, var(--el-bg-color));
+  border: 1px solid color-mix(in srgb, var(--el-border-color) 48%, transparent);
   border-radius: 12px;
   padding: 12px;
   box-shadow: none;
@@ -1448,11 +1458,16 @@ onMounted(reloadAll)
 @media (max-width: 1200px) {
   .task-resource-cmdb-layout {
     grid-template-columns: 220px minmax(0, 1fr);
-    min-height: 480px;
   }
 
   .resource-toolbar {
     overflow-x: auto;
+  }
+}
+
+@media (max-width: 1100px) {
+  .task-resource-cmdb-layout {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 

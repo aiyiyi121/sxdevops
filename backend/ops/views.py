@@ -17,7 +17,7 @@ from rbac.permissions import RBACPermissionMixin, build_rbac_permission
 from . import deployer
 from .task_resources import (
     cmdb_resource_defaults, cmdb_resource_group_names, cmdb_resource_kind, cmdb_resource_options,
-    filter_resource_business_scope, resource_business_tree, scope_task_resources,
+    filter_resource_business_scope, resource_business_tree, scope_task_resources, visible_cmdb_resources,
 )
 from .host_task_schedules import (
     build_schedule_snapshot,
@@ -512,8 +512,10 @@ class TaskResourceViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, views
         from rbac.services import user_has_permissions
 
         queryset = scope_task_resources(TaskResource.objects.all(), request.user)
+        include_cmdb_nodes = user_has_permissions(request.user, ['cmdb.ci.view'])
         return Response(resource_business_tree(
-            queryset, include_cmdb_nodes=user_has_permissions(request.user, ['cmdb.ci.view']),
+            queryset, include_cmdb_nodes=include_cmdb_nodes,
+            cmdb_structure=visible_cmdb_resources(request.user) if include_cmdb_nodes else None,
         ))
 
     @action(detail=False, methods=['get'], url_path='cmdb-tree')
