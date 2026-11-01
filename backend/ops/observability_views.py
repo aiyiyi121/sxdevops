@@ -25,6 +25,7 @@ from eventwall.services import record_event
 from rbac.permissions import RBACPermissionMixin, build_rbac_permission
 from rbac.services import user_has_permissions
 from .alerting import _has_claimants
+from .grafana_urls import validate_grafana_url
 from .models import Alert, Deployment, GrafanaSetting, LogDataSource, LogEntry, MetricDataSource, ObservabilityDataSourceLink, SystemPostureEnvironment, SystemPostureSLAHistory, SystemPostureSystem, TracingDataSource
 from .serializers import (
     AlertSerializer,
@@ -486,14 +487,27 @@ def _grafana_meta():
     configured_dashboards = config.get('dashboards') or DEMO_GRAFANA_DASHBOARDS
     configured_folders = config.get('folders') or []
     dashboards = []
-    base_url = config.get('url') or ''
-    default_path = (config.get('default_path') or '').strip()
+    try:
+        base_url = validate_grafana_url(config.get('url') or '')
+    except ValueError:
+        base_url = ''
+    try:
+        default_path = validate_grafana_url(config.get('default_path') or '', path_only=True)
+    except ValueError:
+        default_path = ''
     for item in configured_dashboards:
         full_url = (item.get('full_url') or item.get('url') or '').strip()
         item_path = (item.get('path') or '').strip()
         slug = item.get('slug') or item.get('key') or ''
         path = item_path or default_path or (f"/d/{quote(slug)}" if slug else '')
         resolved_url = full_url or (_join_external_url(base_url, path) if base_url and path else base_url)
+        try:
+            validate_grafana_url(resolved_url)
+            validate_grafana_url(path, path_only=True)
+        except ValueError:
+            resolved_url = ''
+            full_url = ''
+            path = ''
         dashboards.append({
             **item,
             'path': path,

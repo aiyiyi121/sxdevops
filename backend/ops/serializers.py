@@ -9,6 +9,7 @@ from rest_framework.exceptions import PermissionDenied
 from cmdb.models import CIRelation, ConfigItem, ResourceNode
 
 from .host_task_schedules import CronExpressionError, compute_next_run, preview_next_runs, validate_cron_expression
+from .grafana_urls import validate_grafana_url
 from .models import (
     Alert,
     AlertAction,
@@ -2125,6 +2126,29 @@ class GrafanaSettingSerializer(serializers.ModelSerializer):
         model = GrafanaSetting
         fields = '__all__'
         read_only_fields = ['name', 'updated_by', 'created_at', 'updated_at']
+
+    def validate(self, attrs):
+        # Check the merged configuration, including values retained by partial updates.
+        for field in ('url', 'default_path'):
+            value = attrs.get(field, getattr(self.instance, field, ''))
+            try:
+                normalized = validate_grafana_url(value, path_only=field == 'default_path')
+            except ValueError as exc:
+                raise serializers.ValidationError({field: str(exc)}) from exc
+            if field in attrs:
+                attrs[field] = normalized
+        dashboards = attrs.get('dashboards', getattr(self.instance, 'dashboards', []))
+        for index, item in enumerate(dashboards or []):
+            if not isinstance(item, dict):
+                raise serializers.ValidationError({'dashboards': '每一项都必须为对象'})
+            for field in ('full_url', 'url', 'path'):
+                if field not in item:
+                    continue
+                try:
+                    validate_grafana_url(item[field], path_only=field == 'path')
+                except ValueError as exc:
+                    raise serializers.ValidationError({'dashboards': f'第 {index + 1} 项 {field}：{exc}'}) from exc
+        return attrs
 
     def validate_dashboards(self, value):
         if value in (None, ''):

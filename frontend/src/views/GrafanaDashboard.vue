@@ -11,7 +11,7 @@
           </div>
           <span>{{ immersiveFolderLabel }}</span>
         </div>
-        <span class="immersive-toolbar__hint">注意：看板首次加载会比较慢</span>
+        <span class="immersive-toolbar__hint" :title="selectedDashboardOrigin">Grafana 看板 · {{ selectedDashboardOrigin }}</span>
         <div class="immersive-toolbar__actions">
           <el-button size="small" v-if="canViewTracing" type="success" plain @click="openTraceFromDashboard(selectedDashboard)">查链路</el-button>
           <el-button size="small" v-if="canQueryLogs" type="warning" plain @click="openLogsFromDashboard(selectedDashboard)">查日志</el-button>
@@ -24,6 +24,8 @@
           class="immersive-frame"
           :src="selectedDashboardUrl"
           :title="`${selectedDashboard.title}-immersive`"
+          sandbox="allow-scripts allow-same-origin"
+          referrerpolicy="no-referrer"
         />
       </div>
     </section>
@@ -394,6 +396,7 @@ org_role = Viewer</pre>
 </template>
 
 <script setup>
+import { safeGrafanaUrl, safeHttpUrl } from '@/utils/safe-url'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowDown, ArrowRight, Delete, EditPen, Folder, FolderAdd, FolderOpened, Histogram, Link, MoreFilled, Plus, QuestionFilled, RefreshRight } from '@element-plus/icons-vue'
@@ -736,6 +739,7 @@ const knownFolderOptions = computed(() => {
 
 const selectedDashboard = computed(() => findDashboardByIdentity(selectedKey.value) || filteredDashboards.value[0] || null)
 const selectedDashboardUrl = computed(() => appendGrafanaContext(selectedDashboard.value?.url || ''))
+const selectedDashboardOrigin = computed(() => selectedDashboardUrl.value ? new URL(selectedDashboardUrl.value).host : '')
 const immersiveFolderLabel = computed(() => {
   const folderPath = normalizeFolderPath(selectedDashboard.value?.folder || '')
   return folderPath ? `目录：${folderPath}` : '目录：未分类'
@@ -808,39 +812,13 @@ function getDashboardUrlError(url = '') {
   if (!value) {
     return ''
   }
-  try {
-    const parsed = new URL(value)
-    if (!/^https?:$/.test(parsed.protocol)) {
-      return 'URL 需以 http:// 或 https:// 开头'
-    }
-    return ''
-  } catch {
-    return '请输入可直接访问的完整 URL'
-  }
+  return safeHttpUrl(value, window.location.origin)
+    ? ''
+    : '请输入 HTTP、HTTPS 或站内绝对路径，地址不能包含账号密码'
 }
 
 function normalizeGrafanaUrl(url = '') {
-  const value = String(url || '').trim()
-  if (!value) return ''
-  try {
-    const parsed = new URL(value, window.location.origin)
-    const current = new URL(window.location.origin)
-    const path = parsed.pathname || '/'
-    const looksLikeGrafanaPath = path === '/' || ['/d/', '/dashboard/', '/explore', '/public/', '/api/'].some((prefix) => path.startsWith(prefix))
-    const alreadyProxied = parsed.origin === current.origin && path.startsWith('/grafana/')
-    const shouldProxy = current.protocol === 'https:' && looksLikeGrafanaPath && !alreadyProxied
-      && (parsed.protocol === 'http:' || parsed.origin !== current.origin || value.startsWith('/'))
-    if (!shouldProxy) {
-      return parsed.toString()
-    }
-    const proxiedPath = path.startsWith('/grafana/') ? path : `/grafana${path.startsWith('/') ? path : `/${path}`}`
-    const proxied = new URL(proxiedPath, current.origin)
-    proxied.search = parsed.search
-    proxied.hash = parsed.hash
-    return proxied.toString()
-  } catch {
-    return value
-  }
+  return safeGrafanaUrl(url, window.location.origin)
 }
 
 function appendGrafanaDisplayParams(url = '') {
@@ -852,9 +830,7 @@ function appendGrafanaDisplayParams(url = '') {
     parsed.searchParams.set('theme', colorScheme.value)
     return parsed.toString()
   } catch {
-    const base = value.replace(/[?&](?:kiosk|theme)=[^&#]*/g, '').replace(/[?&]$/, '')
-    const separator = base.includes('?') ? '&' : '?'
-    return `${base}${separator}kiosk=true&theme=${colorScheme.value}`
+    return ''
   }
 }
 
@@ -1671,7 +1647,8 @@ function openFullscreen(item) {
   if (item?.key) {
     selectedKey.value = item.key
   }
-  if (!item?.url) {
+  if (!normalizeGrafanaUrl(item?.url)) {
+    ElMessage.warning('看板地址无效，请联系管理员检查 Grafana 配置')
     return
   }
   fullscreenVisible.value = true

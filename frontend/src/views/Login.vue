@@ -58,7 +58,7 @@
       <section class="auth-panel">
         <div class="auth-panel-inner">
           <h2>登录工作台</h2>
-          <p class="auth-subtitle">使用平台账号进入 {{ siteStore.siteName }}</p>
+          <p class="auth-subtitle">使用本站平台账号进入 {{ siteStore.siteName }}</p>
 
           <aside v-if="visitorAccess" class="visitor-access" aria-label="访客体验账号">
             <div class="visitor-access-heading">
@@ -75,6 +75,7 @@
             </div>
           </aside>
 
+          <p class="account-scope">仅登录本站账号，请勿输入邮箱、云平台等第三方账号的密码。</p>
           <el-form class="login-form" :model="form" label-position="top" @submit.prevent="handleLogin">
             <el-form-item label="用户名">
               <el-input
@@ -107,7 +108,10 @@
               进入工作台
             </el-button>
           </el-form>
-
+          <nav class="auth-links" aria-label="网站信息">
+            <router-link to="/about">网站说明与隐私</router-link>
+            <a href="https://github.com/aiyiyi121/sxdevops" target="_blank" rel="noopener noreferrer">项目源码</a>
+          </nav>
         </div>
       </section>
     </main>
@@ -511,6 +515,9 @@ async function handleLogin() {
 .auth-panel {
   justify-content: center;
   min-width: 0;
+  min-height: 0;
+  align-items: safe center;
+  overflow-y: auto;
   padding: 42px;
   background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
 }
@@ -593,7 +600,7 @@ async function handleLogin() {
 }
 
 .auth-subtitle {
-  margin: 10px 0 28px;
+  margin: 10px 0 18px;
   color: #728197;
   font-size: 14px;
   line-height: 1.7;
@@ -601,6 +608,30 @@ async function handleLogin() {
 
 .login-form {
   width: 100%;
+}
+
+.account-scope {
+  margin: 0 0 16px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.auth-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-top: 20px;
+  font-size: 12px;
+}
+
+.auth-links a {
+  color: var(--el-color-primary);
+  text-decoration: none;
+}
+
+.auth-links a:hover {
+  text-decoration: underline;
 }
 
 :deep(.el-form-item) {

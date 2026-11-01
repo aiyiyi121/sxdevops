@@ -18,11 +18,19 @@ def _serve_file(file_path, cache_control=None):
 
 
 def frontend_index(request):
-    return _serve_file(FRONTEND_DIST_DIR / 'index.html', cache_control='no-cache, no-store, must-revalidate')
+    response = _serve_file(FRONTEND_DIST_DIR / 'index.html', cache_control='no-cache, no-store, must-revalidate')
+    response['Content-Security-Policy'] = (
+        "script-src 'self'; object-src 'none'; base-uri 'self'; "
+        "form-action 'self'; frame-ancestors 'self'"
+    )
+    response['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+    response['Permissions-Policy'] = 'camera=(), microphone=(), geolocation=()'
+    return response
 
 
 def frontend_asset(request, path):
     safe_path = (FRONTEND_DIST_DIR / path).resolve()
     if FRONTEND_DIST_DIR.resolve() not in safe_path.parents and safe_path != FRONTEND_DIST_DIR.resolve():
         raise Http404('Invalid asset path')
-    return _serve_file(safe_path, cache_control='public, max-age=31536000, immutable')
+    cache_control = 'no-cache' if path == 'assets/theme-init.js' else 'public, max-age=31536000, immutable'
+    return _serve_file(safe_path, cache_control=cache_control)

@@ -71,3 +71,20 @@ test('API-prefixed absolute paths cannot bypass final-action blocking', async ()
   await assert.rejects(request.post('https://preview.example.test/api/hosts/', {}), error => error.code === 'PREVIEW_READ_ONLY')
   assert.equal(sent.length, 0)
 })
+
+test('cross-origin API requests never receive platform credentials or reach the adapter', async () => {
+  setPreview(false)
+  storage.set('sxdevops_token', 'test-platform-token')
+  for (const url of [
+    'https://untrusted.example/api/auth/login/',
+    '//untrusted.example/api/users/',
+    'https://name:secret@preview.example.test/api/users/',
+  ]) {
+    await assert.rejects(request.post(url, { password: 'test-password' }), error => error.code === 'UNSAFE_API_ORIGIN')
+  }
+  assert.equal(sent.length, 0)
+  await assert.rejects(request.post('/auth/login/', {}, { baseURL: 'https://untrusted.example/api' }), error => error.code === 'UNSAFE_API_ORIGIN')
+  await request.get('/auth/me/')
+  assert.equal(sent[0].headers.Authorization, 'Token test-platform-token')
+  storage.delete('sxdevops_token')
+})

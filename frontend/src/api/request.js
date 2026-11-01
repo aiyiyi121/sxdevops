@@ -110,7 +110,13 @@ function handleSessionExpired() {
 
 request.interceptors.request.use((config) => {
     const method = String(config.method || 'get').toUpperCase()
-    const url = new URL(config.url, window.location.origin)
+    const url = new URL(request.getUri(config), window.location.origin)
+    if (url.origin !== window.location.origin || url.username || url.password) {
+        const error = new Error('平台 API 仅允许请求本站地址')
+        error.code = 'UNSAFE_API_ORIGIN'
+        error.config = config
+        return Promise.reject(error)
+    }
     const path = url.pathname.replace(/^\/api(?=\/)/, '')
     const rebuildsHistory = path === '/observability/system-posture/history/' && ['refresh', 'backfill'].some(key =>
         ['1', 'true', 'yes'].includes(String(config.params?.[key] ?? url.searchParams.get(key) ?? '').toLowerCase())

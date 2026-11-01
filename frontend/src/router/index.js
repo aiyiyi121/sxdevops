@@ -66,9 +66,15 @@ const routes = [
     meta: { public: true, title: 'SxDevOps 产品介绍' },
   },
   {
+    path: '/about',
+    name: 'SiteAbout',
+    component: () => import('@/views/SiteAbout.vue'),
+    meta: { public: true, title: '网站说明与隐私' },
+  },
+  {
     path: '/',
     component: AppLayout,
-    redirect: '/dashboard',
+    redirect: '/product',
     children: [
       {
         path: 'dashboard',
