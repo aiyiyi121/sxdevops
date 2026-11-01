@@ -6628,10 +6628,10 @@ function overviewBusinessEnvironmentKey(row) {
 }
 
 function overviewMetricCiCandidates(row) {
+  // A snapshot's own id and a shared hostname must not override its asset identity.
+  const ciId = row?.ci ?? row?.ci_id ?? row?.id
+  if (ciId !== undefined && ciId !== null && String(ciId).trim() !== '') return [String(ciId)]
   return [
-    row?.ci,
-    row?.ci_id,
-    row?.id,
     row?.ci_name,
     row?.name,
     row?.source_unique_id,
@@ -6687,6 +6687,9 @@ function overviewRecordMatchesScope(row = {}) {
   // Run-level failures without an asset identity belong to the sync center, not asset governance.
   if (row.after?.collection_failed || row.before?.collection_failed || String(row.source_unique_id || '').trim().toLowerCase() === 'collection') return false
   const ciKeys = overviewScopedCiKeySet.value
+  const linkedCiIds = [row.ci, row.ci_id, row.after?.ci, row.before?.ci, row.after?.ci_id, row.before?.ci_id]
+    .filter(value => value !== undefined && value !== null && String(value).trim() !== '').map(value => String(value))
+  if (linkedCiIds.length) return linkedCiIds.some(key => ciKeys.has(key))
   const recordKeys = [
     row.ci,
     row.ci_id,
