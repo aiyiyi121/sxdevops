@@ -20,4 +20,4 @@
 - 源码、前一镜像标识、测试及构建日志备份位于 `/opt/sxdevops/.deploy-backups/execution-audit-fix-20261101/`。
 - 此次同步三个后端文件，无数据库迁移。
 
-![执行追踪详情正常加载](screenshots/execution-trace-fix-20261101.jpg)
+![执行追踪详情正常加载](screenshots/execution-trace-fix-20261101.png)

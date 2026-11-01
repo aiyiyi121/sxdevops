@@ -35,4 +35,4 @@
 - SLO 看板原文件备份：`/opt/sxdevops/.deploy-backups/assistant-slo-panel-20261101/commerce-overview.json`。
 - 浏览器已核对六类问答入口、12 个会话、最新资产结果和 SLO 回复；中文显示正常。此次没有修改前端代码。
 
-![智能助手演示验收](screenshots/assistant-demo-20261101.jpg)
+![智能助手演示验收](screenshots/assistant-demo-20261101.png)

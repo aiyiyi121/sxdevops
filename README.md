@@ -223,7 +223,9 @@ flowchart TB
 
 默认聊天支持分阶段取证和断点恢复，执行追踪可查看节点与动作结果。
 
-![LangGraph 处置效果验证](docs/screenshots/v2-aiops-execution.png)
+![智能助手故障排查与取证](docs/screenshots/assistant-demo-20261101.png)
+
+![LangGraph 执行追踪与节点时间线](docs/screenshots/execution-trace-fix-20261101.png)
 
 ### CMDB 资产与拓扑
 
