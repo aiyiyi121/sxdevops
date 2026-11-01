@@ -1,6 +1,6 @@
 ---
 name: sxdevops-deploy
-description: Deploy approved SXDevOps changes to the configured server, including safe backup, Podman Compose rebuild, and health verification.
+description: Deploy approved SXDevOps changes or maintain an existing environment using its private local profile, with backups, targeted Podman Compose recreation, static publication, and health verification.
 metadata:
   short-description: 部署 SXDevOps
 ---
@@ -9,12 +9,24 @@ metadata:
 
 Use for authorized synchronization or deployment of SXDevOps to its configured server.
 
+## Resume An Existing Environment
+
+New sessions must discover the existing private handoff before choosing a target or deployment command:
+
+```powershell
+python .codex/skills/sxdevops-deploy/scripts/deploy_context.py --check
+```
+
+The resolver checks `SXDEVOPS_DEPLOY_PROFILE`, then the current checkout's `.codex/deploy.local.json`, then the primary checkout's profile for a linked worktree. It prints paths and validation results, never connection values. Read the resolved private runbook and runtime profile; pass the resolved absolute path to local helpers when working in another checkout. Do not print or copy credential JSON into the conversation.
+
+See [references/environment-reuse.md](references/environment-reuse.md) for the private profile contract, reuse across sessions/worktrees, and the customized-runtime workflow. Reuse an existing valid configuration without asking the user for the same connection details again. A missing profile on another computer requires privately supplying that profile and its referenced files; a Git clone alone does not contain credentials. Loading a profile is not authorization to deploy, seed data, push Git, or move a release tag.
+
 ## Target
 
-- SSH server: use `-Server` or the `server` value in the local, ignored `.codex/deploy.local.json`. Keep server addresses and credentials out of version control. The default port is `22`; a port explicitly supplied by the user takes precedence.
+- SSH server: for a versioned private profile, use its connection file and configured helper. For the legacy OpenSSH helper only, use `-Server` or the `server` value in the local, ignored `.codex/deploy.local.json`. Keep actual targets and credentials out of version control. Honor the configured SSH port and explicit user overrides.
 - Working copy: `/opt/sxdevops`; it is not a Git checkout.
-- Runtime: Podman Compose; app `sxdevops-app` on port `8000`, CMDB scheduler `sxdevops-cmdb-sync-scheduler`, AIOps worker `sxdevops-aiops-chat-worker`.
-- Preserve `docker-compose.override.yml`: it contains server secrets. Do not upload, print, or package it.
+- Standard runtime names: Podman Compose app `sxdevops-app` on port `8000`, optional CMDB scheduler `sxdevops-cmdb-sync-scheduler`, and AIOps worker `sxdevops-aiops-chat-worker`. The private profile determines which services are actually enabled.
+- Preserve existing private Compose files, environment files, encryption keys, certificates, and `docker-compose.override.yml` where present. Do not print or include these in a source package.
 - Inspect the active service unit and Compose file before choosing a deployment command. Some installations use a private Compose file and omit unused services; adapt the helper's default three-service command to that active configuration rather than re-enabling removed services.
 
 ## Flow
@@ -22,18 +34,21 @@ Use for authorized synchronization or deployment of SXDevOps to its configured s
 1. Select only approved source files. Use completed relevant validation; frontend changes require a production build.
 2. Create an explicit file list and SHA-256 manifest locally. Package those files with their relative paths.
 3. Transfer the package once. In one remote script, validate staged hashes, back up every destination under `/opt/sxdevops/.deploy-backups/<topic>-<timestamp>/`, install the selected files, and validate every installed hash.
-4. Build with `podman-compose up -d --build`, then force recreation of `sxdevops cmdb-sync-scheduler aiops-chat-worker`. A new image alone does not replace old containers.
+4. Build the selected application image with the active project's exact Compose file list, then force recreation of the enabled app services that use it. Use the profile's service/container mapping; do not re-enable an omitted scheduler or rebuild unrelated databases/observability services. A new image alone does not replace old containers. For schema changes, explicitly plan backups, migrations, and app/worker compatibility; do not rerun seed/bootstrap initialization on an existing database.
 5. Verify the selected app/worker containers are running with the current `localhost/sxdevops:latest` image, Django check passes, and the app returns HTTP 200. If Nginx serves a separate frontend release, publish the running app image's built assets with hash verification and an atomic symlink switch before testing the public page. Where installed, `/usr/local/sbin/sxdevops-publish-static` performs this publication; retain the prior release. Then run the affected real API or UI regression.
 6. Stop on any failed transfer, hash, build, recreation, or health check. Preserve backups and logs; do not improvise a rollback.
 
 ## Connection Discipline
 
-Prefer [scripts/deploy.ps1](scripts/deploy.ps1), which uses one SCP connection and one SSH connection for the deployment. Backups and per-file hashes are processed inside the remote script; never open SSH or SCP separately for every file.
+For the standard OpenSSH runtime, prefer [scripts/deploy.ps1](scripts/deploy.ps1), which uses one SCP connection and one SSH connection for the deployment. Backups and per-file hashes are processed inside the remote script; never open SSH or SCP separately for every file.
+
+That helper executes the legacy three-service runtime only. For a customized private profile it supports `-PrepareOnly` and refuses remote deployment; use the profile's private transport helper with an adapted, reviewed remote script. This prevents a default command from restarting disabled services or omitting the production Compose file.
 
 - Batch independent remote checks into the same session.
 - Poll an existing command session for build or test progress; polling does not require a new SSH handshake.
 - Package regression scripts together and run them in one remote session.
 - Use bounded connection timeouts and keepalive options. On reset/refusal, stop reconnecting and report the failed stage; resume after the connection is confirmed restored.
+- Require pinned host keys: OpenSSH uses `StrictHostKeyChecking=yes`; Paramiko uses the existing private `known_hosts` and `RejectPolicy`. Missing or changed host keys require verifying the actual fingerprint through a trusted channel; never use automatic trust or disable TLS verification.
 - Do not try other ports or change SSH/firewall/security settings to work around an interception. Use the port authorized by the user.
 - No particular connection count guarantees exemption from IT policies; batching reduces the observed burst of short sessions.
 
@@ -49,9 +64,16 @@ $approvedFiles = @(
 & .codex/skills/sxdevops-deploy/scripts/deploy.ps1 -Files $approvedFiles -Topic 'aiops-execution-audit' -Port 22
 ```
 
-The helper reads its target from `.codex/deploy.local.json` unless `-Server` is supplied, and defaults to port 22. `-PrepareOnly` builds and lists the local package without contacting the server or requiring a target. It excludes generated artifacts and server configuration; supply an explicit list, never the whole working tree. It retains the package, staging files, timestamped backup, and build/recreation logs for diagnosis.
+For a legacy profile the helper reads `server` and optional `port`, unless explicitly overridden; the fallback port is 22. It uses the same override/current/primary checkout discovery order as the context resolver. `-PrepareOnly` builds and lists the local package without contacting the server or requiring a target. It excludes generated artifacts and server configuration; supply an explicit list, never the whole working tree. It retains the package, staging files, timestamped backup, and build/recreation logs for diagnosis.
 
-For a deployment outside the helper's three-service scope, adapt the same batched procedure to the approved services.
+For a deployment outside the helper's three-service scope, adapt the same batched procedure to the approved services. Never rerun a previous one-off deployment script unchanged: its expected image, source baseline, package, and backup assumptions may be stale.
+
+## Git And Private Configuration
+
+- Tracked skill files describe the workflow and placeholders only. Store actual SSH addresses/users/passwords, domains, tokens, private keys, certificate archives, host-key pins, resolved environment/Compose output, and operational history in the ignored profile and private runbook directory.
+- Before committing, check both `git check-ignore` and `git ls-files` for private paths; ignore rules do not remove files that are already tracked. Review the explicit staged diff and scan it for actual connection values, secrets, and accidental inclusion of private files. Report matching file paths or field names without printing matching secrets.
+- Use an explicit file list for staging and packaging. Preserve other sessions' changes. Never force-add private configuration, deploy the entire working tree, or embed credentials in shell arguments/URLs.
+- Update the ignored runbook after a deployment with the observed image, backup path, selected services, static release, and real checks. Do not bake a current image/tag into this public skill. Push or retarget a release tag only within the user's authorized scope; use a remote-value lease when an authorized tag update requires replacement.
 
 ## First Deployment On A New Server
 

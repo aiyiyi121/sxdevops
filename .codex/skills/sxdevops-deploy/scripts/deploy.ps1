@@ -15,9 +15,39 @@ $ErrorActionPreference = 'Stop'
 $taskRoot = (Get-Location).Path
 $taskServer = $Server
 $taskConfigPath = Join-Path $taskRoot '.codex/deploy.local.json'
-if (-not $taskServer -and (Test-Path -LiteralPath $taskConfigPath -PathType Leaf)) {
+$taskProfileOverride = [Environment]::GetEnvironmentVariable('SXDEVOPS_DEPLOY_PROFILE')
+if ($taskProfileOverride) {
+    $taskConfigPath = [System.IO.Path]::GetFullPath($taskProfileOverride)
+} elseif (-not (Test-Path -LiteralPath $taskConfigPath -PathType Leaf)) {
+    $taskCommonGitDir = & git rev-parse --git-common-dir 2>$null
+    if ($LASTEXITCODE -eq 0 -and $taskCommonGitDir) {
+        if (-not [System.IO.Path]::IsPathRooted($taskCommonGitDir)) {
+            $taskCommonGitDir = [System.IO.Path]::GetFullPath((Join-Path $taskRoot $taskCommonGitDir))
+        }
+        $taskSharedConfig = Join-Path (Split-Path -Parent $taskCommonGitDir) '.codex/deploy.local.json'
+        if (Test-Path -LiteralPath $taskSharedConfig -PathType Leaf) {
+            $taskConfigPath = $taskSharedConfig
+        }
+    }
+}
+if ($taskProfileOverride -and -not (Test-Path -LiteralPath $taskConfigPath -PathType Leaf)) {
+    throw 'SXDEVOPS_DEPLOY_PROFILE points to a missing private profile.'
+}
+if (Test-Path -LiteralPath $taskConfigPath -PathType Leaf) {
     $taskConfig = Get-Content -LiteralPath $taskConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    $taskServer = [string]$taskConfig.server
+    if (-not $PrepareOnly -and ($taskConfig.version -or $taskConfig.mode -eq 'customized' -or
+        ($taskConfig.transport -and $taskConfig.transport -ne 'openssh'))) {
+        throw 'This private runtime requires its configured transport and service list. Run deploy_context.py --check and read references/environment-reuse.md. Use -PrepareOnly for packaging only.'
+    }
+    if (-not $taskServer) {
+        $taskServer = [string]$taskConfig.server
+    }
+    if (-not $PSBoundParameters.ContainsKey('Port') -and $taskConfig.port) {
+        if ($taskConfig.port -lt 1 -or $taskConfig.port -gt 65535) {
+            throw 'Invalid SSH port in the private profile.'
+        }
+        $Port = [int]$taskConfig.port
+    }
 }
 if (-not $PrepareOnly -and $taskServer -notmatch '^[A-Za-z0-9][A-Za-z0-9_.@:-]*$') {
     throw 'Supply -Server or configure server in the ignored .codex/deploy.local.json file.'
@@ -127,12 +157,12 @@ if ($PrepareOnly) {
     }
     return
 }
-& scp -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -P $Port $taskArchive "${taskServer}:$taskRemoteArchive"
+& scp -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=10 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -P $Port $taskArchive "${taskServer}:$taskRemoteArchive"
 if ($LASTEXITCODE -ne 0) {
     throw 'Batch transfer failed. Stop reconnecting until connectivity is restored.'
 }
 $taskRemoteCommand = "set -e; mkdir -p '$taskRemoteStage'; tar -xzf '$taskRemoteArchive' -C '$taskRemoteStage'; bash '$taskRemoteStage/deploy.sh' '$taskIdentifier'"
-& ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -p $Port $taskServer $taskRemoteCommand
+& ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=10 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -p $Port $taskServer $taskRemoteCommand
 if ($LASTEXITCODE -ne 0) {
     throw "Deployment stopped. Inspect /opt/sxdevops/.deploy-backups/$taskIdentifier and retained staging files before resuming."
 }

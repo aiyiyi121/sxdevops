@@ -39,6 +39,11 @@ For new management or console-style pages, default to the same top structure alr
 - Use the repo's existing `backend/rbac/*`, `frontend/src/router/index.js`, `frontend/src/layout/AppLayout.vue`, and `frontend/src/stores/auth.js` patterns as the first reference.
 - Backend RBAC enforcement comes first; frontend hiding is a mirror, not a substitute.
 
+## Deployment Skill Default
+- For deployment, server maintenance, or reuse of an existing environment, use `.codex/skills/sxdevops-deploy/SKILL.md`.
+- Start with `python .codex/skills/sxdevops-deploy/scripts/deploy_context.py --check` to locate the ignored private environment profile, connection helper, pinned host keys, and operational handoff. It also supports linked worktrees and the `SXDEVOPS_DEPLOY_PROFILE` environment variable.
+- Keep real targets, credentials, certificates, resolved Compose configuration, and deployment records outside tracked skill files. Read the private handoff before choosing services or commands; a profile describes the environment and does not itself authorize deployment.
+
 ## Chinese Encoding Guardrails
 - Any source file that contains Chinese text must be saved as `UTF-8`.
 - Do not round-trip source text through `GBK`, `ANSI`, or editor auto-detected legacy encodings.

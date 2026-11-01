@@ -51,6 +51,24 @@ docs/screenshots/*-smoke.png
 .codex/*
 !.codex/skills/
 !.codex/skills/**
+
+# Deployment private material must stay ignored even inside a tracked skill.
+.codex/**/deploy.local.json
+.codex/**/connection.json
+.codex/**/known_hosts*
+.codex/**/compose.production.local
+.codex/skills/sxdevops-deploy/**/*.local.*
+.codex/skills/sxdevops-deploy/**/private/
+.codex/skills/sxdevops-deploy/**/*.pem
+.codex/skills/sxdevops-deploy/**/*.key
+.codex/skills/sxdevops-deploy/**/*.p12
+.codex/skills/sxdevops-deploy/**/*.pfx
+.codex/skills/sxdevops-deploy/**/.env*
+.codex/skills/sxdevops-deploy/**/*.crt
+.codex/skills/sxdevops-deploy/**/*.cer
+.codex/skills/sxdevops-deploy/**/*.tar
+.codex/skills/sxdevops-deploy/**/*.tar.gz
+.codex/skills/sxdevops-deploy/**/*.zip
 .runlogs/
 backend/run/
 backend/runtime/
