@@ -1,120 +1,125 @@
 <template>
   <div class="auth-page">
-    <main class="auth-shell">
-      <section class="auth-overview">
-        <header class="brand-row">
-          <div class="brand-identity">
-            <img :src="siteStore.siteIcon" :alt="siteStore.siteName" class="brand-mark-image" />
-            <div class="brand-copy">
-              <strong>{{ siteStore.siteName }} · AI Agent</strong>
-              <span class="brand-motto">
-                <span>思而后行</span>
-                <el-icon class="brand-motto-icon"><TrendCharts /></el-icon>
-                <span>行必有证</span>
-              </span>
-            </div>
-          </div>
-          <router-link class="promo-link" to="/product">
-            查看产品介绍
-            <el-icon><ArrowRight /></el-icon>
-          </router-link>
-        </header>
-
-        <div class="overview-content">
-          <h1>统一运维智能体平台，让协作闭环更高效</h1>
-          <p class="overview-summary">
-            面向产研团队的统一入口，围绕可观测性、事件中心、任务中心和 AIOps 等，沉淀从发现异常到闭环复盘的完整链路。
-          </p>
-
-          <div class="capability-list">
-            <article
-              v-for="item in features"
-              :key="item.title"
-              class="capability-card"
-              :class="item.tone"
-            >
-              <div class="capability-icon">
-                <el-icon><component :is="item.icon" /></el-icon>
+    <div class="auth-layout">
+      <main class="auth-shell">
+        <section class="auth-overview">
+          <header class="brand-row">
+            <div class="brand-identity">
+              <img :src="siteStore.siteIcon" :alt="siteStore.siteName" class="brand-mark-image" />
+              <div class="brand-copy">
+                <strong>{{ siteStore.siteName }} · AI Agent</strong>
+                <span class="brand-motto">
+                  <span>思而后行</span>
+                  <el-icon class="brand-motto-icon"><TrendCharts /></el-icon>
+                  <span>行必有证</span>
+                </span>
               </div>
-              <div class="capability-body">
-                <div class="capability-title">{{ item.title }}</div>
-                <div class="capability-desc">{{ item.desc }}</div>
+            </div>
+            <router-link class="promo-link" to="/product">
+              查看产品介绍
+              <el-icon><ArrowRight /></el-icon>
+            </router-link>
+          </header>
+
+          <div class="overview-content">
+            <h1>统一运维智能体平台，让协作闭环更高效</h1>
+            <p class="overview-summary">
+              面向产研团队的统一入口，围绕可观测性、事件中心、任务中心和 AIOps 等，沉淀从发现异常到闭环复盘的完整链路。
+            </p>
+
+            <div class="capability-list">
+              <article
+                v-for="item in features"
+                :key="item.title"
+                class="capability-card"
+                :class="item.tone"
+              >
+                <div class="capability-icon">
+                  <el-icon><component :is="item.icon" /></el-icon>
+                </div>
+                <div class="capability-body">
+                  <div class="capability-title">{{ item.title }}</div>
+                  <div class="capability-desc">{{ item.desc }}</div>
+                </div>
+              </article>
+            </div>
+
+            <div class="ops-flow" aria-label="协作链路">
+              <span class="flow-label">协作链路</span>
+              <div class="flow-steps">
+                <span v-for="step in flowSteps" :key="step">
+                  <i></i>
+                  <strong>{{ step }}</strong>
+                </span>
               </div>
-            </article>
-          </div>
-
-          <div class="ops-flow" aria-label="协作链路">
-            <span class="flow-label">协作链路</span>
-            <div class="flow-steps">
-              <span v-for="step in flowSteps" :key="step">
-                <i></i>
-                <strong>{{ step }}</strong>
-              </span>
             </div>
           </div>
-        </div>
-      </section>
+        </section>
 
-      <section class="auth-panel">
-        <div class="auth-panel-inner">
-          <h2>登录工作台</h2>
-          <p class="auth-subtitle">使用本站平台账号进入 {{ siteStore.siteName }}</p>
+        <section class="auth-panel">
+          <div class="auth-panel-inner">
+            <h2>登录工作台</h2>
+            <p class="auth-subtitle">使用本站平台账号进入 {{ siteStore.siteName }}</p>
 
-          <aside v-if="visitorAccess" class="visitor-access" aria-label="访客体验账号">
-            <div class="visitor-access-heading">
-              <strong>访客体验账号</strong>
-              <span>只读体验</span>
-            </div>
-            <dl class="visitor-credentials">
-              <div><dt>账号</dt><dd>{{ visitorAccess.username }}</dd></div>
-              <div><dt>密码</dt><dd>{{ visitorAccess.password }}</dd></div>
-            </dl>
-            <div class="visitor-access-footer">
-              <p>查看平台功能与运行数据</p>
-              <el-button size="small" :disabled="loading" @click="fillVisitorAccess">填入访客账号</el-button>
-            </div>
-          </aside>
+            <aside v-if="visitorAccess" class="visitor-access" aria-label="访客体验账号">
+              <div class="visitor-access-heading">
+                <strong>访客体验账号</strong>
+                <span>只读体验</span>
+              </div>
+              <dl class="visitor-credentials">
+                <div><dt>账号</dt><dd>{{ visitorAccess.username }}</dd></div>
+                <div><dt>密码</dt><dd>{{ visitorAccess.password }}</dd></div>
+              </dl>
+              <div class="visitor-access-footer">
+                <p>查看平台功能与运行数据</p>
+                <el-button size="small" :disabled="loading" @click="fillVisitorAccess">填入访客账号</el-button>
+              </div>
+            </aside>
 
-          <p class="account-scope">仅登录本站账号，请勿输入邮箱、云平台等第三方账号的密码。</p>
-          <el-form class="login-form" :model="form" label-position="top" @submit.prevent="handleLogin">
-            <el-form-item label="用户名">
-              <el-input
-                v-model.trim="form.username"
-                :prefix-icon="User"
-                autocomplete="username"
+            <el-form class="login-form" :model="form" label-position="top" @submit.prevent="handleLogin">
+              <el-form-item label="用户名">
+                <el-input
+                  v-model.trim="form.username"
+                  :prefix-icon="User"
+                  autocomplete="username"
+                  size="large"
+                  placeholder="请输入用户名"
+                />
+              </el-form-item>
+              <el-form-item label="密码">
+                <el-input
+                  v-model="form.password"
+                  :prefix-icon="Lock"
+                  autocomplete="current-password"
+                  size="large"
+                  type="password"
+                  show-password
+                  placeholder="请输入密码"
+                  @keyup.enter="handleLogin"
+                />
+              </el-form-item>
+              <el-button
+                type="primary"
+                native-type="submit"
                 size="large"
-                placeholder="请输入用户名"
-              />
-            </el-form-item>
-            <el-form-item label="密码">
-              <el-input
-                v-model="form.password"
-                :prefix-icon="Lock"
-                autocomplete="current-password"
-                size="large"
-                type="password"
-                show-password
-                placeholder="请输入密码"
-                @keyup.enter="handleLogin"
-              />
-            </el-form-item>
-            <el-button
-              type="primary"
-              native-type="submit"
-              size="large"
-              class="submit-btn"
-              :loading="loading"
-            >
-              进入工作台
-            </el-button>
-          </el-form>
-          <nav class="auth-links" aria-label="网站信息">
-            <router-link to="/about">网站说明与隐私</router-link>
-            <a href="https://github.com/aiyiyi121/sxdevops" target="_blank" rel="noopener noreferrer">项目源码</a>
-          </nav>
-        </div>
-      </section>
-    </main>
+                class="submit-btn"
+                :loading="loading"
+              >
+                进入工作台
+              </el-button>
+            </el-form>
+          </div>
+        </section>
+      </main>
+      <footer class="auth-footer">
+        <p class="account-scope">仅登录本站账号，请勿输入邮箱、云平台等第三方账号的密码。</p>
+        <nav class="auth-links" aria-label="网站信息">
+          <router-link to="/about">网站说明与隐私</router-link>
+          <a href="https://github.com/aiyiyi121/sxdevops" target="_blank" rel="noopener noreferrer">项目源码</a>
+          <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">苏ICP备2026013039号-1</a>
+        </nav>
+      </footer>
+    </div>
   </div>
 </template>
 
@@ -218,10 +223,20 @@ async function handleLogin() {
   background-size: 44px 44px, 44px 44px, auto;
 }
 
-.auth-shell {
+.auth-layout {
   width: min(1160px, 100%);
-  height: min(680px, calc(100vh - 36px));
-  height: min(680px, calc(100dvh - 36px));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  transform: scale(var(--auth-scale));
+  transform-origin: center;
+}
+
+.auth-shell {
+  width: 100%;
+  height: min(680px, calc((100vh - 36px) / var(--auth-scale) - 54px));
+  height: min(680px, calc((100dvh - 36px) / var(--auth-scale) - 54px));
   display: grid;
   grid-template-columns: minmax(0, 1fr) 420px;
   overflow: hidden;
@@ -230,8 +245,6 @@ async function handleLogin() {
   background: rgba(255, 255, 255, 0.92);
   box-shadow: 0 28px 78px rgba(15, 23, 42, 0.13);
   backdrop-filter: blur(18px);
-  transform: scale(var(--auth-scale));
-  transform-origin: center;
 }
 
 .auth-overview {
@@ -610,19 +623,29 @@ async function handleLogin() {
   width: 100%;
 }
 
-.account-scope {
-  margin: 0 0 16px;
-  color: var(--el-text-color-secondary);
+.auth-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px 18px;
+  width: 100%;
+  padding: 0 16px;
+  text-align: center;
+  color: var(--text-secondary);
   font-size: 12px;
   line-height: 1.7;
+}
+
+.account-scope {
+  margin: 0;
 }
 
 .auth-links {
   display: flex;
   flex-wrap: wrap;
-  gap: 16px;
-  margin-top: 20px;
-  font-size: 12px;
+  justify-content: center;
+  gap: 8px 18px;
 }
 
 .auth-links a {
@@ -632,6 +655,12 @@ async function handleLogin() {
 
 .auth-links a:hover {
   text-decoration: underline;
+}
+
+.auth-links a:focus-visible {
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: 4px;
+  border-radius: 3px;
 }
 
 :deep(.el-form-item) {
@@ -730,11 +759,6 @@ async function handleLogin() {
 }
 
 @media (max-height: 760px) and (min-width: 981px) {
-  .auth-shell {
-    height: calc(100vh - 28px);
-    height: calc(100dvh - 28px);
-  }
-
   .auth-overview {
     padding: 26px 34px;
   }
@@ -767,6 +791,20 @@ async function handleLogin() {
 
   .auth-panel {
     padding: 34px;
+  }
+}
+
+@media (max-height: 640px) and (min-width: 981px) {
+  .auth-page {
+    height: auto;
+    min-height: 100vh;
+    min-height: 100dvh;
+    overflow: auto;
+  }
+
+  .auth-shell {
+    height: auto;
+    min-height: 580px;
   }
 }
 

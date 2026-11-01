@@ -134,7 +134,11 @@
       <section class="closing-section page-width"><span class="closing-label">为真实运维现场而建</span><h2>少一些来回切换，<br /><span>多一些有据可依。</span></h2><router-link class="button button-primary" to="/dashboard">开始探索 SxDevOps <el-icon><ArrowRight /></el-icon></router-link><div class="closing-orbit" aria-hidden="true"></div></section>
     </main>
 
-    <footer class="site-footer page-width"><a class="brand footer-brand" href="#top"><img :src="brandMark" alt="" width="36" height="36" />SxDevOps</a><p>开源智能运维 Agent 平台</p><nav aria-label="页脚导航"><router-link to="/about">网站说明与隐私</router-link><a :href="`${repository}/blob/main/LICENSE`" target="_blank" rel="noopener noreferrer">MIT License</a><a :href="`${repository}/issues`" target="_blank" rel="noopener noreferrer">反馈与共建 <el-icon><TopRight /></el-icon></a><a href="#top">回到顶部 ↑</a></nav></footer>
+    <footer class="site-footer page-width">
+      <a class="brand footer-brand" href="#top"><img :src="brandMark" alt="" width="36" height="36" />SxDevOps</a>
+      <p>开源智能运维 Agent 平台</p>
+      <nav aria-label="页脚导航"><router-link to="/about">网站说明与隐私</router-link><a :href="`${repository}/blob/main/LICENSE`" target="_blank" rel="noopener noreferrer">MIT License</a><a :href="`${repository}/issues`" target="_blank" rel="noopener noreferrer">反馈与共建 <el-icon><TopRight /></el-icon></a><a href="#top">回到顶部 ↑</a><a class="footer-registration" href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">苏ICP备2026013039号-1</a></nav>
+    </footer>
 
     <dialog ref="lightbox" class="screenshot-dialog" aria-label="产品截图大图预览" @click="onBackdropClick" @close="lightboxIndex = null" @keydown.left.prevent="moveLightbox(-1)" @keydown.right.prevent="moveLightbox(1)">
       <template v-if="lightboxScreenshot"><div class="lightbox-toolbar"><strong>{{ lightboxScreenshot.label }}</strong><span>{{ (lightboxIndex ?? 0) + 1 }} / {{ screenshots.length }}</span><button type="button" aria-label="关闭大图" @click="lightbox.close()"><el-icon><Close /></el-icon></button></div><img :src="lightboxScreenshot.src" :alt="lightboxScreenshot.alt" /><div class="lightbox-bottom"><button type="button" aria-label="上一张截图" @click="moveLightbox(-1)"><el-icon><ArrowLeft /></el-icon> 上一张</button><p>{{ lightboxScreenshot.title }}</p><button type="button" aria-label="下一张截图" @click="moveLightbox(1)">下一张 <el-icon><ArrowRight /></el-icon></button></div></template>
@@ -456,11 +460,14 @@ async function copyCloneCommand() { try { await navigator.clipboard.writeText(cl
 .closing-section h2 { font-size: 42px; font-weight: 650; letter-spacing: -1px; line-height: 1.5; margin: 20px 0 27px; }
 .closing-section h2 span { color: var(--p-accent); }
 .closing-orbit { pointer-events: none; z-index: -1; position: absolute; width: 600px; height: 500px; border-radius: 50%; bottom: -450px; left: calc(50% - 300px); box-shadow: 0 -10px 140px -50px var(--p-accent); border: 1px solid var(--p-line); }
-.site-footer { display: flex; align-items: center; gap: 25px; padding-block: 26px 30px; border-top: 1px solid var(--p-line); }
+.site-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 16px 25px; padding-block: 26px 30px; border-top: 1px solid var(--p-line); }
 .footer-brand { font-size: 16px; gap: 5px; }
 .site-footer > p { font-size: 10px; color: var(--p-subtle); }
-.site-footer nav { margin-left: auto; display: flex; gap: 22px; color: var(--p-muted); font-size: 10px; }
+.site-footer nav { margin-left: auto; display: flex; flex-wrap: wrap; gap: 10px 22px; color: var(--p-muted); font-size: 10px; }
 .site-footer nav a { display: inline-flex; align-items: center; gap: 4px; }
+.footer-registration { white-space: nowrap; }
+.footer-registration:hover { color: var(--p-accent); }
+.footer-registration:focus-visible { outline: 2px solid var(--p-accent); outline-offset: 4px; border-radius: 3px; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .screenshot-dialog { margin: auto; width: min(1500px, calc(100vw - 48px)); max-width: none; max-height: calc(100dvh - 48px); padding: 0; color: var(--p-ink); background: var(--p-surface); border: 1px solid var(--p-line); border-radius: 12px; overflow: auto; }
 .screenshot-dialog::backdrop { background: light-dark(#000c, #000c); backdrop-filter: blur(8px); }
