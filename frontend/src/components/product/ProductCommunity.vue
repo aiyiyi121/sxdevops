@@ -7,7 +7,7 @@
         <p>受限于个人时间与精力，当前版本仍有不少需要打磨的地方。欢迎通过 <a :href="`${repository}/issues`" target="_blank" rel="noopener noreferrer">Issue</a> 反馈问题、提出建议，也欢迎提交 <a :href="`${repository}/pulls`" target="_blank" rel="noopener noreferrer">PR</a> 参与共建。我会在能力范围内持续维护、迭代新版本。</p>
       </div>
       <figure class="community-follow">
-        <img src="/promo/wechat-qrcode.png" alt="作者微信公众号二维码" width="430" height="430" loading="lazy" decoding="async" />
+        <img src="/promo/wechat-qrcode.png?v=88d67a391857" alt="作者微信公众号二维码" width="430" height="430" loading="lazy" decoding="async" />
         <figcaption><strong>欢迎关注我的公众号</strong></figcaption>
       </figure>
       <div class="community-thanks">
