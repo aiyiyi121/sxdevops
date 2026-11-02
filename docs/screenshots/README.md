@@ -10,7 +10,7 @@
 | [v2-dashboard.png](v2-dashboard.png) | 系统态势、SLA 与历史可用率 |
 | [v2-cmdb-overview.png](v2-cmdb-overview.png) | CMDB 容量、资产及治理入口 |
 | [v2-cmdb-topology.png](v2-cmdb-topology.png) | 资产拓扑、业务环境树和分类关系规则 |
-| [assistant-demo-20261101.png](assistant-demo-20261101.png) | 智能助手故障排查、平台取证及会话历史 |
+| [assistant-demo-20261101.png](assistant-demo-20261101.png) | 智能助手事件分析、平台取证、会话历史及问答类型选择 |
 | [execution-trace-fix-20261101.png](execution-trace-fix-20261101.png) | LangGraph 执行追踪、节点时间线及 Checkpoint |
 | [v2-aiops-sessions.png](v2-aiops-sessions.png) | 智能体审计的模型与工具调用统计 |
 | [session-audit-20261101.png](session-audit-20261101.png) | 智能体配置、建议问题、系统提示词与能力范围 |
@@ -26,7 +26,7 @@
 
 ## 产品介绍截图映射
 
-产品页使用 `frontend/public/promo/v2/` 下的 WebP 展示副本，保留 PNG 原图。当前副本保留原始 1679 × 944 分辨率，使用 WebP 质量 88 压缩，不裁切界面内容。
+产品页使用 `frontend/public/promo/v2/` 下的 WebP 展示副本，保留 PNG 原图。副本保留各自原始分辨率，使用 WebP 质量 88 压缩，不裁切界面内容。智能助手截图于 2026-11-02 更新为用户提供的 1913 × 953 原图，其余界面截图为 1679 × 944。
 
 | 界面一览 | PNG 来源 | WebP 展示副本 |
 | --- | --- | --- |
