@@ -14,6 +14,7 @@
         <h3>最后感谢支持与传播</h3>
         <p>感谢阿铭老师对本项目的启发与宣传。如有大模型或 AIOps 学习需求，可通过 <a href="https://www.amingedu.com/" target="_blank" rel="noopener noreferrer">铭科智联 · 跟阿铭学大模型/AIOps <el-icon><TopRight /></el-icon></a> 的公开渠道添加微信咨询。</p>
         <p>感谢 <a href="https://agent2048.com/zh/projects/2cmcyhvxsk4q" target="_blank" rel="noopener noreferrer">Agent2048 <el-icon><TopRight /></el-icon></a> 对本项目的推广与展示。</p>
+        <p>也感谢每一位关注、体验、提出反馈，或通过打赏给予支持的朋友。你们的每一份支持，都是这个项目持续前行的动力。</p>
       </div>
     </div>
   </section>

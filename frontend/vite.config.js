@@ -15,8 +15,6 @@ export default defineConfig({
             output: {
                 manualChunks(id) {
                     if (!id.includes('node_modules')) return
-                    if (id.includes('@element-plus/icons-vue')) return 'element-plus-icons'
-                    if (id.includes('element-plus')) return 'element-plus-core'
                     if (id.includes('echarts')) return 'echarts'
                     if (id.includes('@xterm')) return 'xterm'
                     if (id.includes('vue-router')) return 'vue-router'

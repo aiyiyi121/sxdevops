@@ -1,9 +1,7 @@
 import { createApp, watch } from 'vue'
-import ElementPlus from 'element-plus'
+import ElIcon from 'element-plus/es/components/icon/index'
 import 'element-plus/dist/index.css'
 import 'element-plus/theme-chalk/dark/css-vars.css'
-import * as ElementPlusIconsVue from '@element-plus/icons-vue'
-import zhCn from 'element-plus/es/locale/lang/zh-cn'
 
 import App from './App.vue'
 import router from './router'
@@ -20,13 +18,20 @@ initializeTheme()
 const app = createApp(App)
 
 app.use(pinia)
-app.use(router)
-app.use(ElementPlus, { locale: zhCn })
+app.use(ElIcon)
 
-// 注册所有图标
-for (const [key, component] of Object.entries(ElementPlusIconsVue)) {
-    app.component(key, component)
-}
+let workbenchUi
+router.beforeResolve(async to => {
+    if (to.name === 'ProductIntro') return
+    workbenchUi ||= import('./plugins/workbench-ui').then(({ installWorkbenchUi }) => {
+        installWorkbenchUi(app)
+    }).catch(error => {
+        workbenchUi = null
+        throw error
+    })
+    await workbenchUi
+})
+app.use(router)
 
 const authStore = useAuthStore(pinia)
 const siteStore = useSiteStore(pinia)

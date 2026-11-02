@@ -1,5 +1,5 @@
 ﻿import axios from 'axios'
-import { ElMessage } from 'element-plus'
+import { ElMessage } from 'element-plus/es/components/message/index'
 
 const TOKEN_KEY = 'sxdevops_token'
 const USER_KEY = 'sxdevops_user'

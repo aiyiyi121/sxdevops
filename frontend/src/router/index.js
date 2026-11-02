@@ -1,6 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import { ElMessage } from 'element-plus'
-import AppLayout from '@/layout/AppLayout.vue'
+import { ElMessage } from 'element-plus/es/components/message/index'
 import { pinia } from '@/stores'
 import { useAuthStore } from '@/stores/auth'
 import { SYSTEM_POSTURE_ENABLED } from '@/config/features'
@@ -73,7 +72,7 @@ const routes = [
   },
   {
     path: '/',
-    component: AppLayout,
+    component: () => import('@/layout/AppLayout.vue'),
     redirect: '/product',
     children: [
       {
