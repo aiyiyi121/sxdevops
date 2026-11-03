@@ -219,7 +219,7 @@ flowchart TB
 
 默认聊天支持分阶段取证和断点恢复，执行追踪可查看节点与动作结果。
 
-![智能助手事件分析、平台取证与问答类型选择](docs/screenshots/assistant-demo-20261101.png)
+![智能助手故障排查、日志证据与问答类型选择](docs/screenshots/assistant-demo-20261101.png)
 
 ![LangGraph 执行追踪与节点时间线](docs/screenshots/execution-trace-fix-20261101.png)
 

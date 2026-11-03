@@ -227,7 +227,7 @@ const workflow = [
   { title: '留痕复盘', icon: Finished, description: '查看执行与审计，按配置验证告警恢复。' },
 ]
 const screenshots = [
-  { id: 'assistant', label: '智能助手', icon: MagicStick, path: 'workspace / aiops / chat', src: '/promo/v2/assistant.webp?v=313097114c3c', width: 1913, height: 953, title: '用一个问题，打开有上下文的运维分析', description: '围绕资源与证据展开对话，查看分析依据、建议与后续操作入口。', alt: '智能助手真实产品截图：事件分析、平台取证、历史会话和问答类型选择' },
+  { id: 'assistant', label: '智能助手', icon: MagicStick, path: 'workspace / aiops / chat', src: '/promo/v2/assistant.webp?v=19b2c01d4c12', width: 1911, height: 897, title: '用一个问题，打开有上下文的运维分析', description: '围绕资源与证据展开对话，查看分析依据、建议与后续操作入口。', alt: '智能助手真实产品截图：故障排查、日志证据、历史会话和问答类型选择' },
   { id: 'agent-config', label: '智能体配置', icon: MagicStick, path: 'workspace / aiops / config', src: '/promo/v2/agent-config.webp?v=eba19eb80061', title: '把助手的能力与边界，配置清楚', description: '配置建议问题、系统提示词与能力范围，明确默认模型和任务草稿生成方式。', alt: '智能体配置真实产品截图：建议问题、系统提示词、能力范围、默认模型与人工确认提示' },
   { id: 'posture', label: '系统态势', icon: Monitor, path: 'workspace / dashboard', src: '/promo/v2/posture.webp?v=d4c700bc1149', title: '先看全局态势，再收敛故障边界', description: '按环境与系统查看 SLA 历史和当前状态，区分故障、未知与数据缺口。', alt: '系统态势真实产品截图：系统统计、环境筛选、SLA 历史条带与当前状态' },
   { id: 'slo', label: '系统 SLO', icon: Finished, path: 'workspace / observability / system-posture', src: '/promo/v2/slo.webp?v=e97fefb8719e', title: '从可用率与错误预算，判断服务风险', description: '集中查看各系统的 SLO 达标情况、可用率与错误预算，展开服务详情定位风险。', alt: '系统 SLO 真实产品截图：系统目标卡片、可用率、错误预算与服务详情面板' },
