@@ -1,5 +1,6 @@
 ﻿from django.conf import settings
 from django.db import models
+from django.utils import timezone
 
 
 class PermissionDefinition(models.Model):
@@ -70,6 +71,17 @@ class SiteSetting(models.Model):
         verbose_name = '网站基础配置'
         verbose_name_plural = '网站基础配置'
         constraints = [models.CheckConstraint(condition=models.Q(id=1), name='rbac_single_site_setting')]
+
+
+class RepositorySnapshot(models.Model):
+    repository = models.CharField('仓库', max_length=200, primary_key=True)
+    stars = models.PositiveBigIntegerField('Star 数')
+    etag = models.CharField('ETag', max_length=255, blank=True, default='')
+    updated_at = models.DateTimeField('最近成功获取时间', default=timezone.now)
+
+    class Meta:
+        verbose_name = '仓库统计快照'
+        verbose_name_plural = '仓库统计快照'
 
 
 class SystemModuleSetting(models.Model):

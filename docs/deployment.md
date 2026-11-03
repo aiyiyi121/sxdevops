@@ -120,6 +120,18 @@ docker compose exec sxdevops python manage.py showmigrations
 
 ## 常见问题
 
+### 产品页 GitHub Star 数
+
+公开接口 `/api/site-settings/repository/` 优先读取 Redis 最近一次成功的快照；缓存缺失或不可用时读取数据库中的 `RepositorySnapshot`，缓存恢复后回填历史值。GitHub 查询成功会同时更新数据库与 Redis，超时、限流或无效响应保留原有数量和成功时间。
+
+刷新间隔为 15 分钟，失败后 5 分钟重试；Redis 不可用时只读取数据库历史，避免公开访问绕过刷新锁持续请求 GitHub。首次部署且从未成功获取过数据时仍显示未知值。升级需要应用 `rbac.0014_repository_snapshot`；备份时一并保留数据库及 Redis 持久卷。
+
+### 小内存服务器卡顿
+
+使用 `MemAvailable` 判断可用内存，同时检查 `vmstat` 的磁盘等待、`/proc/pressure/memory` 和容器 cgroup 的 `memory.events`、`memory.stat`。即使主机没有 OOM，过低的容器上限也会触发反复回收和读盘。先确认具体容器的匿名内存、文件缓存和重复缺页，再调整应用内存参数与运行限额。
+
+Go 服务应为堆之外的文件缓存和运行时留出余量；若透明大页处于 `always` 且匿名大页占用偏高，可评估改用 `madvise`，并检查当前 Go 版本对 `GODEBUG=disablethp=1` 的支持。调整后验证实际业务查询和内存压力，保留配置备份并持久化需要跨重启生效的设置。
+
 | 现象 | 检查方向 |
 | --- | --- |
 | 无法登录或没有管理员 | 查看迁移结果；首次运行 `createsuperuser`，不使用旧演示账号 |

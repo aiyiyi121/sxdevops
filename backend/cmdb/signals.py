@@ -17,6 +17,8 @@ def invalidate_ledger_cache(sender, **kwargs):
     # Saves outside the API (collectors, jobs and admin) must invalidate summaries too.
     if sender._meta.app_label not in {'cmdb', 'rbac', 'auth'}:
         return
+    if sender._meta.label_lower == 'rbac.repositorysnapshot':
+        return
     from .views import _bump_cmdb_ledger_cache_version
     _bump_cmdb_ledger_cache_version()
     # Readers may fill the new cache version before this transaction commits.
